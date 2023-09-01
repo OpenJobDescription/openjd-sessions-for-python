@@ -1,0 +1,902 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+import json
+import os
+import stat
+import sys
+import uuid
+from dataclasses import dataclass
+from datetime import timedelta
+from enum import Enum
+from logging import Filter, LoggerAdapter
+from os import name as os_name
+from os import stat as os_stat
+from pathlib import Path
+from tempfile import gettempdir, mkstemp
+from types import TracebackType
+from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
+
+from openjd.model import SchemaVersion, SymbolTable
+from openjd.model import version as model_version
+from openjd.model.v2023_09 import (
+    ValueReferenceConstants as ValueReferenceConstants_2023_09,
+)
+from ._action_filter import ActionMessageKind, ActionMonitoringFilter
+from ._embedded_files import write_file_for_user
+from ._logging import LOG
+from ._path_mapping import PathMappingRule
+from ._runner_base import ScriptRunnerBase
+from ._runner_env_script import EnvironmentScriptRunner
+from ._runner_step_script import StepScriptRunner
+from ._subprocess import LoggingSubprocess
+from ._session_user import SessionUser
+from ._tempdir import TempDir
+from ._types import (
+    ActionState,
+    EnvironmentIdentifier,
+    EnvironmentModel,
+    Parameter,
+    ParameterType,
+    StepScriptModel,
+)
+from ._version import version
+
+if TYPE_CHECKING:
+    from openjd.model.v2023_09._model import EnvironmentVariableObject
+
+__all__ = ("SessionState", "Session", "EnvironmentIdentifier")
+
+
+class SessionState(str, Enum):
+    READY = "ready"
+    """The state of a Session when it is ready to run actions.
+    """
+
+    RUNNING = "running"
+    """The state of a Session while it is actively running an action.
+    """
+
+    CANCELING = "canceling"
+    """The state of a Session that is in the process of canceling the currently
+    running action.
+    """
+
+    READY_ENDING = "ready_ending"
+    """The state of a Session when it is ready to run only Environment End actions.
+    The Session has previously experienced an error or cancelation running
+    one of its actions, and is now only allowed to run Environment End actions to
+    clean up the Session context."""
+
+    ENDED = "ended"
+    """Terminal state of a Session that has ended and can no longer run any actions."""
+
+
+@dataclass(frozen=True)
+class ActionStatus:
+    state: ActionState
+    """The runtime state of the action."""
+
+    progress: Optional[float] = None
+    """The progress of the action as reported by an "openjd_progress:" message"""
+
+    status_message: Optional[str] = None
+    """The status message for the action as reported by an "openjd_status:" message"""
+
+    fail_message: Optional[str] = None
+    """The failure reason of the action as reported by an "openjd_fail:" message."""
+
+    exit_code: Optional[int] = None
+    """The exit code of the action's process, if it has exited.
+    Note: This may be None in SUCCESS & FAILED states.
+    e.g.
+        SUCCESS - Entered an environment that ran no Action to enter it.
+        FAILED - Failed before trying to run the Action subprocess, such as
+            failing to write embedded files to disk.
+    """
+
+
+@dataclass
+class EnvironmentVariableSetChange:
+    name: str
+    value: str
+
+
+@dataclass
+class EnvironmentVariableUnsetChange:
+    name: str
+
+
+EnvironmentVariableChange = Union[EnvironmentVariableSetChange, EnvironmentVariableUnsetChange]
+
+
+class SimplifiedEnvironmentVariableChanges:
+    """Keeps track of what variables need to be set and unset for an environment"""
+
+    def __init__(self, initial_variables: Union[dict[str, str], "EnvironmentVariableObject"]):
+        self._to_set: dict[str, Optional[str]] = dict(initial_variables)  # Make a copy
+
+    def simplify_ordered_changes(self, changes: list[EnvironmentVariableChange]) -> None:
+        """Apply a given list of sets and unsets to the current state in order"""
+        for change in changes:
+            if isinstance(change, EnvironmentVariableSetChange):
+                self._to_set[change.name] = change.value
+            elif isinstance(change, EnvironmentVariableUnsetChange):
+                self._to_set[change.name] = None
+            else:
+                raise ValueError("Unknown type of environment variable change.")
+
+    def apply_to_environment(self, env_vars: dict[str, Optional[str]]) -> None:
+        """Modify a given dictionary of environment variables to reflect the changes"""
+        for var_name, var_value in self._to_set.items():
+            # Note: An env var value of None means to unset that variable
+            env_vars[var_name] = var_value
+
+
+SessionCallbackType = Callable[[str, ActionStatus], None]
+
+
+class Session(object):
+    """A context for running actions of an Open Job Descriptionob Description Job.
+
+    In Open Job Description, the Tasks for a Job's Steps are run within the context of a *Session*.
+    Each Step in a Job defines the properties of the Session that are required to
+    run its Tasks. Open Job Description sessions enable users to amortize expensive or time-consuming
+    setup and tear-down operations in the worker's environment before and after a sequence
+    of Tasks.
+
+    A Session starts 0 or more *Environments* in the order given on the worker when
+    it is started, and ends those Environments in reverse order when the Session is
+    no longer needed. Each Environment defines a start and end *Action* — a command/script
+    defined by the end-user — that is run on the worker when starting or ending the
+    Environment.  The actions for these environments, as with all actions, are each
+    run in their own operating system process.
+
+    All stdout and stderr from the subproceseses run within this Session, and any additional
+    logging generated by the Session itself, are forwarded to the Open Job Description sessions
+    module's LOG Logger at log level INFO. The LogRecords sent to the log have an
+    extra attribute named "session_id" whose value is the session_id that was passed
+    to the constructor of the Session.
+    """
+
+    _state: SessionState
+
+    _session_id: str
+    """The application-provided id for this Session.
+    """
+
+    _logger: LoggerAdapter
+    """The logger that all of this Session's running processes will send their logs to.
+    """
+
+    _ending_only: bool
+    """The Session has previously experienced an error or cancelation of a running
+    action, and can only run Environment-end actions.
+    """
+
+    _environments: dict[
+        EnvironmentIdentifier,
+        EnvironmentModel,
+    ]
+    """A mapping of identifier to Environment for each Environment entered in the session.
+    """
+
+    _environments_entered: list[EnvironmentIdentifier]
+    """A list of the Environments entered (either successfully or unsuccessfully[failed/canceled]),
+    in the order that they were entered.
+    Environments must be exited in the reverse order to that which they were entered.
+    """
+
+    _runner: Optional[ScriptRunnerBase]
+    """The currently running runner, if there is one.
+    """
+
+    _running_environment_identifier: Optional[str]
+    """If we're running an environment action then this will be the
+    identifier of that environment; otherwise it will be None.
+    """
+
+    _process_env: dict[str, str]
+    """Mapping of environment variable names to values. Used as the shell/os environment
+    when running a subprocess.
+    """
+
+    _created_env_vars: dict[EnvironmentIdentifier, SimplifiedEnvironmentVariableChanges]
+    """OS environment variables defined by Open Job Description Environments
+    """
+
+    _log_filter: Filter
+    """The handler that we've hooked to the LOG. Removed when the Session is deleted.
+    """
+
+    _working_dir: Optional[TempDir] = None
+    """The Session Working Directory.
+    """
+
+    _files_dir: TempDir
+    """The subdirectory of the Working Directory where embedded files
+    are materialized.
+    """
+
+    _retain_working_dir: bool
+    """If True, then the working directory is not deleted on cleanup.
+    """
+
+    _user: Optional[SessionUser]
+    """The specific OS user to run subprocesses as, and whom will have permissions
+    to the Session's Working Directory.
+    Defaults to the current process user.
+    """
+
+    _job_parameter_values: list[Parameter]
+    """Values for any defined Job Parameters.
+    """
+
+    _cleanup_called: bool
+    """Whether or not the application has called cleanup.
+    If not, then we will call it automatically in __del__.
+    """
+
+    _callback: Optional[SessionCallbackType]
+    """If provided, then this callback will be invoked on every:
+        1. Open Job Description action message in the log (lines that start with openjd_)
+        2. Completion/exit of the current action.
+    The callback takes two arguments:
+        - The session_id of this session; and
+        - The updated value of Session.action_status; this contains the
+            runtime state of the Action (running, etc) and optionally the
+            progress, exit_code, and any output messages.
+    """
+
+    _path_mapping_rules: Optional[list[PathMappingRule]]
+    """A list of the Path Mapping rules to communicate to Actions run via this Session.
+    """
+
+    # Status fields for the currently running process, if any.
+    _action_state: Optional[ActionState]
+    _action_progress: Optional[float]
+    _action_status_message: Optional[str]
+    _action_fail_message: Optional[str]
+    _action_exit_code: Optional[int]
+
+    def __init__(
+        self,
+        *,
+        session_id: str,
+        job_parameter_values: list[Parameter],
+        path_mapping_rules: Optional[list[PathMappingRule]] = None,
+        retain_working_dir: bool = False,
+        user: Optional[SessionUser] = None,
+        callback: Optional[SessionCallbackType] = None,
+        os_env_vars: Optional[dict[str, str]] = None,
+    ):
+        """
+        Arguments:
+            session_id (str): An application-defined string value with which the session is identified.
+            job_parameter_values (list[Parameter]): Values for any defined Job Parameters.
+            path_mapping_rules (Optional[list[PathMappingRule]]): A list of the path mapping rules to apply
+                within all actions running within this session. Defaults to None.
+            retain_working_dir (bool, optional): If set, then the Session's Working Directory
+                is not deleted when this Session object is deleted. Defaults to False.
+            user (Optional[SessionUser]): The specific OS user to run subprocesses as, and whom
+                will have permissions to the Session's Working Directory.
+                Defaults to the current process user.
+            callback (Optional[SessionCallbackType]): If provided, then this callback will be
+                invoked on every:
+                    1. Start of an Action (when the subprocess is actually running);
+                    2. Open Job Description action message in the log (lines that start with openjd_)
+                    3. Completion/exit of the current action.
+                The callback takes two arguments:
+                    - The session_id of this session; and
+                    - The updated value of Session.action_status; this contains the
+                        runtime state of the Action (running, etc) and optionally the
+                        progress, exit_code, and any output messages.
+                An implementation that uses this callback must ensure that the callback exits
+                very rapidly; not doing so will delay processing of stdout/stderr of running
+                subprocesses.
+                WARNING: This callback may be called from the same thread that initiated
+                a Script run in this session. This may happen if an error was encountered
+                prior to trying to run the Action (e.g. failing to write an embedded file to
+                disk); if the Action runs very quickly; or other similar circumstances.
+            os_env_vars (Optional[dict[str,str]]): Definitions for additional OS Environment
+                Variables that should be injected into all running processes in the Session.
+                    Key: Environment variable name
+                    Value: Value for the environment variable.
+
+        Raises:
+            RuntimeError - If the Session initialization fails for any reason.
+        """
+        if os.name != "posix":
+            raise NotImplementedError("Open Job Description Sessions do not support non-posix systems yet.")
+
+        self._session_id = session_id
+        self._ending_only = False
+        self._environments = dict()
+        self._environments_entered = list()
+        self._runner = None
+        self._running_environment_identifier = None
+        self._process_env = dict(os_env_vars) if os_env_vars else dict()
+        self._created_env_vars = dict()
+        self._retain_working_dir = retain_working_dir
+        self._user = user
+        self._job_parameter_values = job_parameter_values[:]
+        self._cleanup_called = False
+        self._callback = callback
+        self._path_mapping_rules = path_mapping_rules[:] if path_mapping_rules else None
+        if self._path_mapping_rules is not None:
+            # Path mapping rules are applied in order of longest to shortest source path,
+            # so sort them for when we apply them.
+            self._path_mapping_rules.sort(key=lambda rule: -len(rule.source_path.parts))
+        self._reset_action_state()
+
+        # Set up our logging hook & callback
+        self._log_filter = ActionMonitoringFilter(
+            session_id=self._session_id, callback=self._action_log_filter_callback
+        )
+        LOG.addFilter(self._log_filter)
+        self._logger = LoggerAdapter(LOG, extra={"session_id": self._session_id})
+
+        self._logger.info(f"openjd.model Library Version: {model_version}")
+        self._logger.info(f"openjd.sessions Library Version: {version}")
+        self._logger.info("Installed at: %s", str(Path(__file__).resolve().parent.parent))
+        self._logger.info(f"Python Interpreter: {sys.executable}")
+        self._logger.info("Python Version: %s", sys.version.replace("\n", " - "))
+        self._logger.info(f"Platform: {sys.platform}")
+        self._logger.info(f"Initializing Open Job Description Session: {self._session_id}")
+
+        try:
+            self._working_dir = self._create_working_directory()
+            self._files_dir = self._create_files_directory()
+        except RuntimeError as exc:
+            self._logger.error(f"ERROR creating Session Working Directory: {str(exc)}")
+            self._state = SessionState.ENDED
+            raise
+
+        self._logger.info(f"Session Working Directory: {str(self.working_directory)}")
+        self._logger.info(f"Session's Embedded Files Directory: {str(self.files_directory)}")
+
+        self._state = SessionState.READY
+
+    def cleanup(self) -> None:
+        """Cleanup all resources created by this Session"""
+        if self._cleanup_called:
+            return
+        self._cleanup_called = True
+        if self._working_dir is not None and not self._retain_working_dir:
+            try:
+                # If running as a different user, then that user could have written files to the
+                # session diretory that make removing it as our user impossible. So, do a 2-phase
+                # removal: 1/ `sudo -u <user> -i rm -rf <sessiondir>`, and then 2/ doing a normal
+                # recursive removal to delete the stuff that only this user can delete.
+                if self._user is not None:
+                    if os_name == "posix":
+                        subprocess = LoggingSubprocess(
+                            logger=self._logger,
+                            args=["rm", "-rf", str(self.working_directory)],
+                            user=self._user,
+                        )
+                        # Note: Blocking call until the process has exited
+                        subprocess.run()
+                    else:
+                        raise NotImplementedError("Not implemented for non-posix")
+
+                self._working_dir.cleanup()
+            except RuntimeError as exc:
+                # Warn if we couldn't cleanup the temporary files for some reason.
+                self._logger.exception(exc)
+
+        LOG.removeFilter(self._log_filter)
+        del self._log_filter
+        if self._runner:
+            self._runner.shutdown()
+            self._runner = None
+        self._state = SessionState.ENDED
+
+    def __enter__(self) -> "Session":
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc_value: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> None:
+        self.cleanup()
+
+    # ========================
+    #  Properties
+
+    @property
+    def working_directory(self) -> Path:
+        """The directory that was created for this Session's working files.
+        This is available in a Job Template's format string expressions as
+        Session.WorkingDirectory
+        """
+        assert self._working_dir is not None
+        return self._working_dir.path
+
+    @property
+    def files_directory(self) -> Path:
+        """The subdirectory of the working_directory where files that have
+        been inlined into a Job Template are stored.
+        """
+        return self._files_dir.path
+
+    @property
+    def state(self) -> SessionState:
+        """Fetch the current state of this Session."""
+        return self._state
+
+    @property
+    def action_status(self) -> Optional[ActionStatus]:
+        """Obtain the status of the currently running, or previously running, Action
+        Includes progress, status messages, and exit code; if they are available.
+        """
+        # If we don't have an action state, then we're not running or haven't run
+        # anything yet.
+        if self._action_state is None:
+            return None
+        return ActionStatus(
+            state=self._action_state,
+            progress=self._action_progress,
+            status_message=self._action_status_message,
+            fail_message=self._action_fail_message,
+            exit_code=self._action_exit_code,
+        )
+
+    @property
+    def environments_entered(self) -> tuple[EnvironmentIdentifier, ...]:
+        """Returns an immutable list of the identifiers for Environments
+        that have been entered, in the order that that have been entered.
+        """
+        return tuple(self._environments_entered)
+
+    # =========================
+    #  Running Actions
+
+    def cancel_action(self, *, time_limit: Optional[timedelta] = None) -> None:
+        """Initiate a cancelation of the currently running Script if there is one.
+
+        Arguments:
+            time_limit (Optional[timedelta]): If provided, then the cancel must be completed within
+                the given number of seconds. This overrides the current action's cancelation method
+                and is intended for urgent cancels (e.g. in response to the controlling process
+                getting a SIGTERM). Note: a value of 0 turns a notify-then-terminate cancel into a
+                terminate
+
+        Raises:
+            RuntimeError: When there is no Script running.
+        """
+        if self.state != SessionState.RUNNING:
+            raise RuntimeError("No actions are running")
+        # For the type checker
+        assert self._runner is not None
+
+        self._runner.cancel(time_limit=time_limit)
+
+    def enter_environment(
+        self,
+        *,
+        environment: EnvironmentModel,
+        identifier: Optional[EnvironmentIdentifier] = None,
+    ) -> EnvironmentIdentifier:
+        """Enters an Open Job Description Environment within this Session.
+        This method is non-blocking; it will exit when the subprocess is either confirmed to have
+        started running, or has failed to be started.
+
+        Arguments:
+            environment (EnvironmentScriptModel): An Environment Script from a supported
+                Open Job Description schema version. This Script should not have any of its Format Strings
+                evaluated before hand.
+            identifier (Optional[EnvironmentIdentifier]): If provided then this is the identifier
+                that the Environment will be known by to this Session.
+                Default: An identifier is randomly generated.
+
+        Returns:
+            EnvironmentIdentifier: An identifier by which the Environment is known by to this Session.
+                Pass this identifier to exit_environment() when exiting this Environment.
+        """
+        if self.state != SessionState.READY:
+            raise RuntimeError("Session must be in the READY state to enter an Environment.")
+        if identifier is not None and identifier in self._environments:
+            raise RuntimeError(
+                f"Environment {identifier} has already been entered in this Session."
+            )
+
+        self._reset_action_state()
+
+        if identifier is None:
+            identifier = f"{self._session_id}:{uuid.uuid4().hex}"
+
+        self._environments[identifier] = environment
+        self._environments_entered.append(identifier)
+        self._running_environment_identifier = identifier
+
+        symtab = self._symbol_table(environment.version)
+
+        if environment.variables is not None:
+            # We must process the current environment's variables
+            # before we call _evaluate_current_session_env_vars()
+            # otherwise, we will end up running onEnter without
+            # the environment variables of the current environment
+            # being set.
+            resolved_variables = self._resolve_env_variable_format_strings(
+                symtab, environment.variables
+            )
+            env_var_changes = SimplifiedEnvironmentVariableChanges(resolved_variables)
+            self._created_env_vars[identifier] = env_var_changes
+        else:
+            # Running the environment may define environment variable
+            # mutations via its stdout. We create an empty env changes
+            # object to capture these.
+            self._created_env_vars[identifier] = SimplifiedEnvironmentVariableChanges(
+                dict[str, str]()
+            )
+
+        # Must be called _after_ we append to _environments_entered
+        os_env_vars = self._evaluate_current_session_env_vars()
+
+        self._materialize_path_mapping(environment.version, os_env_vars, symtab)
+
+        # Sets the subprocess running.
+        # Returns immediately after it has started, or is running
+        self._action_state = ActionState.RUNNING
+        self._state = SessionState.RUNNING
+        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
+        # so it's important to set the action_state to RUNNING before calling enter(), rather
+        # than after -- enter() itself may end up setting the action state to FAILED.
+
+        self._runner = EnvironmentScriptRunner(
+            logger=self._logger,
+            user=self._user,
+            os_env_vars=os_env_vars,
+            session_working_directory=self.working_directory,
+            startup_directory=self.working_directory,
+            callback=self._action_callback,
+            environment_script=environment.script,
+            symtab=symtab,
+            session_files_directory=self.files_directory,
+        )
+        self._runner.enter()
+
+        return identifier
+
+    def exit_environment(self, *, identifier: EnvironmentIdentifier) -> None:
+        """Exits an Open Job Description Environment from this Session.
+        This method is non-blocking; it will exit when the subprocess is either confirmed to have
+        started running, or has failed to be started.
+
+        Note that Environments *MUST* be exited in the opposite order in which they were entered.
+        It is an error to do otherwise.
+
+        Arguments:
+            identifier (EnvironmentIdentifier): The identifier of the previously entered
+                Environment to exit.
+
+        Raises:
+            ValueError - If the given identifier is not that of the next one that must be exited.
+        """
+        if self.state != SessionState.READY and self.state != SessionState.READY_ENDING:
+            raise RuntimeError(
+                "Session must be in the READY or READY_ENDING state to exit an Environment."
+            )
+        if identifier not in self._environments:
+            raise RuntimeError(f"Cannot exit unknown Environment with identifier {identifier}")
+        if self._environments_entered[-1] != identifier:
+            raise RuntimeError(
+                f"Cannot exit Environment {identifier}. Must exit Environment {self._environments_entered[-1]} first."
+            )
+
+        self._reset_action_state()
+
+        # Once we've started exiting environments, then we can only exit environments.
+        self._ending_only = True
+
+        environment = self._environments[identifier]
+
+        # Must be run _before_ we pop _environments_entered
+        os_env_vars = self._evaluate_current_session_env_vars()
+
+        # Remove the environment from our tracking since we're now exiting it.
+        del self._environments[identifier]
+        self._environments_entered.pop()
+
+        self._running_environment_identifier = identifier
+
+        symtab = self._symbol_table(environment.version)
+        self._materialize_path_mapping(environment.version, os_env_vars, symtab)
+        # Sets the subprocess running.
+        # Returns immediately after it has started, or is running
+        self._action_state = ActionState.RUNNING
+        self._state = SessionState.RUNNING
+        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
+        # so it's important to set the action_state to RUNNING before calling exit(), rather
+        # than after -- exit() itself may end up setting the action state to FAILED.
+
+        self._runner = EnvironmentScriptRunner(
+            logger=self._logger,
+            user=self._user,
+            os_env_vars=os_env_vars,
+            session_working_directory=self.working_directory,
+            startup_directory=self.working_directory,
+            callback=self._action_callback,
+            environment_script=environment.script,
+            symtab=symtab,
+            session_files_directory=self.files_directory,
+        )
+        self._runner.exit()
+
+    def run_task(
+        self,
+        *,
+        step_script: StepScriptModel,
+        task_parameter_values: list[Parameter],
+    ) -> None:
+        """Run a Task within the Session.
+        This method is non-blocking; it will exit when the subprocess is either confirmed to have
+        started running, or has failed to be started.
+
+        Arguments:
+            step_script (StepScriptModel): The Step Script that the Task will be running.
+            task_parameter_values (list[Parameter]): Values of the Task parameters that define the
+                specific Task.
+        """
+        if self.state != SessionState.READY:
+            raise RuntimeError("Session must be in the READY state to run a task.")
+
+        self._reset_action_state()
+        symtab = self._symbol_table(step_script.version, task_parameter_values)
+        os_env_vars = self._evaluate_current_session_env_vars()
+        self._materialize_path_mapping(step_script.version, os_env_vars, symtab)
+        self._runner = StepScriptRunner(
+            logger=self._logger,
+            user=self._user,
+            os_env_vars=os_env_vars,
+            session_working_directory=self.working_directory,
+            startup_directory=self.working_directory,
+            callback=self._action_callback,
+            script=step_script,
+            symtab=symtab,
+            session_files_directory=self.files_directory,
+        )
+        # Sets the subprocess running.
+        # Returns immediately after it has started, or is running
+        self._action_state = ActionState.RUNNING
+        self._state = SessionState.RUNNING
+        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
+        # so it's important to set the action_state to RUNNING before calling run(), rather
+        # than after -- run() itself may end up setting the action state to FAILED.
+        self._runner.run()
+
+    # =========================
+    #  Helpers
+
+    def _reset_action_state(self) -> None:
+        """Reset the internal action state.
+        This resets to a state equivalent to having nothing running.
+        """
+        self._action_state = None
+        self._action_progress = None
+        self._action_status_message = None
+        self._action_fail_message = None
+        self._action_exit_code = None
+        self._running_environment_identifier = None
+        if self._runner:
+            self._runner.shutdown()
+            self._runner = None
+
+    def _symbol_table(
+        self, version: SchemaVersion, task_parameter_values: Optional[list[Parameter]] = None
+    ) -> SymbolTable:
+        """Construct a SymbolTable, with fully qualified value names, suitable for running a Script."""
+
+        def processed_parameter_value(param: Parameter, value: str) -> str:
+            if param.type == ParameterType.PATH and self._path_mapping_rules is not None:
+                # Apply path mapping rules in the order given until one does a replacement
+                for rule in self._path_mapping_rules:
+                    changed, result = rule.apply(path=value)
+                    if changed:
+                        return result
+            return value
+
+        if version == SchemaVersion.v2023_09:
+            symtab = SymbolTable()
+            symtab[ValueReferenceConstants_2023_09.WORKING_DIRECTORY.value] = str(
+                self.working_directory
+            )
+            for param in self._job_parameter_values:
+                symtab[
+                    f"{ValueReferenceConstants_2023_09.JOB_PARAMETER_RAWPREFIX.value}.{param.name}"
+                ] = param.value
+                symtab[
+                    f"{ValueReferenceConstants_2023_09.JOB_PARAMETER_PREFIX.value}.{param.name}"
+                ] = processed_parameter_value(param, param.value)
+            if task_parameter_values:
+                for param in task_parameter_values:
+                    symtab[
+                        f"{ValueReferenceConstants_2023_09.TASK_PARAMETER_RAWPREFIX.value}.{param.name}"
+                    ] = param.value
+                    symtab[
+                        f"{ValueReferenceConstants_2023_09.TASK_PARAMETER_PREFIX.value}.{param.name}"
+                    ] = processed_parameter_value(param, param.value)
+            return symtab
+        else:
+            raise NotImplementedError(f"Schema version {str(version.value)} is not supported.")
+
+    @staticmethod
+    def _openjd_session_root_dir() -> Path:
+        """
+        Returns (and creates if necessary) the top-level directory where Open Job Description step session
+        directories are kept
+        """
+        tempdir = Path(gettempdir()) / "openjd"
+
+        # Note: If this doesn't have group permissions, then we will be unable to access files
+        #  under this directory if the default group of the current user is the group that
+        #  is shared with a job user. The group permissions override the world permissions
+        #  when the accessor is in the group.
+        # 0o755
+        mode = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+        tempdir.mkdir(exist_ok=True, mode=mode)
+        # tempdir might already exist with the incorrect permissions, so set the permissions.
+        os.chmod(tempdir, mode=mode)
+        return tempdir
+
+    def _create_working_directory(self) -> TempDir:
+        """Creates and returns the temporary working directory for this Session"""
+        if os_name == "posix":
+            tmpdir = gettempdir()
+            tmpdir_stat = os_stat(tmpdir)
+            # Check the sticky bit. If it's not set on the tmpdir, then
+            # the system has an insecure setup for multiuser systems.
+            if (tmpdir_stat.st_mode & stat.S_ISVTX) == 0:
+                # Note There is a nuanced security risks to putting the session directory in a world-writable parent
+                # directory. Normally, users with write permissions to a directory can delete files/directories within
+                # that directory and this is a problem for world-writable dirs like /tmp. Linux distros typically
+                # default to the system temp dir having the sticky bit set which restricts deletion of files/dirs in
+                # world-writable dirs to only the owning user or a privileged/root user. Not all distros may respect this,
+                # or system administrators may unset the sticky bit.
+                self._logger.warning(
+                    f"Sticky bit is not set on {tmpdir}. This may pose a risk when running work on this host as users may modify or delete files in this directory which do not belong to them."
+                )
+
+        root_dir = self._openjd_session_root_dir()
+        # Raises: RuntimeError
+        return TempDir(dir=root_dir, prefix=self._session_id, user=self._user)
+
+    def _create_files_directory(self) -> TempDir:
+        """Creates the subdirectory of the working directory in which we'll materialize
+        any embedded files from the Job Template."""
+        # Raises: RuntimeError
+        return TempDir(dir=self.working_directory, prefix="embedded_files", user=self._user)
+
+    def _materialize_path_mapping(
+        self, version: SchemaVersion, os_env: dict[str, Optional[str]], symtab: SymbolTable
+    ) -> None:
+        """Materialize path mapping rules to disk and the os environment variables."""
+        if self._path_mapping_rules:
+            rules_dict = {
+                "path_mapping_rules": [
+                    {
+                        "source_os": rule.source_os.value,
+                        "source_path": str(rule.source_path),
+                        "destination_path": str(rule.destination_path),
+                    }
+                    for rule in self._path_mapping_rules
+                ]
+            }
+            symtab[ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value] = "true"
+        else:
+            rules_dict = dict()
+            symtab[ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value] = "false"
+        rules_json = json.dumps(rules_dict)
+        # TODO - Remove this environment variable before the formal release of the lib/spec.
+        #  Reason: This is an interim workaround for functionality that was missing.
+        os_env["PATH_MAPPING_RULES"] = rules_json
+        # TODO /stop
+        file_handle, filename = mkstemp(dir=self.working_directory, suffix=".json", text=True)
+        os.close(file_handle)
+        write_file_for_user(Path(filename), rules_json, self._user)
+        symtab[ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value] = str(filename)
+
+    def _resolve_env_variable_format_strings(
+        self, symtab: SymbolTable, variables: "EnvironmentVariableObject"
+    ) -> dict[str, str]:
+        """When definining an environment variable via an Environment entity's "variables" declaration,
+        the values of those variables are format strings that must be evaluated. Do that, and return the
+        result.
+        """
+        result = dict()
+        for name, value in variables.items():
+            result[name] = value.resolve(symtab=symtab)
+
+        return result
+
+    def _action_log_filter_callback(self, kind: ActionMessageKind, value: Any) -> None:
+        """This callback is invoked by the ActionMonitoringFilter that we've attached to the LOG.
+        This will be called whenever an "openjd" message is detected in the log stream.
+        This will be invoked by the main thread in LoggingSubprocess that is forwarding
+        all stdout/stderr to the logs. Delays here delay that main loop from processing
+        output.
+        """
+        if kind == ActionMessageKind.PROGRESS:
+            # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+            assert isinstance(value, float)
+            self._action_progress = value
+        elif kind == ActionMessageKind.STATUS:
+            # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+            assert isinstance(value, str)
+            self._action_status_message = value
+        elif kind == ActionMessageKind.FAIL:
+            # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+            assert isinstance(value, str)
+            self._action_fail_message = value
+        elif kind == ActionMessageKind.ENV:
+            if self._running_environment_identifier is None:
+                # Ignore the message if we're not running an environment
+                return
+            # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+            assert isinstance(value, dict)
+            # value = { "name": <name>, "value": <value> }
+            env_vars = self._created_env_vars[self._running_environment_identifier]
+            env_vars.simplify_ordered_changes(
+                changes=[EnvironmentVariableSetChange(name=value["name"], value=value["value"])]
+            )
+            return
+        else:  # ActionMessageKind.UNSET_ENV
+            if self._running_environment_identifier is None:
+                # Ignore the message if we're not running an environment
+                return
+            # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+            assert isinstance(value, str)
+            env_vars = self._created_env_vars[self._running_environment_identifier]
+            env_vars.simplify_ordered_changes(changes=[EnvironmentVariableUnsetChange(name=value)])
+            return
+
+        if self._callback:
+            action_status = self.action_status
+            # for the type checker
+            assert action_status is not None
+            self._callback(self._session_id, action_status)
+
+    def _action_callback(self, state: ActionState) -> None:
+        """This callback is invoked:
+        1. When the Action process is successfully started, by the same thread that is running the
+           process (so, this holds up IO processing);
+        2. *After* the "run future" in ScriptRunnerBase has exited, by the same thread that was
+           running that "run future";
+        3. If we failed *before* actually running the Action (e.g. while trying to write embedded
+           files to disk) then this will be invoked by the same thread that called Session.environment_*()
+           or Session.run_task().
+
+        We can be certain that the process is no longer running when this is called.
+        """
+        # For the type checker
+        assert self._runner is not None
+
+        self._action_exit_code = self._runner.exit_code
+        self._action_state = state
+
+        if state != ActionState.RUNNING:
+            # Decide which between-action state to enter.
+            if self._ending_only or self._action_state != ActionState.SUCCESS:
+                # Sessions are "brittle". If there's a Task cancel or Failure then
+                # we can only exit the Session.
+                self._state = SessionState.READY_ENDING
+            else:
+                self._state = SessionState.READY
+
+        if self._callback:
+            action_status = self.action_status
+            # for the type checker
+            assert action_status is not None
+            self._callback(self._session_id, action_status)
+
+    def _evaluate_current_session_env_vars(self) -> dict[str, Optional[str]]:
+        """Get a dictionary representing the cummulative state of env vars set
+        and unset from the currently applied environments.
+        """
+        result = dict[str, Optional[str]](self._process_env)  # Make a copy
+        for identifier in self._environments_entered:
+            if identifier in self._created_env_vars:
+                self._created_env_vars[identifier].apply_to_environment(result)
+        return result
