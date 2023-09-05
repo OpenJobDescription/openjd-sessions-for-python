@@ -1,0 +1,80 @@
+dn: ou=People,dc=environment,dc=internal
+objectClass: organizationalUnit
+ou: People
+
+dn: ou=Groups,dc=environment,dc=internal
+objectClass: organizationalUnit
+ou: Groups
+
+dn: cn=hostuser,ou=Groups,dc=environment,dc=internal
+objectClass: posixGroup
+cn: hostuser
+gidNumber: 5000
+
+dn: cn=targetuser,ou=Groups,dc=environment,dc=internal
+objectClass: posixGroup
+cn: targetuser
+gidNumber: 5001
+
+dn: cn=disjointuser,ou=Groups,dc=environment,dc=internal
+objectClass: posixGroup
+cn: disjointuser
+gidNumber: 5002
+
+dn: cn=sharedgroup,ou=Groups,dc=environment,dc=internal
+objectClass: posixGroup
+cn: sharedgroup
+gidNumber: 5003
+
+dn: cn=disjointgroup,ou=Groups,dc=environment,dc=internal
+objectClass: posixGroup
+cn: disjointgroup
+gidNumber: 5004
+
+dn: uid=hostuser,ou=People,dc=environment,dc=internal
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: hostuser
+sn: hostuser
+givenName: hostuser
+cn: hostuser
+displayName: hostuser
+uidNumber: 10000
+gidNumber: 5000
+userPassword: password
+gecos: hostuser
+loginShell: /bin/bash
+homeDirectory: /home/hostuser
+
+dn: uid=targetuser,ou=People,dc=environment,dc=internal
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: targetuser
+sn: targetuser
+givenName: targetuser
+cn: targetuser
+displayName: targetuser
+uidNumber: 10001
+gidNumber: 5001
+userPassword: password
+gecos: targetuser
+loginShell: /bin/bash
+homeDirectory: /home/targetuser
+
+dn: uid=disjointuser,ou=People,dc=environment,dc=internal
+objectClass: inetOrgPerson
+objectClass: posixAccount
+objectClass: shadowAccount
+uid: disjointuser
+sn: disjointuser
+givenName: disjointuser
+cn: disjointuser
+displayName: disjointuser
+uidNumber: 10002
+gidNumber: 5002
+userPassword: password
+gecos: disjointuser
+loginShell: /bin/bash
+homeDirectory: /home/disjointuser
