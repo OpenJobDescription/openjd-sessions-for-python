@@ -39,7 +39,7 @@ from openjd.sessions import (
     ActionStatus,
     Parameter,
     ParameterType,
-    PathMappingOS,
+    PathFormat,
     PathMappingRule,
     Session,
     SessionState,
@@ -644,9 +644,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             # THEN
             assert session._runner is not None
             assert fix_foo_baz_environment.variables is not None
-            assert session._runner._os_env_vars == dict(
-                fix_foo_baz_environment.variables, **{"PATH_MAPPING_RULES": "{}"}
-            )
+            assert session._runner._os_env_vars == dict(fix_foo_baz_environment.variables)
 
 
 class TestSessionCancel:
@@ -1005,7 +1003,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
                 time.sleep(0.1)
             assert session.state == SessionState.READY
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables, **{"PATH_MAPPING_RULES": "{}"})
+            assert session._runner._os_env_vars == dict(variables)
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_enter_environment_with_resolved_variables(
@@ -1066,7 +1064,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
                 time.sleep(0.1)
 
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables2, **{"PATH_MAPPING_RULES": "{}"})
+            assert session._runner._os_env_vars == dict(variables2)
 
 
 class TestSessionExitEnvironment_2023_09:  # noqa: N801
@@ -1282,7 +1280,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.state == SessionState.READY_ENDING
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables, **{"PATH_MAPPING_RULES": "{}"})
+            assert session._runner._os_env_vars == dict(variables)
 
     def test_exit_two_environments_with_variables(self) -> None:
         # GIVEN
@@ -1313,7 +1311,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.state == SessionState.READY_ENDING
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables2, **{"PATH_MAPPING_RULES": "{}"})
+            assert session._runner._os_env_vars == dict(variables2)
 
             session.exit_environment(identifier=identifier1)
             # Wait for the process to exit
@@ -1323,7 +1321,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.state == SessionState.READY_ENDING
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables1, **{"PATH_MAPPING_RULES": "{}"})
+            assert session._runner._os_env_vars == dict(variables1)
 
 
 class TestPathMapping_v2023_09:  # noqa: N801
@@ -1337,20 +1335,21 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/home/user"),
                         destination_path=PurePosixPath("/mnt/share/user"),
                     ),
                 ],
                 json.dumps(
                     {
+                        "version": "pathmapping-1.0",
                         "path_mapping_rules": [
                             {
-                                "source_os": "POSIX",
+                                "source_path_format": "POSIX",
                                 "source_path": "/home/user",
                                 "destination_path": "/mnt/share/user",
                             }
-                        ]
+                        ],
                     }
                 ),
                 id="single posix",
@@ -1358,20 +1357,21 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.WINDOWS,
+                        source_path_format=PathFormat.WINDOWS,
                         source_path=PureWindowsPath(r"c:\Users\user"),
                         destination_path=PurePosixPath("/mnt/share/user"),
                     ),
                 ],
                 json.dumps(
                     {
+                        "version": "pathmapping-1.0",
                         "path_mapping_rules": [
                             {
-                                "source_os": "WINDOWS",
+                                "source_path_format": "WINDOWS",
                                 "source_path": r"c:\Users\user",
                                 "destination_path": "/mnt/share/user",
                             }
-                        ]
+                        ],
                     }
                 ),
                 id="single windows",
@@ -1379,30 +1379,31 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/home/user"),
                         destination_path=PurePosixPath("/mnt/share/user"),
                     ),
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/home/user2"),
                         destination_path=PurePosixPath("/mnt/share/user2"),
                     ),
                 ],
                 json.dumps(
                     {
+                        "version": "pathmapping-1.0",
                         "path_mapping_rules": [
                             {
-                                "source_os": "POSIX",
+                                "source_path_format": "POSIX",
                                 "source_path": "/home/user",
                                 "destination_path": "/mnt/share/user",
                             },
                             {
-                                "source_os": "POSIX",
+                                "source_path_format": "POSIX",
                                 "source_path": "/home/user2",
                                 "destination_path": "/mnt/share/user2",
                             },
-                        ]
+                        ],
                     }
                 ),
                 id="multiple posix",
@@ -1410,30 +1411,31 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.WINDOWS,
+                        source_path_format=PathFormat.WINDOWS,
                         source_path=PureWindowsPath(r"c:\Users\user"),
                         destination_path=PurePosixPath("/mnt/share/user"),
                     ),
                     PathMappingRule(
-                        source_os=PathMappingOS.WINDOWS,
+                        source_path_format=PathFormat.WINDOWS,
                         source_path=PureWindowsPath(r"c:\Users\user2"),
                         destination_path=PurePosixPath("/mnt/share/user2"),
                     ),
                 ],
                 json.dumps(
                     {
+                        "version": "pathmapping-1.0",
                         "path_mapping_rules": [
                             {
-                                "source_os": "WINDOWS",
+                                "source_path_format": "WINDOWS",
                                 "source_path": r"c:\Users\user",
                                 "destination_path": "/mnt/share/user",
                             },
                             {
-                                "source_os": "WINDOWS",
+                                "source_path_format": "WINDOWS",
                                 "source_path": r"c:\Users\user2",
                                 "destination_path": "/mnt/share/user2",
                             },
-                        ]
+                        ],
                     }
                 ),
                 id="multiple windows",
@@ -1456,8 +1458,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
             session._materialize_path_mapping(SchemaVersion.v2023_09, env_vars, symtab)
 
             # THEN
-            assert "PATH_MAPPING_RULES" in env_vars
-            assert env_vars["PATH_MAPPING_RULES"] == expected_json
             assert symtab["Session.HasPathMappingRules"] == ("true" if rules else "false")
             assert "Session.PathMappingRulesFile" in symtab
             filename = symtab["Session.PathMappingRulesFile"]
@@ -1484,7 +1484,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 EmbeddedFileText_2023_09(
                     name="Script",
                     type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="import os; print('Has: {{Session.HasPathMappingRules}}'); print('Has Env:', 'yes' if os.environ.get('PATH_MAPPING_RULES') else 'no')",
+                    data="import os; print('Has: {{Session.HasPathMappingRules}}')",
                 )
             ],
         )
@@ -1493,7 +1493,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
         task_params = list[Parameter]()
         path_mapping_rules = [
             PathMappingRule(
-                source_os=PathMappingOS.POSIX,
+                source_path_format=PathFormat.POSIX,
                 source_path=PurePosixPath("/home/user"),
                 destination_path=PurePosixPath("/mnt/share/user"),
             ),
@@ -1510,7 +1510,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
 
             # THEN
             assert "Has: true" in caplog.messages
-            assert "Has Env: yes" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_enter_environment(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -1531,7 +1530,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
                     EmbeddedFileText_2023_09(
                         name="Script",
                         type=EmbeddedFileTypes_2023_09.TEXT,
-                        data="import os; print('Has: {{Session.HasPathMappingRules}}'); print('Has Env:', 'yes' if os.environ.get('PATH_MAPPING_RULES') else 'no')",
+                        data="import os; print('Has: {{Session.HasPathMappingRules}}')",
                     )
                 ],
             )
@@ -1540,7 +1539,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
         job_params = list[Parameter]()
         path_mapping_rules = [
             PathMappingRule(
-                source_os=PathMappingOS.POSIX,
+                source_path_format=PathFormat.POSIX,
                 source_path=PurePosixPath("/home/user"),
                 destination_path=PurePosixPath("/mnt/share/user"),
             ),
@@ -1557,7 +1556,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
 
             # THEN
             assert "Has: true" in caplog.messages
-            assert "Has Env: yes" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_exit_environment(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -1578,7 +1576,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
                     EmbeddedFileText_2023_09(
                         name="Script",
                         type=EmbeddedFileTypes_2023_09.TEXT,
-                        data="import os; print('Has: {{Session.HasPathMappingRules}}'); print('Has Env:', 'yes' if os.environ.get('PATH_MAPPING_RULES') else 'no')",
+                        data="import os; print('Has: {{Session.HasPathMappingRules}}')",
                     )
                 ],
             )
@@ -1587,7 +1585,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
         job_params = list[Parameter]()
         path_mapping_rules = [
             PathMappingRule(
-                source_os=PathMappingOS.POSIX,
+                source_path_format=PathFormat.POSIX,
                 source_path=PurePosixPath("/home/user"),
                 destination_path=PurePosixPath("/mnt/share/user"),
             ),
@@ -1606,58 +1604,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
 
             # THEN
             assert "Has: true" in caplog.messages
-            assert "Has Env: yes" in caplog.messages
-
-    @pytest.mark.skipif(os.name != "posix", reason="Posix-only test.")
-    @pytest.mark.xfail(
-        not has_posix_target_user(),
-        reason="Must be running inside of the sudo_environment testing container.",
-    )
-    @pytest.mark.usefixtures("caplog", "posix_target_user")  # builtin fixture
-    def test_cross_user(
-        self, caplog: pytest.LogCaptureFixture, posix_target_user: PosixSessionUser
-    ) -> None:
-        # Test a cross-user run-task just to make sure that the path mapping environment variable
-        # passes through in the correct format.
-
-        # GIVEN
-        # A script that just prints out some messages indicating that we got the
-        # expected data.
-        script = StepScript_2023_09(
-            actions=StepActions_2023_09(
-                onRun=Action_2023_09(command=sys.executable, args=["{{ Task.File.Script }}"])
-            ),
-            embeddedFiles=[
-                EmbeddedFileText_2023_09(
-                    name="Script",
-                    type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="import os; import json; json.loads(os.environ['PATH_MAPPING_RULES']); print('Success')",
-                )
-            ],
-        )
-        session_id = "some id"
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
-        path_mapping_rules = [
-            PathMappingRule(
-                source_os=PathMappingOS.POSIX,
-                source_path=PurePosixPath("/home/user"),
-                destination_path=PurePosixPath("/mnt/share/user"),
-            ),
-        ]
-        with Session(
-            session_id=session_id,
-            job_parameter_values=job_params,
-            path_mapping_rules=path_mapping_rules,
-            user=posix_target_user,
-        ) as session:
-            # WHEN
-            session.run_task(step_script=script, task_parameter_values=task_params)
-            while session.state == SessionState.RUNNING:
-                time.sleep(0.1)
-
-            # THEN
-            assert "Success" in caplog.messages
 
     @pytest.mark.parametrize(
         "rules, given, expected",
@@ -1665,7 +1611,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt"),
                         destination_path=PurePosixPath("/home"),
                     )
@@ -1677,12 +1623,12 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt"),
                         destination_path=PurePosixPath("/home"),
                     ),
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt/share"),
                         destination_path=PurePosixPath("/share"),
                     ),
@@ -1694,12 +1640,12 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt/share"),
                         destination_path=PurePosixPath("/share"),
                     ),
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt"),
                         destination_path=PurePosixPath("/home"),
                     ),
@@ -1711,12 +1657,12 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt/share"),
                         destination_path=PurePosixPath("/mnt"),
                     ),
                     PathMappingRule(
-                        source_os=PathMappingOS.POSIX,
+                        source_path_format=PathFormat.POSIX,
                         source_path=PurePosixPath("/mnt"),
                         destination_path=PurePosixPath("/home"),
                     ),
@@ -1728,7 +1674,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             pytest.param(
                 [
                     PathMappingRule(
-                        source_os=PathMappingOS.WINDOWS,
+                        source_path_format=PathFormat.WINDOWS,
                         source_path=PureWindowsPath(r"D:\Assets"),
                         destination_path=PurePosixPath("/tmp/openjd"),
                     ),

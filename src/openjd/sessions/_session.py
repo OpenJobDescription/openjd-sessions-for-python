@@ -777,24 +777,21 @@ class Session(object):
         """Materialize path mapping rules to disk and the os environment variables."""
         if self._path_mapping_rules:
             rules_dict = {
+                "version": "pathmapping-1.0",
                 "path_mapping_rules": [
                     {
-                        "source_os": rule.source_os.value,
+                        "source_path_format": rule.source_path_format.value,
                         "source_path": str(rule.source_path),
                         "destination_path": str(rule.destination_path),
                     }
                     for rule in self._path_mapping_rules
-                ]
+                ],
             }
             symtab[ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value] = "true"
         else:
             rules_dict = dict()
             symtab[ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value] = "false"
         rules_json = json.dumps(rules_dict)
-        # TODO - Remove this environment variable before the formal release of the lib/spec.
-        #  Reason: This is an interim workaround for functionality that was missing.
-        os_env["PATH_MAPPING_RULES"] = rules_json
-        # TODO /stop
         file_handle, filename = mkstemp(dir=self.working_directory, suffix=".json", text=True)
         os.close(file_handle)
         write_file_for_user(Path(filename), rules_json, self._user)
