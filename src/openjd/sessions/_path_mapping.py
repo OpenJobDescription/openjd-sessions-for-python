@@ -6,29 +6,33 @@ from os import name as os_name
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
 
 
-class PathMappingOS(str, Enum):
+class PathFormat(str, Enum):
     POSIX = "POSIX"
     WINDOWS = "WINDOWS"
 
 
 @dataclass(frozen=True)
 class PathMappingRule:
-    source_os: PathMappingOS
+    source_path_format: PathFormat
     source_path: PurePath
     destination_path: PurePath
 
     def __init__(
-        self, *, source_os: PathMappingOS, source_path: PurePath, destination_path: PurePath
+        self, *, source_path_format: PathFormat, source_path: PurePath, destination_path: PurePath
     ):
-        if source_os == PathMappingOS.POSIX:
+        if source_path_format == PathFormat.POSIX:
             if not isinstance(source_path, PurePosixPath):
-                raise ValueError("Path mapping rule source_os does not match source_path type")
+                raise ValueError(
+                    "Path mapping rule source_path_format does not match source_path type"
+                )
         else:
             if not isinstance(source_path, PureWindowsPath):
-                raise ValueError("Path mapping rule source_os does not match source_path type")
+                raise ValueError(
+                    "Path mapping rule source_path_format does not match source_path type"
+                )
 
         # This roundabout way can set the attributes of a frozen dataclass
-        object.__setattr__(self, "source_os", source_os)
+        object.__setattr__(self, "source_path_format", source_path_format)
         object.__setattr__(self, "source_path", source_path)
         object.__setattr__(self, "destination_path", destination_path)
 
@@ -44,9 +48,9 @@ class PathMappingRule:
             if name not in rule:
                 raise ValueError(f"Path mapping rule requires the following fields: {field_names}")
 
-        source_os = PathMappingOS(rule["source_os"].upper())
+        source_path_format = PathFormat(rule["source_path_format"].upper())
         source_path: PurePath
-        if source_os == PathMappingOS.POSIX:
+        if source_path_format == PathFormat.POSIX:
             source_path = PurePosixPath(rule["source_path"])
         else:
             source_path = PureWindowsPath(rule["source_path"])
@@ -59,13 +63,15 @@ class PathMappingRule:
             )
 
         return PathMappingRule(
-            source_os=source_os, source_path=source_path, destination_path=destination_path
+            source_path_format=source_path_format,
+            source_path=source_path,
+            destination_path=destination_path,
         )
 
     def to_dict(self) -> dict[str, str]:
         """Returns a dictionary representation of the PathMappingRule."""
         return {
-            "source_os": self.source_os.name,
+            "source_path_format": self.source_path_format.name,
             "source_path": str(self.source_path),
             "destination_path": str(self.destination_path),
         }
@@ -78,7 +84,7 @@ class PathMappingRule:
         mapped path. If it doesn't match, then it returns the original path unmodified.
         """
         pure_path: PurePath
-        if self.source_os == PathMappingOS.POSIX:
+        if self.source_path_format == PathFormat.POSIX:
             pure_path = PurePosixPath(path)
         else:
             pure_path = PureWindowsPath(path)
@@ -91,17 +97,17 @@ class PathMappingRule:
         )
         if os_name == "posix":
             result = str(PurePosixPath(*remapped_parts))
-            if self._has_trailing_slash(self.source_os, path):
+            if self._has_trailing_slash(self.source_path_format, path):
                 result += "/"
         else:
             result = str(PureWindowsPath(*remapped_parts))
-            if self._has_trailing_slash(self.source_os, path):
+            if self._has_trailing_slash(self.source_path_format, path):
                 result += "\\"
 
         return True, result
 
-    def _has_trailing_slash(self, os: PathMappingOS, path: str) -> bool:
-        if os == PathMappingOS.POSIX:
+    def _has_trailing_slash(self, os: PathFormat, path: str) -> bool:
+        if os == PathFormat.POSIX:
             return path.endswith("/")
         else:
             return path.endswith("\\")

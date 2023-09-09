@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from openjd.sessions import PathMappingOS, PathMappingRule
+from openjd.sessions import PathFormat, PathMappingRule
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
 
 
@@ -21,7 +21,7 @@ class TestPathMapping:
         [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.POSIX,
+                    source_path_format=PathFormat.POSIX,
                     source_path=PurePosixPath("/mnt/shared/"),
                     destination_path=PurePosixPath("/newprefix"),
                 ),
@@ -52,7 +52,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.POSIX,
+                    source_path_format=PathFormat.POSIX,
                     source_path=PurePosixPath("/mnt/shared/"),
                     destination_path=PureWindowsPath("c:\\newprefix"),
                 ),
@@ -91,7 +91,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("c:\\mnt\\shared\\"),
                     destination_path=PurePosixPath("/newprefix"),
                 ),
@@ -130,7 +130,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("c:\\mnt\\shared\\"),
                     destination_path=PureWindowsPath("c:\\newprefix"),
                 ),
@@ -173,7 +173,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("\\\\128.0.0.1\\share\\assets"),
                     destination_path=PureWindowsPath("z:\\assets"),
                 ),
@@ -198,7 +198,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("z:\\assets"),
                     destination_path=PureWindowsPath("\\\\128.0.0.1\\share\\assets"),
                 ),
@@ -223,7 +223,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("\\\\.\\c:\\assets"),
                     destination_path=PureWindowsPath("z:\\assets"),
                 ),
@@ -248,7 +248,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("z:\\assets"),
                     destination_path=PureWindowsPath("\\\\.\\c:\\assets"),
                 ),
@@ -273,7 +273,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("\\\\?\\c:\\assets"),
                     destination_path=PureWindowsPath("z:\\assets"),
                 ),
@@ -298,7 +298,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("z:\\assets"),
                     destination_path=PureWindowsPath("\\\\?\\c:\\assets"),
                 ),
@@ -323,7 +323,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath(
                         "\\\\?\\Volume{b75e2c83-0000-0000-0000-602f12345678}\\assets"
                     ),
@@ -350,7 +350,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("z:\\assets"),
                     destination_path=PureWindowsPath(
                         "\\\\?\\Volume{b75e2c83-0000-0000-0000-602f12345678}\\assets"
@@ -393,7 +393,7 @@ class TestPathMapping:
         [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.POSIX,
+                    source_path_format=PathFormat.POSIX,
                     source_path=PurePosixPath("/mnt/shared"),
                     destination_path=PureWindowsPath("c:\\newprefix"),
                 ),
@@ -409,7 +409,7 @@ class TestPathMapping:
         + [
             pytest.param(
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("c:\\mnt\\shared\\"),
                     destination_path=PureWindowsPath("c:\\newprefix"),
                 ),
@@ -437,18 +437,18 @@ class TestPathMapping:
         "rule_params",
         [
             {
-                "source_os": PathMappingOS.WINDOWS,
+                "source_path_format": PathFormat.WINDOWS,
                 "source_path": PurePosixPath("C:\\oldprefix"),
                 "destination_path": PureWindowsPath("c:\\newprefix"),
             },
             {
-                "source_os": PathMappingOS.POSIX,
+                "source_path_format": PathFormat.POSIX,
                 "source_path": PureWindowsPath("/mnt/oldprefix"),
                 "destination_path": PureWindowsPath("c:\\newprefix"),
             },
         ],
     )
-    def test_mismatching_source_os_path(self, rule_params):
+    def test_mismatching_source_path_format_path(self, rule_params):
         with pytest.raises(ValueError):
             PathMappingRule(**rule_params)
 
@@ -457,48 +457,48 @@ class TestPathMapping:
         [
             (
                 {
-                    "source_os": "WINDOWS",
+                    "source_path_format": "WINDOWS",
                     "source_path": "C:\\oldprefix",
                     "destination_path": "c:\\newprefix",
                 },
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("C:\\oldprefix"),
                     destination_path=PurePath("c:\\newprefix"),
                 ),
             ),
             (
                 {
-                    "source_os": "POSIX",
+                    "source_path_format": "POSIX",
                     "source_path": "/mnt/oldprefix",
                     "destination_path": "c:\\newprefix",
                 },
                 PathMappingRule(
-                    source_os=PathMappingOS.POSIX,
+                    source_path_format=PathFormat.POSIX,
                     source_path=PurePosixPath("/mnt/oldprefix"),
                     destination_path=PurePath("c:\\newprefix"),
                 ),
             ),
             (
                 {
-                    "source_os": "windows",
+                    "source_path_format": "windows",
                     "source_path": "C:\\oldprefix",
                     "destination_path": "c:\\newprefix",
                 },
                 PathMappingRule(
-                    source_os=PathMappingOS.WINDOWS,
+                    source_path_format=PathFormat.WINDOWS,
                     source_path=PureWindowsPath("C:\\oldprefix"),
                     destination_path=PurePath("c:\\newprefix"),
                 ),
             ),
             (
                 {
-                    "source_os": "posix",
+                    "source_path_format": "posix",
                     "source_path": "/mnt/oldprefix",
                     "destination_path": "c:\\newprefix",
                 },
                 PathMappingRule(
-                    source_os=PathMappingOS.POSIX,
+                    source_path_format=PathFormat.POSIX,
                     source_path=PurePosixPath("/mnt/oldprefix"),
                     destination_path=PurePath("c:\\newprefix"),
                 ),
@@ -514,17 +514,17 @@ class TestPathMapping:
         [
             (
                 {
-                    "source_os": "WINDOWS10",
+                    "source_path_format": "WINDOWS10",
                     "source_path": "C:\\oldprefix",
                     "destination_path": "c:\\newprefix",
                 }
             ),
             ({"source_path": "/mnt/oldprefix", "destination_path": "c:\\newprefix"}),
-            ({"source_os": "POSIX", "destination_path": "c:\\newprefix"}),
-            ({"source_os": "POSIX", "source_path": "/mnt/oldprefix"}),
+            ({"source_path_format": "POSIX", "destination_path": "c:\\newprefix"}),
+            ({"source_path_format": "POSIX", "source_path": "/mnt/oldprefix"}),
             (
                 {
-                    "source_os": "windows",
+                    "source_path_format": "windows",
                     "source_path": "C:\\oldprefix",
                     "destination_path": "c:\\newprefix",
                     "extra_field": "value",
