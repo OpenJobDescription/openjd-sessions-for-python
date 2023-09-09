@@ -2,6 +2,7 @@
 
 import os
 import shlex
+from getpass import getuser
 from threading import Event
 from logging import LoggerAdapter
 from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
@@ -195,11 +196,13 @@ class LoggingSubprocess(object):
             if self._user is not None:
                 if os.name == "posix":
                     user = cast(PosixSessionUser, self._user)
-                    # Note: setsid is required; else the running process will be in the
-                    # same process group as the `sudo` command. If that happens, then
-                    # we're stuck: 1/ Our user cannot kill processes by the self._user; and
-                    # 2/ The self._user cannot kill the root-owned sudo process group.
-                    command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
+                    # Only sudo if the user to run as is not the same as the current user.
+                    if user.user != getuser():
+                        # Note: setsid is required; else the running process will be in the
+                        # same process group as the `sudo` command. If that happens, then
+                        # we're stuck: 1/ Our user cannot kill processes by the self._user; and
+                        # 2/ The self._user cannot kill the root-owned sudo process group.
+                        command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
                 else:
                     raise NotImplementedError(
                         "Cross-user subprocesses not implemented on non-posix systems."
@@ -256,7 +259,9 @@ class LoggingSubprocess(object):
 
         if self._user is not None:
             user = cast(PosixSessionUser, self._user)
-            cmd.extend(["sudo", "-u", user.user, "-i"])
+            # Only sudo if the user to run as is not the same as the current user.
+            if user.user != getuser():
+                cmd.extend(["sudo", "-u", user.user, "-i"])
             signal_child = True
 
         cmd.extend(
