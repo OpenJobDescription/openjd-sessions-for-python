@@ -306,7 +306,9 @@ class Session(object):
             RuntimeError - If the Session initialization fails for any reason.
         """
         if os.name != "posix":
-            raise NotImplementedError("Open Job Description Sessions do not support non-posix systems yet.")
+            raise NotImplementedError(
+                "Open Job Description Sessions do not support non-posix systems yet."
+            )
 
         self._session_id = session_id
         self._ending_only = False

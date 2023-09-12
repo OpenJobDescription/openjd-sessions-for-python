@@ -10,7 +10,7 @@ license = "Apache-2.0"
 requires-python = ">=3.9"
 
 dependencies = [
-  "openjd-model >= 0.0.0"
+  "openjd-model == 0.1.*",
 ]
 
 [tool.hatch.build]
