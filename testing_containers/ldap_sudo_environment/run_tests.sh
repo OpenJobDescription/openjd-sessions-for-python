@@ -11,5 +11,5 @@ cd code
 python -m venv .venv
 source .venv/bin/activate
 pip install hatch
-# Use the codebuild env so that PIP_INDEX_URL isn't set in the hatch config files.
-hatch run codebuild:test
+# Use the container env so that PIP_INDEX_URL isn't set in the hatch config files.
+hatch run container:test
