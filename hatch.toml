@@ -31,3 +31,6 @@ build = "hatch build"
 
 [envs.codebuild.env-vars]
 PIP_INDEX_URL=""
+
+[envs.container.env-vars]
+

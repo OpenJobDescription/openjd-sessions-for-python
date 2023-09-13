@@ -373,7 +373,7 @@ class Session(object):
                     if os_name == "posix":
                         subprocess = LoggingSubprocess(
                             logger=self._logger,
-                            args=["rm", "-rf", str(self.working_directory)],
+                            args=["rm", "-rf", f"{str(self.working_directory)}/*"],
                             user=self._user,
                         )
                         # Note: Blocking call until the process has exited
