@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import os
+import getpass
 from concurrent.futures import ThreadPoolExecutor, wait
 from logging.handlers import QueueHandler
 from pathlib import Path
@@ -59,6 +60,38 @@ class TestLoggingSubprocessSameUser:
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert not subproc.is_running
+        assert subproc.pid is not None
+        assert subproc.exit_code == exitcode
+        assert not subproc.failed_to_start
+        assert message_queue.qsize() > 0
+        messages = collect_queue_messages(message_queue)
+        assert message in messages
+
+    @pytest.mark.parametrize("exitcode", [0, 1])
+    def test_basic_operation_with_sameuser(
+        self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
+    ) -> None:
+        # Can we run a process, capture its output, and discover its return code?
+
+        # GIVEN
+        current_user = getpass.getuser()
+        if os.name == "posix":
+            user = PosixSessionUser(user=current_user)
+        else:
+            raise NotImplementedError("Test not implemented on non-posix platforms yet")
+        logger = build_logger(queue_handler)
+        message = "this is output"
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            user=user,
         )
 
         # WHEN
