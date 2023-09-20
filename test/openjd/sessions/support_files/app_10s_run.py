@@ -24,6 +24,6 @@ else:
     signal.signal(signal.SIGTERM, hook)
 
 for i in range(0, 10):
-    print(i)
+    print(f"Log from test {str(i)}")
     sys.stdout.flush()
     time.sleep(1)

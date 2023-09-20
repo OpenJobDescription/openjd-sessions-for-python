@@ -73,7 +73,7 @@ class TempDir:
                 chown(self.path, group=user.group)
             except OSError as err:
                 raise RuntimeError(
-                    f"Could not change ownership of directory '{str(dir)}' (error: {str(err)}). Please ensure that uid {os.geteuid()} is a member of group {user.group}."
+                    f"Could not change ownership of directory '{str(dir)}' (error: {str(err)}). Please ensure that uid {os.geteuid()} is a member of group {user.group}."  # type: ignore
                 )
             # Update the permissions to include the group after the group is changed
             # Note: Only after changing group for security in case the group-ownership

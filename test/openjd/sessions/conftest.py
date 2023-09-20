@@ -10,6 +10,7 @@ from queue import Empty, SimpleQueue
 import pytest
 
 from openjd.sessions import PosixSessionUser
+from openjd.sessions._os_checker import is_posix
 
 
 def build_logger(handler: QueueHandler) -> LoggerAdapter:
@@ -58,6 +59,8 @@ def has_posix_disjoint_user() -> bool:
 
 @pytest.fixture(scope="function")
 def posix_target_user() -> PosixSessionUser:
+    if not is_posix():
+        pytest.skip("Posix-specific feature")
     # Intentionally fail if the var is not defined.
     user = os.environ["OPENJD_TEST_SUDO_TARGET_USER"]
     return PosixSessionUser(
@@ -69,6 +72,8 @@ def posix_target_user() -> PosixSessionUser:
 
 @pytest.fixture(scope="function")
 def posix_disjoint_user() -> PosixSessionUser:
+    if not is_posix():
+        pytest.skip("Posix-specific feature")
     # Intentionally fail if the var is not defined.
     user = os.environ["OPENJD_TEST_SUDO_DISJOINT_USER"]
     return PosixSessionUser(
@@ -86,3 +91,8 @@ def message_queue() -> SimpleQueue:
 @pytest.fixture(scope="function")
 def queue_handler(message_queue: SimpleQueue) -> QueueHandler:
     return QueueHandler(message_queue)
+
+
+@pytest.fixture(scope="function")
+def session_id() -> str:
+    return "some Id"

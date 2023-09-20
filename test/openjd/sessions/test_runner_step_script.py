@@ -53,7 +53,9 @@ class TestStepScriptRunner:
         # GIVEN
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
-                onRun=Action_2023_09(command="{{ Task.Command }}", args=["-c", "print('Hello')"])
+                onRun=Action_2023_09(
+                    command="{{ Task.Command }}", args=["-c", "print('\"Hello\"')"]
+                )
             )
         )
         symtab = SymbolTable(source={"Task.Command": sys.executable})
@@ -74,7 +76,7 @@ class TestStepScriptRunner:
         # THEN
         assert runner.state == ScriptRunnerState.SUCCESS
         messages = collect_queue_messages(message_queue)
-        assert "Hello" in messages
+        assert '"Hello"' in messages
 
     def test_run_with_files(
         self,

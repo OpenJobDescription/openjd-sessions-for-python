@@ -15,6 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session_user import PosixSessionUser
 from openjd.sessions._subprocess import LoggingSubprocess
 
@@ -56,7 +57,7 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        message = "this is output"
+        message = "this is 'output'"
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
@@ -74,6 +75,10 @@ class TestLoggingSubprocessSameUser:
         messages = collect_queue_messages(message_queue)
         assert message in messages
 
+    @pytest.mark.xfail(
+        is_windows(),
+        reason="Impersonation is not supported in Windows yet",
+    )
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation_with_sameuser(
         self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
@@ -112,10 +117,11 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
+        args = [tempfile.gettempdir()] if is_posix() else ["test_failed_command"]
         subproc = LoggingSubprocess(
             logger=logger,
             # The temp dir definitely isn't an executable application
-            args=[tempfile.gettempdir()],
+            args=args,
         )
 
         # WHEN
@@ -123,11 +129,24 @@ class TestLoggingSubprocessSameUser:
 
         # THEN
         assert not subproc.is_running
-        assert subproc.pid is None
-        assert subproc.exit_code is None
-        assert subproc.failed_to_start
         messages = collect_queue_messages(message_queue)
-        assert any(message.startswith("Process failed to start") for message in messages)
+        if is_posix():
+            assert subproc.pid is None
+            assert subproc.exit_code is None
+            assert subproc.failed_to_start
+            assert any(message.startswith("Process failed to start") for message in messages)
+        elif is_windows():
+            # We need to use powershell to run the command. Powershell will always run and return an exit code
+            assert subproc.pid is not None
+            assert subproc.exit_code is not None
+            assert subproc.exit_code != 0
+            assert any(
+                message.startswith(
+                    "Command not found: The term 'test_failed_command' "
+                    "is not recognized as the name of a cmdlet"
+                )
+                for message in messages
+            )
 
     def test_cannot_run_with_callback(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler
@@ -209,6 +228,10 @@ class TestLoggingSubprocessSameUser:
         # THEN
         callback_mock.assert_called_once()
 
+    @pytest.mark.skipif(
+        is_windows(),
+        reason="Windows is not supported notify and terminate mode",
+    )
     def test_notify_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler
     ) -> None:
@@ -240,9 +263,9 @@ class TestLoggingSubprocessSameUser:
         # We only print "Trapped" on posix, since we haven't implemented windows signals yet.
         assert sys.platform.startswith("win") or ("Trapped" in messages)
         # Check for the first message that would print
-        assert "0" in messages
+        assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
 
     def test_terminate_ends_process(
@@ -276,9 +299,9 @@ class TestLoggingSubprocessSameUser:
         # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
         assert "Trapped" not in messages
         # Check for the first message that would print
-        assert "0" in messages
+        assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
 
     @pytest.mark.xfail(
@@ -295,7 +318,11 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.sh").resolve()
+        if is_posix():
+            script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.sh").resolve()
+        else:
+            script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.ps1").resolve()
+
         subproc = LoggingSubprocess(
             logger=logger,
             args=[str(script_loc), sys.executable],
@@ -311,8 +338,10 @@ class TestLoggingSubprocessSameUser:
             subproc.wait_until_started()
             children = list[Process]()
             attempt = 0
+            # For Windows, we will have 2 python process 1 powershell process
+            expected_num_children = 3 if is_windows() else 1
             # Then give the subprocess some time to finish loading and start running some children.
-            while len(children) == 0 and attempt < 50:
+            while len(children) < expected_num_children and attempt < 50:
                 time.sleep(0.25)
                 children = Process(subproc.pid).children(recursive=True)
                 attempt += 1
@@ -324,11 +353,12 @@ class TestLoggingSubprocessSameUser:
         # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
         assert "Trapped" not in messages
         # Check for the first message that would print
-        assert "0" in messages
+        assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
-        assert len(children) == 1  # .sh script runs a .py script
+        assert len(children) == expected_num_children  # .sh/.ps1 script runs a .py script
+
         num_children_running = 0
         for _ in range(0, 50):
             time.sleep(0.25)  # Give the child process some time to end.
@@ -491,9 +521,9 @@ class TestLoggingSubprocessPosix(object):
         # We only print "Trapped" on posix, since we haven't implemented windows signals yet.
         assert sys.platform.startswith("win") or ("Trapped" in messages)
         # Check for the first message that would print
-        assert "0" in messages
+        assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
 
     @pytest.mark.usefixtures("posix_target_user")
@@ -533,9 +563,9 @@ class TestLoggingSubprocessPosix(object):
         # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
         assert "Trapped" not in messages
         # Check for the first message that would print
-        assert "0" in messages
+        assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
 
     @pytest.mark.usefixtures("posix_target_user")
@@ -580,9 +610,9 @@ class TestLoggingSubprocessPosix(object):
         # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
         assert "Trapped" not in messages
         # Check for the first message that would print
-        assert "0" in messages
+        assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
         assert len(children) == 2  # .sh & .py scripts parented under 'sudo'
         num_children_running = 0
