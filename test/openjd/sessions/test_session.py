@@ -144,7 +144,10 @@ class TestSessionInitialization:
         reason="Must be running inside of the sudo_environment testing container.",
     )
     @pytest.mark.usefixtures("posix_target_user")
-    def test_cleanup_posix_user(self, posix_target_user: PosixSessionUser) -> None:
+    @pytest.mark.usefixtures("caplog")  # built-in fixture
+    def test_cleanup_posix_user(
+        self, posix_target_user: PosixSessionUser, caplog: pytest.LogCaptureFixture
+    ) -> None:
         # Test of the functionality of a Session's cleanup when files may have been
         # written to the directory by a separate user
         # This should nuke the working directory and disconnect its handler from LOG
@@ -180,6 +183,7 @@ class TestSessionInitialization:
                 posix_target_user.user,
                 "-i",
                 "chown",
+                # Make sure that this process' user cannot delete subdir by changing its group.
                 # We're relying on the user running the test not being in the 'user' group of the target user
                 # This is how our testing Docker container is set up.
                 f"{posix_target_user.user}:{posix_target_user.user}",
@@ -246,6 +250,49 @@ class TestSessionInitialization:
             stdout=DEVNULL,
             stderr=DEVNULL,
         ).returncode
+        runresult |= run(
+            [
+                "sudo",
+                "-u",
+                posix_target_user.user,
+                "-i",
+                "touch",
+                str(working_dir / "file.test"),
+            ],
+            stdin=DEVNULL,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+        ).returncode
+        runresult |= run(
+            [
+                "sudo",
+                "-u",
+                posix_target_user.user,
+                "-i",
+                "chown",
+                # We're relying on the user running the test not being in the 'user' group of the target user
+                # This is how our testing Docker container is set up.
+                f"{posix_target_user.user}:{posix_target_user.user}",
+                str(working_dir / "file.test"),
+            ],
+            stdin=DEVNULL,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+        ).returncode
+        runresult |= run(
+            [
+                "sudo",
+                "-u",
+                posix_target_user.user,
+                "-i",
+                "chmod",
+                "600",
+                str(working_dir / "file.test"),
+            ],
+            stdin=DEVNULL,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+        ).returncode
 
         # WHEN
         session.cleanup()
@@ -253,6 +300,7 @@ class TestSessionInitialization:
         # THEN
         assert runresult == 0
         assert not os.path.exists(working_dir)
+        assert all("rm: cannot remove" not in msg for msg in caplog.messages)
 
     def test_contextmanager(self, session_id: str) -> None:
         # Test the context manager interface of the Session
