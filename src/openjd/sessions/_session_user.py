@@ -1,8 +1,9 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
+from ._os_checker import is_posix
 
-if os.name == "posix":
+if is_posix():
     import grp
 
 from typing import Optional
@@ -40,4 +41,4 @@ class PosixSessionUser(SessionUser):
         if os.name != "posix":
             raise RuntimeError("Only available on posix systems.")
         self.user = user
-        self.group = group if group else grp.getgrgid(os.getegid()).gr_name
+        self.group = group if group else grp.getgrgid(os.getegid()).gr_name  # type: ignore

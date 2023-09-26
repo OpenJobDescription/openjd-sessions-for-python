@@ -24,6 +24,7 @@ from openjd.model.v2023_09 import (
 from ._action_filter import ActionMessageKind, ActionMonitoringFilter
 from ._embedded_files import write_file_for_user
 from ._logging import LOG
+from ._os_checker import is_posix
 from ._path_mapping import PathMappingRule
 from ._runner_base import ScriptRunnerBase
 from ._runner_env_script import EnvironmentScriptRunner
@@ -305,10 +306,6 @@ class Session(object):
         Raises:
             RuntimeError - If the Session initialization fails for any reason.
         """
-        if os.name != "posix":
-            raise NotImplementedError(
-                "Open Job Description Sessions do not support non-posix systems yet."
-            )
 
         self._session_id = session_id
         self._ending_only = False
@@ -370,7 +367,7 @@ class Session(object):
                 # removal: 1/ `sudo -u <user> -i rm -rf <sessiondir>`, and then 2/ doing a normal
                 # recursive removal to delete the stuff that only this user can delete.
                 if self._user is not None:
-                    if os_name == "posix":
+                    if is_posix():
                         subprocess = LoggingSubprocess(
                             logger=self._logger,
                             args=["rm", "-rf", f"{str(self.working_directory)}/*"],

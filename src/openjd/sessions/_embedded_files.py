@@ -34,40 +34,39 @@ def _open_context(*args: Any, **kwargs: Any) -> Generator[int, None, None]:
 def write_file_for_user(
     filename: Path, data: str, user: Optional[SessionUser], additional_permissions: int = 0
 ) -> None:
-    if os.name == "posix":
-        # File should only be r/w by the owner, by default
+    # File should only be r/w by the owner, by default
 
-        # flags:
-        #  O_WRONLY - open for writing
-        #  O_CREAT - create if it does not exist
-        #  O_TRUNC - truncate the file. If we overwrite an existing file, then we
-        #            need to clear its contents.
-        #  O_EXCL (intentionally not present) - fail if file exists
-        #    - We exclude this 'cause we expect to be writing the same embedded file
-        #      into the same location repeatedly with different contents as we run
-        #      multiple Tasks in the same Session.
-        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
-        # mode:
-        #  S_IRUSR - Read by owner
-        #  S_IWUSR - Write by owner
-        mode = stat.S_IRUSR | stat.S_IWUSR | (additional_permissions & stat.S_IRWXU)
-        with _open_context(filename, flags, mode=mode) as fd:
-            os.write(fd, data.encode("utf-8"))
+    # flags:
+    #  O_WRONLY - open for writing
+    #  O_CREAT - create if it does not exist
+    #  O_TRUNC - truncate the file. If we overwrite an existing file, then we
+    #            need to clear its contents.
+    #  O_EXCL (intentionally not present) - fail if file exists
+    #    - We exclude this 'cause we expect to be writing the same embedded file
+    #      into the same location repeatedly with different contents as we run
+    #      multiple Tasks in the same Session.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    # mode:
+    #  S_IRUSR - Read by owner
+    #  S_IWUSR - Write by owner
+    mode = stat.S_IRUSR | stat.S_IWUSR | (additional_permissions & stat.S_IRWXU)
+    with _open_context(filename, flags, mode=mode) as fd:
+        os.write(fd, data.encode("utf-8"))
 
-        if user is not None:
-            user = cast(PosixSessionUser, user)
-            # Set the group of the file
-            chown(filename, group=user.group)
-            # Update the permissions to include the group after the group is changed
-            # Note: Only after changing group for security in case the group-ownership
-            # change fails.
-            mode |= stat.S_IRGRP | stat.S_IWGRP | (additional_permissions & stat.S_IRWXG)
+    if user is not None:
+        if os.name != "posix":
+            raise NotImplementedError("Impersonation is not implemented on non-posix systems yet.")
+        user = cast(PosixSessionUser, user)
+        # Set the group of the file
+        chown(filename, group=user.group)
+        # Update the permissions to include the group after the group is changed
+        # Note: Only after changing group for security in case the group-ownership
+        # change fails.
+        mode |= stat.S_IRGRP | stat.S_IWGRP | (additional_permissions & stat.S_IRWXG)
 
-        # The file may have already existed before calling this function (e.g. created by mkstemp)
-        # so unconditionally set the file permissions to ensure that additional_permissions are set.
-        os.chmod(filename, mode=mode)
-    else:  # pragma: nocover
-        raise NotImplementedError("Not yet implemented on non-posix systems.")
+    # The file may have already existed before calling this function (e.g. created by mkstemp)
+    # so unconditionally set the file permissions to ensure that additional_permissions are set.
+    os.chmod(filename, mode=mode)
 
 
 class EmbeddedFilesScope(Enum):

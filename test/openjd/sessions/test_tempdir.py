@@ -5,8 +5,9 @@ import stat
 import tempfile
 from pathlib import Path
 from subprocess import DEVNULL, run
+from openjd.sessions._os_checker import is_posix
 
-if os.name == "posix":
+if is_posix():
     import grp
     import pwd
 
@@ -18,7 +19,8 @@ from openjd.sessions._tempdir import TempDir
 from .conftest import has_posix_disjoint_user, has_posix_target_user
 
 
-class TestTempDir:
+@pytest.mark.skipif(not is_posix(), reason="Posix-specific tests")
+class TestTempDirPosix:
     def test_defaults(self) -> None:
         # GIVEN
         tmpdir = Path(tempfile.gettempdir())
@@ -29,19 +31,22 @@ class TestTempDir:
         # THEN
         assert result.path.parent == tmpdir
         assert os.path.exists(result.path)
+
         statinfo = os.stat(result.path)
-        assert statinfo.st_uid == os.getuid()
-        assert statinfo.st_gid == os.getgid()
+        assert statinfo.st_uid == os.getuid()  # type: ignore
+        assert statinfo.st_gid == os.getgid()  # type: ignore
 
         os.rmdir(result.path)
 
+
+class TestTempDir:
     @pytest.mark.usefixtures("tmp_path")  # Built-in fixture
     def test_given_dir(self, tmp_path: Path) -> None:
         # WHEN
         result = TempDir(dir=tmp_path)
 
         # THEN
-        assert result.path.parent == tmp_path
+        assert result.path.parent == tmp_path.resolve()
         assert os.path.exists(result.path)
 
     def test_given_prefix(self) -> None:
@@ -53,7 +58,7 @@ class TestTempDir:
         result = TempDir(prefix=prefix)
 
         # THEN
-        assert result.path.parent == tmpdir
+        assert result.path.parent == tmpdir.resolve()
         assert result.path.name.startswith(prefix)
         assert os.path.exists(result.path)
 
@@ -97,8 +102,8 @@ class TestTempDirPosixUser:
 
         # GIVEN
         tmpdir = Path(tempfile.gettempdir())
-        uid = pwd.getpwnam(posix_target_user.user).pw_uid
-        gid = grp.getgrnam(posix_target_user.group).gr_gid
+        uid = pwd.getpwnam(posix_target_user.user).pw_uid  # type: ignore
+        gid = grp.getgrnam(posix_target_user.group).gr_gid  # type: ignore
 
         # WHEN
         result = TempDir(user=posix_target_user)
@@ -108,7 +113,7 @@ class TestTempDirPosixUser:
         assert os.path.exists(result.path)
         statinfo = os.stat(result.path)
         assert statinfo.st_uid != uid, "Test: Not owned by target user"
-        assert statinfo.st_uid == os.getuid(), "Test: Is owned by this user"
+        assert statinfo.st_uid == os.getuid(), "Test: Is owned by this user"  # type: ignore
         assert statinfo.st_gid == gid, "Test: gid is changed"
         assert statinfo.st_mode & stat.S_IWGRP, "Test: Directory is group-writable"
 

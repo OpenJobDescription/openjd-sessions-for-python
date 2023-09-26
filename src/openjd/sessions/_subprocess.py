@@ -2,6 +2,11 @@
 
 import os
 import shlex
+from ._os_checker import is_posix, is_windows
+
+if is_windows():
+    from subprocess import CREATE_NEW_PROCESS_GROUP  # type: ignore
+from typing import Any
 from getpass import getuser
 from threading import Event
 from logging import LoggerAdapter
@@ -11,6 +16,11 @@ from pathlib import Path
 from datetime import timedelta
 
 from ._session_user import PosixSessionUser, SessionUser
+from ._powershell_generator import (
+    generate_exit_code_wrapper,
+    generate_exit_code_powershell,
+    encode_to_base64,
+)
 
 __all__ = ("LoggingSubprocess",)
 
@@ -27,6 +37,11 @@ __all__ = ("LoggingSubprocess",)
 POSIX_SIGNAL_SUBPROC_SCRIPT = str(
     Path(__file__).parent / "_scripts" / "_posix" / "_signal_subprocess.sh"
 )
+
+WINDOWS_SIGNAL_SUBPROC_SCRIPT = str(
+    Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.ps1"
+)
+
 LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
 
 
@@ -163,10 +178,10 @@ class LoggingSubprocess(object):
         process.
         """
         if self._process is not None and self._process.poll() is None:
-            if os.name == "posix":
+            if is_posix():
                 self._posix_signal_subprocess(signal="term", signal_subprocesses=False)
             else:
-                # TODO - On windows, send the CTRL_C_EVENT
+                # TODO - On windows, need to investigate which signal should be sent
                 raise NotImplementedError("Notify not implemented on non-posix yet")
 
     def terminate(self) -> None:
@@ -180,11 +195,10 @@ class LoggingSubprocess(object):
         process.
         """
         if self._process is not None and self._process.poll() is None:
-            if os.name == "posix":
+            if is_posix():
                 self._posix_signal_subprocess(signal="kill", signal_subprocesses=True)
             else:
-                # TODO - On windows, terminate the whole process tree
-                raise NotImplementedError("Terminate not implemented on non-posix yet")
+                self._windows_signal_subprocess(signal="kill", signal_subprocesses=True)
 
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""
@@ -194,7 +208,7 @@ class LoggingSubprocess(object):
 
             command: list[str] = []
             if self._user is not None:
-                if os.name == "posix":
+                if is_posix():
                     user = cast(PosixSessionUser, self._user)
                     # Only sudo if the user to run as is not the same as the current user.
                     if user.user != getuser():
@@ -208,24 +222,46 @@ class LoggingSubprocess(object):
                         "Cross-user subprocesses not implemented on non-posix systems."
                     )
 
-            command.extend(self._args)
-
-            cmd_line: str
-            if os.name == "posix":
-                cmd_line = shlex.join(command)
-            else:
-                cmd_line = list2cmdline(self._args)
-            self._logger.info("Running command %s", cmd_line)
-
             # Append the given environment to the current one.
-            return Popen(
-                args=command,
+            popen_args: dict[str, Any] = dict(
                 stdin=DEVNULL,
                 stdout=PIPE,
                 stderr=STDOUT,
                 encoding=self._encoding,
                 start_new_session=True,
             )
+            if is_posix():
+                command.extend(self._args)
+            else:
+                exit_code_ps_script = generate_exit_code_wrapper(self._args)
+                encoded_user_command = encode_to_base64(f"& {{{exit_code_ps_script}}}")
+
+                start_process_command = generate_exit_code_powershell(
+                    f"Start-Process PowerShell -ArgumentList '-NoProfile',"
+                    f" '-ExecutionPolicy Bypass', '-EncodedCommand {encoded_user_command}'"
+                    f" -NoNewWindow -Wait -PassThru"
+                )
+                encoded_start_service_command = encode_to_base64(start_process_command)
+
+                command = [
+                    "powershell.exe",
+                    "-ExecutionPolicy",
+                    "Unrestricted",
+                    "-EncodedCommand",
+                    encoded_start_service_command,
+                ]
+
+                popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
+
+            popen_args["args"] = command
+
+            cmd_line_for_logger: str
+            if is_posix():
+                cmd_line_for_logger = shlex.join(command)
+            else:
+                cmd_line_for_logger = list2cmdline(self._args)
+            self._logger.info("Running command %s", cmd_line_for_logger)
+            return Popen(**popen_args)
 
         except OSError as e:
             self._logger.info(f"Process failed to start: {str(e)}")
@@ -267,6 +303,39 @@ class LoggingSubprocess(object):
         cmd.extend(
             [
                 POSIX_SIGNAL_SUBPROC_SCRIPT,
+                str(self._process.pid),
+                signal,
+                str(signal_child),
+                str(signal_subprocesses),
+            ]
+        )
+        self._logger.info(f"Running: {shlex.join(cmd)}")
+        result = run(
+            cmd,
+            stdout=PIPE,
+            stderr=STDOUT,
+            stdin=DEVNULL,
+        )
+        if result.returncode != 0:
+            self._logger.warning(
+                f"Failed to send signal '{signal}' to subprocess {self._process.pid}: %s",
+                result.stdout.decode("utf-8"),
+            )
+
+    def _windows_signal_subprocess(self, signal: str, signal_subprocesses: bool = False) -> None:
+        # Convince the type checker that accessing _process is okay
+        assert self._process is not None
+
+        cmd = list[str]()
+        signal_child = False
+
+        if self._user is not None:
+            raise NotImplementedError("Impersonation is not implemented on non-posix yet")
+
+        cmd.extend(
+            [
+                "powershell.exe",
+                WINDOWS_SIGNAL_SUBPROC_SCRIPT,
                 str(self._process.pid),
                 signal,
                 str(signal_child),

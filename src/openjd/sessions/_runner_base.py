@@ -20,6 +20,8 @@ from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model.v2023_09 import Action as Action_2023_09
 from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, write_file_for_user
+from ._os_checker import is_posix
+from ._powershell_generator import generate_exit_code_wrapper
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
 from ._types import ActionModel, ActionState, EmbeddedFilesListType
@@ -187,8 +189,6 @@ class ScriptRunnerBase(ABC):
             callback (Optional[Callable[[ActionState], None]]): Callback to invoke when the running
                 subprocess has started,  exited, or failed to start. Defaults to None.
         """
-        if os.name != "posix":
-            raise RuntimeError("Non-posix platforms are not currently supported.")
 
         self._logger = logger
         self._user = user
@@ -272,11 +272,16 @@ class ScriptRunnerBase(ABC):
         with self._lock:
             if self.state != ScriptRunnerState.READY:
                 raise RuntimeError("This cannot be used to run a second subprocess.")
-
-            script = self._generate_command_shell_script(args)
-            filehandle, filename = mkstemp(
-                dir=self._session_working_directory, suffix=".sh", text=True
-            )
+            if is_posix():
+                script = self._generate_command_shell_script(args)
+                filehandle, filename = mkstemp(
+                    dir=self._session_working_directory, suffix=".sh", text=True
+                )
+            else:
+                script = self._generate_power_shell_script(args)
+                filehandle, filename = mkstemp(
+                    dir=self._session_working_directory, suffix=".ps1", text=True
+                )
             os.close(filehandle)
             # Create the shell script, and make it runnable by the owner.
             # If user is defined, then this will make it owned by that user's group.
@@ -315,6 +320,24 @@ class ScriptRunnerBase(ABC):
         if self.state == ScriptRunnerState.RUNNING and self._callback is not None:
             # Let the caller know that the process is running.
             self._callback(ActionState.RUNNING)
+
+    def _generate_power_shell_script(self, args: Sequence[str]) -> str:
+        """Generate a shell script for running a command given by the args."""
+        script = list[str]()
+        if self._startup_directory is not None:
+            script.append(f"Set-Location '{self._startup_directory}'")
+        if self._os_env_vars:
+            for name, value in self._os_env_vars.items():
+                if value is None:
+                    script.append(f"$env:{name} = $null")
+                else:
+                    # TODO: Need to check if we need to handle other characters
+                    value = value.replace("'", "''")
+                    script.append(f"$env:{name} = '{value}'")
+
+        exit_code_ps_script = generate_exit_code_wrapper(args)
+        script.append(exit_code_ps_script)
+        return "\n".join(script)
 
     def _generate_command_shell_script(self, args: Sequence[str]) -> str:
         """Generate a shell script for running a command given by the args."""

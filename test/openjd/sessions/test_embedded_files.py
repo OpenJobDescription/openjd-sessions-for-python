@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock
-
+from openjd.sessions._os_checker import is_posix
 import pytest
 
 from openjd.model import SymbolTable
@@ -139,8 +139,8 @@ class TestEmbeddedFiles:
             # THEN
             assert os.path.exists(filename)
             statinfo = os.stat(filename)
-            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"
-            assert statinfo.st_gid == os.getegid(), "File group is this process' group"
+            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"  # type: ignore
+            assert statinfo.st_gid == os.getegid(), "File group is this process' group"  # type: ignore
             assert statinfo.st_mode & stat.S_IRWXU == (stat.S_IRUSR | stat.S_IWUSR), "Owner has r/w"
             assert statinfo.st_mode & stat.S_IRWXG == 0, "Group has no permissions"
             assert statinfo.st_mode & stat.S_IRWXO == 0, "Others have no permissions"
@@ -198,8 +198,8 @@ class TestEmbeddedFiles:
             # THEN
             assert os.path.exists(filename)
             statinfo = os.stat(filename)
-            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"
-            assert statinfo.st_gid == os.getegid(), "File group is this process' group"
+            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"  # type: ignore
+            assert statinfo.st_gid == os.getegid(), "File group is this process' group"  # type: ignore
             assert statinfo.st_mode & stat.S_IRWXU == stat.S_IRWXU, "Owner has r/w/x"
             assert statinfo.st_mode & stat.S_IRWXG == 0, "Group has no permissions"
             assert statinfo.st_mode & stat.S_IRWXO == 0, "Others have no permissions"
@@ -260,7 +260,7 @@ class TestEmbeddedFiles:
             symtab = SymbolTable()
             import grp
 
-            gid = grp.getgrnam(posix_target_user.group).gr_gid
+            gid = grp.getgrnam(posix_target_user.group).gr_gid  # type: ignore
 
             # WHEN
             test_obj._materialize_file(filename, test_file, symtab)
@@ -268,7 +268,7 @@ class TestEmbeddedFiles:
             # THEN
             assert os.path.exists(filename)
             statinfo = os.stat(filename)
-            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"
+            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"  # type: ignore
             assert statinfo.st_gid == gid, "File group is the user's group"
             assert statinfo.st_mode & stat.S_IRWXU == (stat.S_IRUSR | stat.S_IWUSR), "Owner has r/w"
             assert statinfo.st_mode & stat.S_IRWXG == (stat.S_IRGRP | stat.S_IWGRP), "Group has r/w"
@@ -305,7 +305,7 @@ class TestEmbeddedFiles:
             symtab = SymbolTable()
             import grp
 
-            gid = grp.getgrnam(posix_target_user.group).gr_gid
+            gid = grp.getgrnam(posix_target_user.group).gr_gid  # type: ignore
 
             # WHEN
             test_obj._materialize_file(filename, test_file, symtab)
@@ -313,7 +313,7 @@ class TestEmbeddedFiles:
             # THEN
             assert os.path.exists(filename)
             statinfo = os.stat(filename)
-            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"
+            assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"  # type: ignore
             assert statinfo.st_gid == gid, "File group is the user's group"
             assert statinfo.st_mode & stat.S_IRWXU == stat.S_IRWXU, "Owner has r/w/x"
             assert statinfo.st_mode & stat.S_IRWXG == stat.S_IRWXG, "Group has r/w/x"
@@ -381,10 +381,10 @@ class TestEmbeddedFiles:
                     result_contents = file.read()
                 assert result_contents == data.data, "File contents are as expected"
                 # Check file permissions
-                if os.name == "posix":
+                if is_posix():
                     statinfo = os.stat(filename)
-                    assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"
-                    assert statinfo.st_gid == os.getegid(), "File group is this process' group"
+                    assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"  # type: ignore
+                    assert statinfo.st_gid == os.getegid(), "File group is this process' group"  # type: ignore
                     if data.runnable:
                         assert statinfo.st_mode & stat.S_IRWXU == stat.S_IRWXU, "Owner has r/w/x"
                     else:
@@ -447,7 +447,7 @@ class TestEmbeddedFiles:
             )
             import grp
 
-            gid = grp.getgrnam(posix_target_user.group).gr_gid
+            gid = grp.getgrnam(posix_target_user.group).gr_gid  # type: ignore
 
             # WHEN
             test_obj.materialize(given_files, symtab)
@@ -462,7 +462,7 @@ class TestEmbeddedFiles:
                 assert result_contents == data.data, "File contents are as expected"
                 # Check file permissions
                 statinfo = os.stat(filename)
-                assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"
+                assert statinfo.st_uid == os.geteuid(), "File owner is this process's owner"  # type: ignore
                 assert statinfo.st_gid == gid, "File group is the user's group"
                 if data.runnable:
                     assert statinfo.st_mode & stat.S_IRWXU == stat.S_IRWXU, "Owner has r/w/x"

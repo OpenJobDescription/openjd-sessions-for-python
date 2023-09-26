@@ -46,6 +46,7 @@ from openjd.sessions import (
 )
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
 from openjd.sessions._action_filter import ActionMessageKind
+from openjd.sessions._os_checker import is_posix
 from openjd.sessions._session import (
     EnvironmentVariableChange,
     EnvironmentVariableSetChange,
@@ -99,10 +100,24 @@ class TestSessionInitialization:
         filename = Session._openjd_session_root_dir()
 
         # THEN
-        statinfo = os.stat(filename)
-        assert statinfo.st_mode & stat.S_IRWXU == stat.S_IRWXU, "owner r/w/x"
-        assert statinfo.st_mode & stat.S_IRWXG == (stat.S_IRGRP | stat.S_IXGRP), "group r/x"
-        assert statinfo.st_mode & stat.S_IRWXO == (stat.S_IROTH | stat.S_IXOTH), "other r/x"
+        if is_posix():
+            statinfo = os.stat(filename)
+            assert statinfo.st_mode & stat.S_IRWXU == stat.S_IRWXU, "owner r/w/x"
+            assert statinfo.st_mode & stat.S_IRWXG == (stat.S_IRGRP | stat.S_IXGRP), "group r/x"
+            assert statinfo.st_mode & stat.S_IRWXO == (stat.S_IROTH | stat.S_IXOTH), "other r/x"
+        else:
+            # TODO: Exact ACL checks in Python on Windows are more complex.
+            #  Need to check this again during Windows impersonation
+            # Basic permission checks on Windows for the current user
+            assert os.access(
+                filename, os.R_OK
+            ), "The directory should be readable by the current user"
+            assert os.access(
+                filename, os.W_OK
+            ), "The directory should be writable by the current user"
+            assert os.access(
+                filename, os.X_OK
+            ), "The directory should be executable by the current user"
 
     def test_cleanup(self) -> None:
         # Test of the functionality of a Session's cleanup.
@@ -239,11 +254,10 @@ class TestSessionInitialization:
         assert runresult == 0
         assert not os.path.exists(working_dir)
 
-    def test_contextmanager(self) -> None:
+    def test_contextmanager(self, session_id: str) -> None:
         # Test the context manager interface of the Session
 
         # GIVEN
-        session_id = "some id"
         job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
 
         # WHEN
@@ -662,7 +676,7 @@ class TestSessionCancel:
                 EmbeddedFileText_2023_09(
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="import time; time.sleep(5)",
+                    data="import time; time.sleep(10)",
                 )
             ],
         )
@@ -681,9 +695,16 @@ class TestSessionCancel:
 
             # THEN
             assert session.state == SessionState.READY_ENDING
-            # Note: exit code will likely differ between posix & windows. Update when we do Windows.
-            # Note2: Posix - We cancel via SIGKILL. The process will exit with negative the SIGKILL's value (i.e. -9)
-            assert session.action_status == ActionStatus(state=ActionState.CANCELED, exit_code=-9)
+            if is_posix():
+                # Note: Posix - We cancel via SIGKILL. The process will exit with negative the SIGKILL's value (i.e. -9)
+                assert session.action_status == ActionStatus(
+                    state=ActionState.CANCELED, exit_code=-9
+                )
+            else:
+                # Note: Windows - We cancel via taskkill. The process will exist with 1.
+                assert session.action_status == ActionStatus(
+                    state=ActionState.CANCELED, exit_code=1
+                )
 
     @pytest.mark.parametrize(
         argnames="time_limit",
@@ -691,6 +712,12 @@ class TestSessionCancel:
             None,
             timedelta(seconds=1),
             timedelta(seconds=2),
+        )
+        if is_posix()
+        else (
+            None,
+            timedelta(seconds=2),
+            timedelta(seconds=3),
         ),
     )
     def test_cancel_time_limit(self, time_limit: Optional[timedelta]) -> None:
@@ -1442,12 +1469,13 @@ class TestPathMapping_v2023_09:  # noqa: N801
             ),
         ],
     )
-    def test_materialize(self, rules: Optional[list[PathMappingRule]], expected_json: str) -> None:
+    def test_materialize(
+        self, rules: Optional[list[PathMappingRule]], expected_json: str, session_id: str
+    ) -> None:
         # Test that Session._materialize_path_mapping works as required by the
         # schema.
 
         # GIVEN
-        session_id = "some id"
         job_params = list[Parameter]()
         env_vars = dict[str, Optional[str]]()
         symtab = SymbolTable()
@@ -1467,7 +1495,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             assert contents == expected_json
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_run_task(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_run_task(self, caplog: pytest.LogCaptureFixture, session_id: str) -> None:
         # Test that path mapping rules are passed through to a running Task.
         # i.e. that run_task hooks _materialize_path_mapping() up correctly.
 
@@ -1488,7 +1516,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 )
             ],
         )
-        session_id = "some id"
         job_params = list[Parameter]()
         task_params = list[Parameter]()
         path_mapping_rules = [
@@ -1512,7 +1539,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             assert "Has: true" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_enter_environment(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_enter_environment(self, caplog: pytest.LogCaptureFixture, session_id: str) -> None:
         # Test that path mapping rules are passed through to a running environment-enter.
         # i.e. that enter_environment hooks _materialize_path_mapping() up correctly.
 
@@ -1535,7 +1562,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 ],
             )
         )
-        session_id = "some id"
         job_params = list[Parameter]()
         path_mapping_rules = [
             PathMappingRule(
@@ -1558,7 +1584,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             assert "Has: true" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_exit_environment(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_exit_environment(self, caplog: pytest.LogCaptureFixture, session_id: str) -> None:
         # Test that path mapping rules are passed through to a running environment-exit.
         # i.e. that exit_environment hooks _materialize_path_mapping() up correctly.
 
@@ -1581,7 +1607,6 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 ],
             )
         )
-        session_id = "some id"
         job_params = list[Parameter]()
         path_mapping_rules = [
             PathMappingRule(

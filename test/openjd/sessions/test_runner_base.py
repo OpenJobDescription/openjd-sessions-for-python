@@ -24,6 +24,7 @@ from openjd.model.v2023_09 import (
 )
 from openjd.sessions import ActionState, PosixSessionUser
 from openjd.sessions._embedded_files import EmbeddedFilesScope
+from openjd.sessions._os_checker import is_posix
 from openjd.sessions._runner_base import (
     NotifyCancelMethod,
     ScriptRunnerBase,
@@ -82,7 +83,10 @@ class TestScriptRunnerBase:
             # THEN
             assert runner.state == ScriptRunnerState.RUNNING
             assert runner.exit_code is None
-            time.sleep(1.5)
+            current_wait_seconds = 0
+            while runner.state == ScriptRunnerState.RUNNING and current_wait_seconds < 10:
+                time.sleep(1)
+                current_wait_seconds += 1
             assert runner.state == ScriptRunnerState.SUCCESS
             assert runner.exit_code == 0
         callback.assert_has_calls([call(ActionState.RUNNING), call(ActionState.SUCCESS)])
@@ -151,11 +155,13 @@ class TestScriptRunnerBase:
         runner = TerminatingRunner(logger=MagicMock(), session_working_directory=tmp_path)
 
         # WHEN
-        runner._run([str(tmp_path)])
+        if is_posix():
+            runner._run([str(tmp_path)])
+        else:
+            runner._run(["test_failed_command"])
         while runner.exit_code is None:
             # Give the command time to fail out.
             time.sleep(0.2)
-
         # THEN
         assert runner.state == ScriptRunnerState.FAILED
         assert runner.exit_code != 0
@@ -172,18 +178,58 @@ class TestScriptRunnerBase:
 
         # GIVEN
         logger = build_logger(queue_handler)
+        os_env_vars: dict[str, Optional[str]] = {
+            "FOO": "BAR",
+            "dollar_sign": "This costs $100",
+            "single_quote": "They're smart",
+            "double_quote": 'They said, "Hello!"',
+            "back_slash": "C:\\Windows\\System32",
+            "caret_symbol": "Up^Down",
+            "pipe_symbol": "Left|Right",
+            "ampersand_symbol": "Fish&Chips",
+            "less_than": "1 < 2",
+            "greater_than": "3 > 2",
+            "asterisk_star": "Twinkle*twinkle",
+            "question_mark": "Who? What? Where?",
+            "colon_symbol": "Time: 12:00 PM",
+            "semicolon_symbol": "Item1; Item2; Item3",
+            "equal_sign": "1 + 1 = 2",
+            "at_symbol": "user@example.com",
+            "hash_symbol": "#1 Winner",
+            "tilde_symbol": "Approximately~100",
+            "percent_symbol": "50% off",
+            "exclamation_mark": "Surprise!",
+            "square_brackets": "Array[5]",
+            "injection1": "& Get-Process",
+            "injection2": "; Get-Process",
+            "injection3": "| Get-Process",
+            "injection4": "& Get-Process",
+            "injection5": "nGet-ChildItem C:\\",
+            "injection6": "rnStart-Process notepad.exe",
+            "injection7": "$(Get-Process)",
+        }
+
         with TerminatingRunner(
-            logger=logger, session_working_directory=tmp_path, os_env_vars={"FOO": "BAR"}
+            logger=logger, session_working_directory=tmp_path, os_env_vars=os_env_vars
         ) as runner:
             # WHEN
-            runner._run([sys.executable, "-c", "import os; print(os.environ.get('FOO'))"])
+            # Generate the Python code string
+            code_lines = ["import os"]
+            for key, value in os_env_vars.items():
+                code_lines.append(f"print('{key} =', os.environ.get('{key}'))")
+
+            code_str = "; ".join(code_lines)
+
+            runner._run([sys.executable, "-c", code_str])
+
             # Wait until the process exits.
             while runner.exit_code is None:
                 time.sleep(0.2)
 
         # THEN
         messages = collect_queue_messages(message_queue)
-        assert "BAR" in messages
+        for key, value in os_env_vars.items():
+            assert f"{key} = {value}" in messages
 
     @pytest.mark.xfail(
         not has_posix_target_user(),
@@ -224,10 +270,10 @@ class TestScriptRunnerBase:
         assert runner.state == ScriptRunnerState.SUCCESS
         assert runner.exit_code == 0
         messages = collect_queue_messages(message_queue)
-        assert str(os.getuid()) not in messages
+        assert str(os.getuid()) not in messages  # type: ignore
         import pwd
 
-        uid = pwd.getpwnam(posix_target_user.user).pw_uid
+        uid = pwd.getpwnam(posix_target_user.user).pw_uid  # type: ignore
         assert str(uid) in messages
 
         tmpdir.cleanup()
@@ -260,7 +306,7 @@ class TestScriptRunnerBase:
 
         # GIVEN
         action = Action_2023_09(
-            command="{{Task.PythonInterpreter}}", args=["{{Task.ScriptFile}}"], timeout=1
+            command="{{Task.PythonInterpreter}}", args=["{{Task.ScriptFile}}"], timeout=5
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
         symtab = SymbolTable(
@@ -282,8 +328,8 @@ class TestScriptRunnerBase:
         messages = collect_queue_messages(message_queue)
         # The application prints out 0, ..., 9 once a second for 10s.
         # If it ended early, then we printed the first but not the last.
-        assert "0" in messages
-        assert "9" not in messages
+        assert "Log from test 0" in messages
+        assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(
@@ -312,7 +358,7 @@ class TestScriptRunnerBase:
         assert any(m.startswith("openjd_fail") for m in messages)
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(os.name != "posix", reason="Signals not yet implemented for non-posix")
+    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_terminate(
         self,
         tmp_path: Path,
@@ -344,10 +390,10 @@ class TestScriptRunnerBase:
             callback.assert_has_calls([call(ActionState.RUNNING), call(ActionState.CANCELED)])
         messages = collect_queue_messages(message_queue)
         # Didn't get to the end of the application run
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(os.name != "posix", reason="Signals not yet implemented for non-posix")
+    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_run_with_time_limit(
         self,
         tmp_path: Path,
@@ -374,10 +420,10 @@ class TestScriptRunnerBase:
             assert cast(TerminatingRunner, runner)._cancel_called
         messages = collect_queue_messages(message_queue)
         # Didn't get to the end of the application run
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(os.name != "posix", reason="Signals not yet implemented for non-posix")
+    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_notify(
         self,
         tmp_path: Path,
@@ -413,7 +459,7 @@ class TestScriptRunnerBase:
         # to indicate that we didn't immediately terminate the script.
         assert messages[trapped_idx + 1].isdigit()
         # Didn't get to the end
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
         # Notification file exists
         assert os.path.exists(tmp_path / "cancel_info.json")
         with open(tmp_path / "cancel_info.json", "r") as file:
@@ -433,7 +479,7 @@ class TestScriptRunnerBase:
         )
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(os.name != "posix", reason="Signals not yet implemented for non-posix")
+    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_double_cancel_notify(
         self,
         tmp_path: Path,
@@ -468,7 +514,7 @@ class TestScriptRunnerBase:
         # In this case, the total runtime of the app is 10s
         # so we know that if we didn't get the last index printed
         # then the second cancel took precidence.
-        assert "9" not in messages
+        assert "Log from test 9" not in messages
 
     def test_materialize_files(self, tmp_path: Path) -> None:
         # A test that _materialize_files writes the given files to disk, and
