@@ -278,6 +278,59 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
+    @pytest.mark.xfail(
+        not has_posix_target_user(),
+        reason="Must be running inside of the sudo_environment testing container.",
+    )
+    @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
+    def test_does_not_inherit_env_vars(
+        self,
+        posix_target_user: PosixSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Security test.
+        # Run a command that tries to read from this process's environment. It should not be able
+        # to obtain values from it.
+        # Only the cross-user case ensures that environment is not passed through; this is to ensure
+        # that sensitive information that is defines in the initiating process' environment is not
+        # propagated through a user boundary to the subprocess.
+
+        # GIVEN
+        tmpdir = TempDir(user=posix_target_user)
+        var_name = "TEST_DOES_NOT_INHERIT_ENV_VARS_VAR"
+        os.environ[var_name] = "TEST_VALUE"
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(
+            logger=logger, session_working_directory=tmpdir.path, user=posix_target_user
+        ) as runner:
+            # WHEN
+            runner._run(
+                [
+                    # Note: Intentionally not `sys.executable`. Reasons:
+                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    #  2) This test is, generally, intended to be run in a docker container where the system
+                    #     python is the correct version that we want to run under.
+                    "python",
+                    "-c",
+                    f"import time; import os; time.sleep(0.25); print(os.environ.get('{var_name}', 'NOT_PRESENT')); print(os.environ)",
+                ]
+            )
+
+            # THEN
+            assert runner.state == ScriptRunnerState.RUNNING
+            assert runner.exit_code is None
+            current_wait_seconds = 0
+            while runner.state == ScriptRunnerState.RUNNING and current_wait_seconds < 10:
+                time.sleep(1)
+                current_wait_seconds += 1
+            assert runner.state == ScriptRunnerState.SUCCESS
+            assert runner.exit_code == 0
+
+        messages = collect_queue_messages(message_queue)
+        assert os.environ[var_name] not in messages
+        assert "NOT_PRESENT" in messages
+
     def test_cannot_run_twice(self, tmp_path: Path) -> None:
         # Run a simple command with no timeout and check the state during and
         # after the run.

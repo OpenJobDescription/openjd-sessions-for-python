@@ -29,8 +29,8 @@ from ._path_mapping import PathMappingRule
 from ._runner_base import ScriptRunnerBase
 from ._runner_env_script import EnvironmentScriptRunner
 from ._runner_step_script import StepScriptRunner
-from ._subprocess import LoggingSubprocess
 from ._session_user import SessionUser
+from ._subprocess import LoggingSubprocess
 from ._tempdir import TempDir
 from ._types import (
     ActionState,
@@ -368,9 +368,10 @@ class Session(object):
                 # recursive removal to delete the stuff that only this user can delete.
                 if self._user is not None:
                     if is_posix():
+                        files = [str(f) for f in self.working_directory.glob("*")]
                         subprocess = LoggingSubprocess(
                             logger=self._logger,
-                            args=["rm", "-rf", f"{str(self.working_directory)}/*"],
+                            args=["rm", "-rf"] + files,
                             user=self._user,
                         )
                         # Note: Blocking call until the process has exited

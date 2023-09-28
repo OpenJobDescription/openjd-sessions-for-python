@@ -86,13 +86,17 @@ class TempDir:
             RuntimeError - If not all files could be deleted.
         """
         encountered_errors = False
+        file_paths: list[str] = []
 
         def onerror(f, p, e):
             nonlocal encountered_errors
+            nonlocal file_paths
             encountered_errors = True
+            file_paths.append(str(p))
 
         rmtree(self.path, onerror=onerror)
         if encountered_errors:
             raise RuntimeError(
-                f"Files within temporary directory {str(self.path)} could not be deleted."
+                f"Files within temporary directory {str(self.path)} could not be deleted.\n"
+                + "\n".join(file_paths)
             )
