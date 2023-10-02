@@ -11,12 +11,13 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from logging.handlers import QueueHandler
 from pathlib import Path
 from queue import SimpleQueue
+from typing import Union
 from unittest.mock import MagicMock
 
 import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
-from openjd.sessions._session_user import PosixSessionUser
+from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._subprocess import LoggingSubprocess
 
 from .conftest import build_logger, collect_queue_messages, has_posix_target_user
@@ -75,10 +76,6 @@ class TestLoggingSubprocessSameUser:
         messages = collect_queue_messages(message_queue)
         assert message in messages
 
-    @pytest.mark.xfail(
-        is_windows(),
-        reason="Impersonation is not supported in Windows yet",
-    )
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation_with_sameuser(
         self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
@@ -87,10 +84,12 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         current_user = getpass.getuser()
-        if os.name == "posix":
+        user: Union[PosixSessionUser, WindowsSessionUser]
+        if is_posix():
             user = PosixSessionUser(user=current_user)
         else:
-            raise NotImplementedError("Test not implemented on non-posix platforms yet")
+            user = WindowsSessionUser(user=current_user)
+
         logger = build_logger(queue_handler)
         message = "this is output"
         subproc = LoggingSubprocess(
@@ -187,6 +186,9 @@ class TestLoggingSubprocessSameUser:
 
         # THEN
         messages = collect_queue_messages(message_queue)
+        # Some error message from the powershell is not obvious. We add a `Error:` prefix for logging.
+        if is_windows():
+            message = "Error: " + message
         assert message in messages
 
     def test_cannot_run_twice(self, queue_handler: QueueHandler) -> None:
@@ -284,7 +286,8 @@ class TestLoggingSubprocessSameUser:
         def end_proc():
             subproc.wait_until_started()
             # Then give the Python subprocess some time to finish loading and start running.
-            time.sleep(1)
+            # The process in Windows starts a little bit slower.
+            time.sleep(1 if is_posix() else 8)
             subproc.terminate()
 
         # WHEN
@@ -296,6 +299,8 @@ class TestLoggingSubprocessSameUser:
         # THEN
         assert not subproc.is_running
         messages = collect_queue_messages(message_queue)
+        for item in messages:
+            print(item)
         # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
         assert "Trapped" not in messages
         # Check for the first message that would print
@@ -339,7 +344,8 @@ class TestLoggingSubprocessSameUser:
             children = list[Process]()
             attempt = 0
             # For Windows, we will have 2 python process 1 powershell process
-            expected_num_children = 3 if is_windows() else 1
+            # 1 conhost.exe process used for drawing the console window, although this windows is invisible
+            expected_num_children = 4 if is_windows() else 1
             # Then give the subprocess some time to finish loading and start running some children.
             while len(children) < expected_num_children and attempt < 50:
                 time.sleep(0.25)

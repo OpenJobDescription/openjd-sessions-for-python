@@ -15,11 +15,10 @@ from typing import Callable, Optional, Sequence, cast
 from pathlib import Path
 from datetime import timedelta
 
-from ._session_user import PosixSessionUser, SessionUser
+from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 from ._powershell_generator import (
-    generate_exit_code_wrapper,
-    generate_exit_code_powershell,
     encode_to_base64,
+    generate_start_job_wrapper,
 )
 
 __all__ = ("LoggingSubprocess",)
@@ -70,8 +69,8 @@ class LoggingSubprocess(object):
             raise ValueError("'args' kwarg must be a sequence of at least one element")
         if user is not None and os.name == "posix" and not isinstance(user, PosixSessionUser):
             raise ValueError("Argument 'user' must be a PosixSessionUser on posix systems.")
-        if user is not None and os.name != "posix":
-            raise NotImplementedError("User is not yet implemented on non-posix systems.")
+        if user is not None and is_windows() and not isinstance(user, WindowsSessionUser):
+            raise ValueError("Argument 'user' must be a WindowsSessionUser on Windows systems.")
 
         self._logger = logger
         self._args = args[:]  # Make a copy
@@ -217,10 +216,6 @@ class LoggingSubprocess(object):
                         # we're stuck: 1/ Our user cannot kill processes by the self._user; and
                         # 2/ The self._user cannot kill the root-owned sudo process group.
                         command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
-                else:
-                    raise NotImplementedError(
-                        "Cross-user subprocesses not implemented on non-posix systems."
-                    )
 
             # Append the given environment to the current one.
             popen_args: dict[str, Any] = dict(
@@ -233,16 +228,9 @@ class LoggingSubprocess(object):
             if is_posix():
                 command.extend(self._args)
             else:
-                exit_code_ps_script = generate_exit_code_wrapper(self._args)
-                encoded_user_command = encode_to_base64(f"& {{{exit_code_ps_script}}}")
-
-                start_process_command = generate_exit_code_powershell(
-                    f"Start-Process PowerShell -ArgumentList '-NoProfile',"
-                    f" '-ExecutionPolicy Bypass', '-EncodedCommand {encoded_user_command}'"
-                    f" -NoNewWindow -Wait -PassThru"
+                encoded_start_service_command = encode_to_base64(
+                    generate_start_job_wrapper(self._args, cast(WindowsSessionUser, self._user))
                 )
-                encoded_start_service_command = encode_to_base64(start_process_command)
-
                 command = [
                     "powershell.exe",
                     "-ExecutionPolicy",
@@ -342,13 +330,17 @@ class LoggingSubprocess(object):
                 str(signal_subprocesses),
             ]
         )
+        from datetime import datetime
+
         self._logger.info(f"Running: {shlex.join(cmd)}")
+        self._logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         result = run(
             cmd,
             stdout=PIPE,
             stderr=STDOUT,
             stdin=DEVNULL,
         )
+        self._logger.info(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         if result.returncode != 0:
             self._logger.warning(
                 f"Failed to send signal '{signal}' to subprocess {self._process.pid}: %s",

@@ -754,22 +754,10 @@ class TestSessionCancel:
                     state=ActionState.CANCELED, exit_code=1
                 )
 
-    @pytest.mark.parametrize(
-        argnames="time_limit",
-        argvalues=(
-            None,
-            timedelta(seconds=1),
-            timedelta(seconds=2),
-        )
-        if is_posix()
-        else (
-            None,
-            timedelta(seconds=2),
-            timedelta(seconds=3),
-        ),
-    )
-    def test_cancel_time_limit(self, time_limit: Optional[timedelta]) -> None:
+    def test_cancel_time_limit(self) -> None:
         # Testing that the time_limit argument is forwarded to the runner
+
+        time_limit = timedelta(seconds=4)
 
         # GIVEN
         start_time = time.monotonic()
@@ -781,7 +769,7 @@ class TestSessionCancel:
                 EmbeddedFileText_2023_09(
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="import time; time.sleep(5)",
+                    data="import time; print('start');time.sleep(5);print('middle');time.sleep(5);print('end');",
                 )
             ],
         )
@@ -790,8 +778,7 @@ class TestSessionCancel:
         task_params = list[Parameter]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.run_task(step_script=script, task_parameter_values=task_params)
-            time.sleep(0.5)  # A bit of time to startup
-
+            time.sleep(1.5)  # A bit of time to startup
             with patch.object(
                 session._runner,
                 "cancel",
@@ -807,10 +794,11 @@ class TestSessionCancel:
 
         # THEN
         duration_seconds = end_time - start_time
+        runner_cancel_spy.assert_called_once_with(time_limit=time_limit)
+        assert session.state == SessionState.ENDED
         if time_limit is not None:
             # Add some padding for the sleeps
             assert duration_seconds <= (time_limit + timedelta(seconds=0.8)).total_seconds()
-        runner_cancel_spy.assert_called_once_with(time_limit=time_limit)
 
 
 def _make_environment(

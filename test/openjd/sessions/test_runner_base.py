@@ -78,7 +78,9 @@ class TestScriptRunnerBase:
             logger=MagicMock(), session_working_directory=tmp_path, callback=callback
         ) as runner:
             # WHEN
-            runner._run([sys.executable, "-c", "import time; time.sleep(0.25)"])
+            runner._run(
+                [sys.executable, "-c", "import time; time.sleep(0.25); print('python script end');"]
+            )
 
             # THEN
             assert runner.state == ScriptRunnerState.RUNNING
@@ -147,21 +149,33 @@ class TestScriptRunnerBase:
             assert runner.state == ScriptRunnerState.FAILED
             assert runner.exit_code == 1
 
-    def test_fail_to_run(self, tmp_path: Path) -> None:
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    def test_fail_to_run(
+        self, tmp_path: Path, message_queue: SimpleQueue, queue_handler: QueueHandler
+    ) -> None:
         # Test that we don't blow up in an unexpected way when we cannot actually
         # run the subprocess for some reason.
 
         # GIVEN
-        runner = TerminatingRunner(logger=MagicMock(), session_working_directory=tmp_path)
+        logger = build_logger(queue_handler)
+        runner = TerminatingRunner(logger=logger, session_working_directory=tmp_path)
 
         # WHEN
         if is_posix():
             runner._run([str(tmp_path)])
         else:
             runner._run(["test_failed_command"])
-        while runner.exit_code is None:
+
+        # This test should fail quickly less than 10 second.
+        for _ in range(120):
+            if runner.exit_code is not None:
+                break
             # Give the command time to fail out.
             time.sleep(0.2)
+
+        messages = collect_queue_messages(message_queue)
+        for message in messages:
+            print(message)
         # THEN
         assert runner.state == ScriptRunnerState.FAILED
         assert runner.exit_code != 0

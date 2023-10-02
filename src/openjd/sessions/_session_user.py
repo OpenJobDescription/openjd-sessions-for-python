@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
-from ._os_checker import is_posix
+from ._os_checker import is_posix, is_windows
 
 if is_posix():
     import grp
@@ -38,7 +38,34 @@ class PosixSessionUser(SessionUser):
             group (Optional[str]): The group. Defaults to the name of this
                 process' effective group.
         """
-        if os.name != "posix":
+        if not is_posix():
             raise RuntimeError("Only available on posix systems.")
         self.user = user
         self.group = group if group else grp.getgrgid(os.getegid()).gr_name  # type: ignore
+
+
+class WindowsSessionUser(SessionUser):
+    __slots__ = ("user", "group")
+    """Specific os-user identity to run a Session as under Windows."""
+
+    user: str
+    """User name of the identity to run the Session's subprocesses under.
+    """
+
+    # TODO: The group will be only used for directory permission.
+    #  Need to revisit this when implementing permission setting.
+    group: Optional[str]
+    """Group name of the identity to run the Session's subprocesses under.
+    """
+
+    def __init__(self, user: str, *, group: Optional[str] = None) -> None:
+        """
+        Arguments:
+            user (str): The user
+            group (Optional[str]): The group. Defaults to the name of this
+                process' effective group.
+        """
+        if not is_windows():
+            raise RuntimeError("Only available on Windows systems.")
+        self.user = user
+        self.group = group
