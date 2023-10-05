@@ -749,9 +749,9 @@ class TestSessionCancel:
                     state=ActionState.CANCELED, exit_code=-9
                 )
             else:
-                # Note: Windows - We cancel via taskkill. The process will exist with 1.
+                # Note: Windows - We cancel via psutil. The process will exist with 15.
                 assert session.action_status == ActionStatus(
-                    state=ActionState.CANCELED, exit_code=1
+                    state=ActionState.CANCELED, exit_code=15
                 )
 
     @pytest.mark.parametrize(
