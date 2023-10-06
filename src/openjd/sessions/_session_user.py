@@ -12,8 +12,6 @@ if is_windows():
     import win32net
     import win32netcon
 
-import re
-
 from typing import Optional
 
 __all__ = ("PosixSessionUser", "SessionUser", "WindowsSessionUser")
@@ -90,6 +88,8 @@ class WindowsSessionUser(SessionUser):
         self.group = group
 
         if "@" in user and self.is_domain_joined():
-            user = win32security.TranslateName(user, win32api.NameUserPrincipal, win32api.NameSamCompatible)
+            user = win32security.TranslateName(
+                user, win32api.NameUserPrincipal, win32api.NameSamCompatible
+            )
 
         self.user = user
