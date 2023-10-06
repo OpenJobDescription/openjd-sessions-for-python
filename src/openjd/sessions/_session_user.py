@@ -9,12 +9,14 @@ if is_posix():
 if is_windows():
     import win32api
     import win32security
+    import win32net
+    import win32netcon
 
 import re
 
 from typing import Optional
 
-__all__ = ("PosixSessionUser", "SessionUser")
+__all__ = ("PosixSessionUser", "SessionUser", "WindowsSessionUser")
 
 
 class SessionUser:
@@ -57,8 +59,8 @@ class WindowsSessionUser(SessionUser):
     user: str
     """
     User name of the identity to run the Session's subprocesses under.
-    This can be just a username for a local user, a domain user's UPN, or a domain user in down-level format.
-    ex: localUser, domainuser@domain.com, domain\\domainUser
+    This can be either a plain username for a local user or a domain username in down-level logon form
+    ex: localUser, domain\\domainUser
     """
 
     group: str
@@ -69,31 +71,12 @@ class WindowsSessionUser(SessionUser):
     """
 
     @staticmethod
-    def is_user_upn_format(user):
+    def is_domain_joined() -> bool:
         """
-        Returns true if the provided user is in UPN form, otherwise False.
-        Arguments:
-            user (str): The user. This can be in UPN form, domain\\username, or just username
+        Returns true if the machine is joined to a domain, otherwise False.
         """
-        upn_format_regex = (
-            '^(?!\\.)[^\\s\\\\/:*?"<>|]{1,15}\\@[^\\s\\@\\\\/:*?"<>|]+\\.[^\\s\\@\\\\/:*?"<>|]+'
-        )
-        return re.search(upn_format_regex, user) is not None
-
-    @staticmethod
-    def try_convert_upn(user):
-        """
-        Returns the user in down-level logon format (domain\\username) if provided in UPN format.
-        Otherwise, returns user unmodified.
-        Arguments:
-            user (str): The user. This can be in UPN form, down-level logon, or just username
-        """
-        if WindowsSessionUser.is_user_upn_format(user):
-            return win32security.TranslateName(
-                user, win32api.NameUserPrincipal, win32api.NameSamCompatible
-            )
-        else:
-            return user
+        _, join_status = win32net.NetGetJoinInformation()
+        return join_status != win32netcon.NetSetupUnjoined
 
     def __init__(self, user: str, *, group: str) -> None:
         """
@@ -106,4 +89,7 @@ class WindowsSessionUser(SessionUser):
 
         self.group = group
 
-        self.user = self.try_convert_upn(user)
+        if "@" in user and self.is_domain_joined():
+            user = win32security.TranslateName(user, win32api.NameUserPrincipal, win32api.NameSamCompatible)
+
+        self.user = user
