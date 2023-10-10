@@ -79,8 +79,12 @@ class WindowsSessionUser(SessionUser):
     def __init__(self, user: str, *, group: str) -> None:
         """
         Arguments:
-            user (str): The user
-            group (str): The group
+            user (str): User name of the identity to run the Session's subprocesses under.
+                        This can be either a plain username for a local user or a domain username in down-level logon form
+                        ex: localUser, domain\\domainUser, domainUser@domain.com
+            group (str): Group name of the identity to run the Session's subprocesses under.
+                         This can be just a group name for a local group, or a domain group in down-level format.
+                         ex: localGroup, domain\\domainGroup
         """
         if not is_windows():
             raise RuntimeError("Only available on Windows systems.")
