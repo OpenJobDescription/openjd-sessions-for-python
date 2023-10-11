@@ -51,7 +51,7 @@ class PosixSessionUser(SessionUser):
 
 
 class WindowsSessionUser(SessionUser):
-    __slots__ = ("user", "group")
+    __slots__ = ("user", "group", "password")
     """Specific os-user identity to run a Session as under Windows."""
 
     user: str
@@ -85,7 +85,8 @@ class WindowsSessionUser(SessionUser):
         """
         Arguments:
             user (str): User name of the identity to run the Session's subprocesses under.
-                        This can be either a plain username for a local user or a domain username in down-level logon form
+                        This can be either a plain username for a local user, a domain username in down-level logon form,
+                        or a domain's UPN.
                         ex: localUser, domain\\domainUser, domainUser@domain.com
             group (str): Group name of the identity to run the Session's subprocesses under.
                          This can be just a group name for a local group, or a domain group in down-level format.

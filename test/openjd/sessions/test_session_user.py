@@ -13,6 +13,10 @@ class TestWindowsSessionUser:
         ["userA", "domain\\userA"],
     )
     def test_user_not_converted(self, user):
-        windows_session_user = WindowsSessionUser(user, group="test_group")
+        windows_session_user = WindowsSessionUser(
+            user,
+            "password",
+            group="test_group",
+        )
 
         assert windows_session_user.user == user
