@@ -64,8 +64,13 @@ class WindowsSessionUser(SessionUser):
     group: str
     """
     Group name of the identity to run the Session's subprocesses under.
-    This can be just a group name for a local group, or a domain group in down-level format.
+    This can be just a group name for a local group, or a domain group in down-level logon form.
     ex: localGroup, domain\\domainGroup
+    """
+
+    password: str
+    """
+    Password of the identity to run the Session's subprocess under.
     """
 
     @staticmethod
@@ -76,7 +81,7 @@ class WindowsSessionUser(SessionUser):
         _, join_status = win32net.NetGetJoinInformation()
         return join_status != win32netcon.NetSetupUnjoined
 
-    def __init__(self, user: str, *, group: str) -> None:
+    def __init__(self, user: str, password: str, *, group: str) -> None:
         """
         Arguments:
             user (str): User name of the identity to run the Session's subprocesses under.
@@ -85,11 +90,13 @@ class WindowsSessionUser(SessionUser):
             group (str): Group name of the identity to run the Session's subprocesses under.
                          This can be just a group name for a local group, or a domain group in down-level format.
                          ex: localGroup, domain\\domainGroup
+            password (str): Password of the identity to run the Session's subprocess under.
         """
         if not is_windows():
             raise RuntimeError("Only available on Windows systems.")
 
         self.group = group
+        self.password = password
 
         if "@" in user and self.is_domain_joined():
             user = win32security.TranslateName(
