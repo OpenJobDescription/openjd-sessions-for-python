@@ -24,7 +24,7 @@ from openjd.model.v2023_09 import (
 )
 from openjd.sessions import ActionState, PosixSessionUser
 from openjd.sessions._embedded_files import EmbeddedFilesScope
-from openjd.sessions._os_checker import is_posix
+from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._runner_base import (
     NotifyCancelMethod,
     ScriptRunnerBase,
@@ -147,22 +147,41 @@ class TestScriptRunnerBase:
             assert runner.state == ScriptRunnerState.FAILED
             assert runner.exit_code == 1
 
-    def test_fail_to_run(self, tmp_path: Path) -> None:
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    def test_fail_to_run(
+        self, tmp_path: Path, message_queue: SimpleQueue, queue_handler: QueueHandler
+    ) -> None:
         # Test that we don't blow up in an unexpected way when we cannot actually
         # run the subprocess for some reason.
 
         # GIVEN
-        runner = TerminatingRunner(logger=MagicMock(), session_working_directory=tmp_path)
+        logger = build_logger(queue_handler)
+        runner = TerminatingRunner(logger=logger, session_working_directory=tmp_path)
 
         # WHEN
         if is_posix():
             runner._run([str(tmp_path)])
         else:
             runner._run(["test_failed_command"])
-        while runner.exit_code is None:
+
+        # This process should finish within 25s
+        for _ in range(125):
+            if runner.exit_code is not None:
+                break
             # Give the command time to fail out.
             time.sleep(0.2)
+
+        messages = collect_queue_messages(message_queue)
+
         # THEN
+        if is_windows():
+            assert any(
+                item.startswith(
+                    "Command not found: The term 'test_failed_command'"
+                    " is not recognized as the name of a cmdlet"
+                )
+                for item in messages
+            ), "Error message in Windows is not correct."
         assert runner.state == ScriptRunnerState.FAILED
         assert runner.exit_code != 0
 
@@ -359,7 +378,9 @@ class TestScriptRunnerBase:
 
         # GIVEN
         action = Action_2023_09(
-            command="{{Task.PythonInterpreter}}", args=["{{Task.ScriptFile}}"], timeout=5
+            command="{{Task.PythonInterpreter}}",
+            args=["{{Task.ScriptFile}}"],
+            timeout=(5 if is_posix() else 8),
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
         symtab = SymbolTable(
