@@ -88,7 +88,7 @@ class TestLoggingSubprocessSameUser:
         if is_posix():
             user = PosixSessionUser(user=current_user)
         else:
-            user = WindowsSessionUser(user=current_user)
+            user = WindowsSessionUser(user=current_user, password="", group="")
 
         logger = build_logger(queue_handler)
         message = "this is output"

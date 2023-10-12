@@ -124,11 +124,14 @@ def generate_start_job_wrapper(
 
     credential_argument = ""
     if user and user.user != getuser():
+        # To include a single quotation mark in a single-quoted string, need to use a second consecutive single quote.
+        # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
+        username = user.user.replace("'", "''")
+        password = user.password.replace("'", "''")
         credential_argument = (
             f" -Credential (New-Object -TypeName System.Management.Automation.PSCredential"
-            f' -ArgumentList "{user.user}", '
-            f"([System.Environment]::GetEnvironmentVariable("
-            f'"{user.user}", [System.EnvironmentVariableTarget]::User)  | ConvertTo-SecureString))'
+            f" -ArgumentList '{username}', "
+            f"('{password}' | ConvertTo-SecureString -AsPlainText -Force))"
         )
 
     return f"""function ProcessJobOutput {{
@@ -162,9 +165,8 @@ do {{
     # Get the output that's currently available from the job
     ProcessJobOutput -RunningJob $job
     # Check the job's state
-    $jobState = (Get-Job -Id $job.Id).State
     Start-Sleep -Seconds 0.2
-}} while ($jobState -eq 'Running')
+}} while ($job.State -eq 'Running')
 Wait-Job $job;
 ProcessJobOutput -RunningJob $job
 Remove-Job $job;

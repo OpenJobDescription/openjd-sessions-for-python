@@ -6,6 +6,12 @@ from ._os_checker import is_posix, is_windows
 if is_posix():
     import grp
 
+if is_windows():
+    import win32api
+    import win32security
+    import win32net
+    import win32netcon
+
 from typing import Optional
 
 __all__ = ("PosixSessionUser", "SessionUser", "WindowsSessionUser")
@@ -45,27 +51,57 @@ class PosixSessionUser(SessionUser):
 
 
 class WindowsSessionUser(SessionUser):
-    __slots__ = ("user", "group")
+    __slots__ = ("user", "group", "password")
     """Specific os-user identity to run a Session as under Windows."""
 
     user: str
-    """User name of the identity to run the Session's subprocesses under.
+    """
+    User name of the identity to run the Session's subprocesses under.
+    This can be either a plain username for a local user or a domain username in down-level logon form
+    ex: localUser, domain\\domainUser
     """
 
-    # TODO: The group will be only used for directory permission.
-    #  Need to revisit this when implementing permission setting.
-    group: Optional[str]
-    """Group name of the identity to run the Session's subprocesses under.
+    group: str
+    """
+    Group name of the identity to run the Session's subprocesses under.
+    This can be just a group name for a local group, or a domain group in down-level logon form.
+    ex: localGroup, domain\\domainGroup
     """
 
-    def __init__(self, user: str, *, group: Optional[str] = None) -> None:
+    password: str
+    """
+    Password of the identity to run the Session's subprocess under.
+    """
+
+    @staticmethod
+    def is_domain_joined() -> bool:
+        """
+        Returns true if the machine is joined to a domain, otherwise False.
+        """
+        _, join_status = win32net.NetGetJoinInformation()
+        return join_status != win32netcon.NetSetupUnjoined
+
+    def __init__(self, user: str, password: str, *, group: str) -> None:
         """
         Arguments:
-            user (str): The user
-            group (Optional[str]): The group. Defaults to the name of this
-                process' effective group.
+            user (str): User name of the identity to run the Session's subprocesses under.
+                        This can be either a plain username for a local user, a domain username in down-level logon form,
+                        or a domain's UPN.
+                        ex: localUser, domain\\domainUser, domainUser@domain.com
+            group (str): Group name of the identity to run the Session's subprocesses under.
+                         This can be just a group name for a local group, or a domain group in down-level format.
+                         ex: localGroup, domain\\domainGroup
+            password (str): Password of the identity to run the Session's subprocess under.
         """
         if not is_windows():
             raise RuntimeError("Only available on Windows systems.")
-        self.user = user
+
         self.group = group
+        self.password = password
+
+        if "@" in user and self.is_domain_joined():
+            user = win32security.TranslateName(
+                user, win32api.NameUserPrincipal, win32api.NameSamCompatible
+            )
+
+        self.user = user
