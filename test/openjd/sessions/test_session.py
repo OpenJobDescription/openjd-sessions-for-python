@@ -781,7 +781,7 @@ class TestSessionCancel:
                 EmbeddedFileText_2023_09(
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="import time; time.sleep(5)",
+                    data="import time; time.sleep(10)",
                 )
             ],
         )
@@ -807,10 +807,12 @@ class TestSessionCancel:
 
         # THEN
         duration_seconds = end_time - start_time
+        runner_cancel_spy.assert_called_once_with(time_limit=time_limit)
+        assert session.state == SessionState.ENDED
         if time_limit is not None:
             # Add some padding for the sleeps
-            assert duration_seconds <= (time_limit + timedelta(seconds=0.8)).total_seconds()
-        runner_cancel_spy.assert_called_once_with(time_limit=time_limit)
+            padding_time = timedelta(seconds=0.8) if is_posix() else timedelta(seconds=3)
+            assert duration_seconds <= (time_limit + padding_time).total_seconds()
 
 
 def _make_environment(

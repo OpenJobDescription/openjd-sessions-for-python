@@ -16,4 +16,3 @@ if ($SIG -eq "kill") {
 }
 
 exit $LASTEXITCODE
-
