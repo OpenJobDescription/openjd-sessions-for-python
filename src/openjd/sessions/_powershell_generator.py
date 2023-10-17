@@ -1,8 +1,11 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from typing import Sequence
+from typing import Sequence, Optional
 import base64
 import re
+from getpass import getuser
+
+from ._session_user import WindowsSessionUser
 
 
 def replace_escapes(args: str) -> str:
@@ -45,19 +48,22 @@ exit $process.ExitCode
 """
 
 
-def generate_exit_code_wrapper(args: Sequence[str]) -> str:
+def generate_exit_code_wrapper(args: Sequence[str], exit_action: Optional[str] = None) -> str:
     """Generate a wrapper outside the command used for catching the exit code and return it correctly.
 
     If the command is not found or the exit code is $null, exit code will be returned as 1.
 
     Args:
-        args: command arguments passed by users
+        args: command arguments passed by users.
         special_character_replace_fn: A function used for replacing particular characters in the command.
+        exit_action: A string inserted to the wrapper to determine what the action is when the task is done.
+            If it is None, the script will exit with the exit code.
 
     Returns:
         str: A PowerShell Script contains the user's commands with the exit code wrapper.
     """
     quoted_args = [f"'{replace_escapes(arg)}'" for arg in args]
+    exit_action = exit_action if exit_action else "exit"
     cmd_line = " ".join(quoted_args)
     return f"""
 try {{
@@ -66,18 +72,18 @@ try {{
 }}
 catch [System.Management.Automation.CommandNotFoundException] {{
     Write-Host "Command not found: $_, exiting with code 1."
-    exit 1
+    {exit_action} 1
 }}
 catch {{
     Write-Host "An unexpected error occurred: $_"
     if ($LASTEXITCODE -eq $null) {{
         Write-Host "The original exit code is null. Exit with code = 1"
-        exit 1  # Exit with code 1 if command does not set an exit code
+        {exit_action} 1  # Exit with code 1 if command does not set an exit code
     }}
-    exit $LASTEXITCODE
+    {exit_action} $LASTEXITCODE
 }}
 
-exit $LASTEXITCODE
+{exit_action} $LASTEXITCODE
 """
 
 
@@ -94,3 +100,75 @@ def encode_to_base64(command: str) -> str:
     command_bytes = command.encode("utf-16le")
     encoded_command = base64.b64encode(command_bytes)
     return encoded_command.decode("utf-8")
+
+
+def generate_start_job_wrapper(
+    args: Sequence[str], user: Optional[WindowsSessionUser] = None
+) -> str:
+    """Generate a wrapper outside the command used for executing as a background job.
+    For the background job, it can only return string. Exit code cannot be returned. Therefore, we need to handle the
+    return value and extract the exit code. Inside the job script, the script will return the string
+    `Open Job Description action exits with code: [exit_code]`, and the [exit_code] will be captured by using the
+    regular expression in order to return exit code to the main process correctly.
+
+    Args:
+        args: Command arguments passed by users.
+        user: User used for impersonation. If it is None, the script will run under current user.
+
+    Returns:
+        A PowerShell Script contains the user's commands with the Start-Job code wrapper.
+    """
+    cmd_script = generate_exit_code_wrapper(
+        args, exit_action='return "`nOpen Job Description action exits with code: "+'
+    )
+
+    credential_argument = ""
+    if user and user.user != getuser():
+        # To include a single quotation mark in a single-quoted string, need to use a second consecutive single quote.
+        # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
+        username = user.user.replace("'", "''")
+        password = user.password.replace("'", "''")
+        credential_argument = (
+            f" -Credential (New-Object -TypeName System.Management.Automation.PSCredential"
+            f" -ArgumentList '{username}', "
+            f"('{password}' | ConvertTo-SecureString -AsPlainText -Force))"
+        )
+
+    return f"""function ProcessJobOutput {{
+    param(
+        [Parameter(Mandatory=$true)]
+        [System.Management.Automation.Job]$RunningJob
+    )
+    try{{
+        $jobOutput = Receive-Job -Job $RunningJob -ErrorAction Stop
+        if ($null -ne $jobOutput) {{
+            $pattern = 'Open Job Description action exits with code: (\\d+)'
+            $regex = [System.Text.RegularExpressions.Regex]::Match($jobOutput, $pattern)
+            if ($regex.Success) {{
+                # TODO: Need to ignore the return message but print rest of logging
+                $global:exitCode = $regex.Groups[1].Value
+            }}
+            Write-Output $jobOutput
+        }}
+    }} catch {{
+        Write-Output "Error: $_"
+    }}
+}}
+
+# If the job finish without error, a new value must be assigned to the exit code.
+# If no value is assigned, there must be an error inside the job, the script will exit with 1
+$global:exitCode = 1
+$job = Start-Job -ScriptBlock {{
+    {cmd_script}
+}}{credential_argument};
+do {{
+    # Get the output that's currently available from the job
+    ProcessJobOutput -RunningJob $job
+    # Check the job's state
+    Start-Sleep -Seconds 0.2
+}} while ($job.State -eq 'Running')
+Wait-Job $job;
+ProcessJobOutput -RunningJob $job
+Remove-Job $job;
+exit $global:exitCode
+"""
