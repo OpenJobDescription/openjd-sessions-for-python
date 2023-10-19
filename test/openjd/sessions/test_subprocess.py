@@ -14,6 +14,11 @@ from queue import SimpleQueue
 from typing import Union
 from unittest.mock import MagicMock
 
+from openjd.sessions._os_checker import is_windows
+
+if is_windows():
+    import win32api
+
 import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
@@ -83,11 +88,12 @@ class TestLoggingSubprocessSameUser:
         # Can we run a process, capture its output, and discover its return code?
 
         # GIVEN
-        current_user = getpass.getuser()
         user: Union[PosixSessionUser, WindowsSessionUser]
         if is_posix():
+            current_user = getpass.getuser()
             user = PosixSessionUser(user=current_user)
         else:
+            current_user = win32api.GetUserNameEx(win32api.NameSamCompatible)
             user = WindowsSessionUser(user=current_user, password="", group="")
 
         logger = build_logger(queue_handler)

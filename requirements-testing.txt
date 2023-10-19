@@ -7,4 +7,3 @@ black >= 23.7, == 23.*
 ruff >= 0.0.286, == 0.0.*
 mypy >= 1.5.1, == 1.5.*
 psutil >= 5.9.5, == 5.9.*
-pywin32 == 306; platform_system == "Windows"

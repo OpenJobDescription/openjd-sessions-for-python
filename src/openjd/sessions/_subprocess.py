@@ -8,7 +8,6 @@ if is_windows():
     from subprocess import CREATE_NEW_PROCESS_GROUP  # type: ignore
     from ._windows_process_killer import kill_windows_process_tree
 from typing import Any
-from getpass import getuser
 from threading import Event
 from logging import LoggerAdapter
 from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
@@ -214,7 +213,7 @@ class LoggingSubprocess(object):
                 if is_posix():
                     user = cast(PosixSessionUser, self._user)
                     # Only sudo if the user to run as is not the same as the current user.
-                    if user.user != getuser():
+                    if not user.is_process_user():
                         # Note: setsid is required; else the running process will be in the
                         # same process group as the `sudo` command. If that happens, then
                         # we're stuck: 1/ Our user cannot kill processes by the self._user; and
@@ -288,7 +287,7 @@ class LoggingSubprocess(object):
         if self._user is not None:
             user = cast(PosixSessionUser, self._user)
             # Only sudo if the user to run as is not the same as the current user.
-            if user.user != getuser():
+            if not user.is_process_user():
                 cmd.extend(["sudo", "-u", user.user, "-i"])
             signal_child = True
 
