@@ -6,6 +6,7 @@ from ._os_checker import is_posix, is_windows
 
 if is_windows():
     from subprocess import CREATE_NEW_PROCESS_GROUP  # type: ignore
+    from ._windows_process_killer import kill_windows_process_tree
 from typing import Any
 from getpass import getuser
 from threading import Event
@@ -197,7 +198,10 @@ class LoggingSubprocess(object):
             if is_posix():
                 self._posix_signal_subprocess(signal="kill", signal_subprocesses=True)
             else:
-                self._windows_signal_subprocess(signal="kill", signal_subprocesses=True)
+                self._logger.info(
+                    f"Start killing the process tree with the root pid: {self._process.pid}"
+                )
+                kill_windows_process_tree(self._logger, self._process.pid, signal_subprocesses=True)
 
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""
@@ -291,39 +295,6 @@ class LoggingSubprocess(object):
         cmd.extend(
             [
                 POSIX_SIGNAL_SUBPROC_SCRIPT,
-                str(self._process.pid),
-                signal,
-                str(signal_child),
-                str(signal_subprocesses),
-            ]
-        )
-        self._logger.info(f"Running: {shlex.join(cmd)}")
-        result = run(
-            cmd,
-            stdout=PIPE,
-            stderr=STDOUT,
-            stdin=DEVNULL,
-        )
-        if result.returncode != 0:
-            self._logger.warning(
-                f"Failed to send signal '{signal}' to subprocess {self._process.pid}: %s",
-                result.stdout.decode("utf-8"),
-            )
-
-    def _windows_signal_subprocess(self, signal: str, signal_subprocesses: bool = False) -> None:
-        # Convince the type checker that accessing _process is okay
-        assert self._process is not None
-
-        cmd = list[str]()
-        signal_child = False
-
-        if self._user is not None:
-            raise NotImplementedError("Impersonation is not implemented on non-posix yet")
-
-        cmd.extend(
-            [
-                "powershell.exe",
-                WINDOWS_SIGNAL_SUBPROC_SCRIPT,
                 str(self._process.pid),
                 signal,
                 str(signal_child),
