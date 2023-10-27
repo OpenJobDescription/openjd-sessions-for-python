@@ -18,7 +18,6 @@ dependencies = [
 artifacts = [
   "*_version.py",
 ]
-only-packages = true
 
 [tool.hatch.version]
 source = "vcs"
