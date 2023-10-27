@@ -3,7 +3,6 @@
 from typing import Sequence, Optional
 import base64
 import re
-from getpass import getuser
 
 from ._session_user import WindowsSessionUser
 
@@ -123,11 +122,14 @@ def generate_start_job_wrapper(
     )
 
     credential_argument = ""
-    if user and user.user != getuser():
+    if user and not user.is_process_user():
         # To include a single quotation mark in a single-quoted string, need to use a second consecutive single quote.
         # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
         username = user.user.replace("'", "''")
-        password = user.password.replace("'", "''")
+        if user.password:
+            password = user.password.replace("'", "''")
+        else:
+            password = ""
         credential_argument = (
             f" -Credential (New-Object -TypeName System.Management.Automation.PSCredential"
             f" -ArgumentList '{username}', "

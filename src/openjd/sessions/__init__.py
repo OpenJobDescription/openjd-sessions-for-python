@@ -3,7 +3,7 @@
 from ._logging import LOG
 from ._path_mapping import PathFormat, PathMappingRule
 from ._session import ActionStatus, Session, SessionCallbackType, SessionState
-from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
+from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._types import (
     ActionState,
     EnvironmentIdentifier,

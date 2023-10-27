@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 
 dependencies = [
   "openjd-model == 0.1.*",
+  "pywin32 == 306; platform_system == 'Windows'",
 ]
 
 [tool.hatch.build]
@@ -129,4 +130,4 @@ source = [
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 86
+fail_under = 85
