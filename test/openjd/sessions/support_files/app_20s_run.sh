@@ -3,7 +3,7 @@
 
 PYTHON="$1"
 
-SCRIPT=$(dirname $0)/app_10s_run.py
+SCRIPT=$(dirname $0)/app_20s_run.py
 
 "$PYTHON" "$SCRIPT"
 exit $?

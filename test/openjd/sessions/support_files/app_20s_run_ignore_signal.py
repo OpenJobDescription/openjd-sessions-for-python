@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-# As app_10s_run.py except it does not exit when it gets a SIGTERM
+# As app_20s_run.py except it does not exit when it gets a SIGTERM
 
 import signal
 import sys
@@ -17,7 +17,7 @@ if sys.platform.startswith("win"):
 else:
     signal.signal(signal.SIGTERM, hook)
 
-for i in range(0, 10):
+for i in range(0, 20):
     print(i)
     sys.stdout.flush()
     time.sleep(1)
