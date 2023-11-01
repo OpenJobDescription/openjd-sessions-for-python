@@ -247,7 +247,7 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(python_app_loc)],
@@ -283,7 +283,7 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(python_app_loc)],
@@ -331,9 +331,9 @@ class TestLoggingSubprocessSameUser:
         # GIVEN
         logger = build_logger(queue_handler)
         if is_posix():
-            script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.sh").resolve()
+            script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.sh").resolve()
         else:
-            script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.ps1").resolve()
+            script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
 
         subproc = LoggingSubprocess(
             logger=logger,
@@ -508,7 +508,7 @@ class TestLoggingSubprocessPosix(object):
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         shutil.chown(python_app_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
@@ -550,7 +550,7 @@ class TestLoggingSubprocessPosix(object):
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         shutil.chown(python_app_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
@@ -593,7 +593,7 @@ class TestLoggingSubprocessPosix(object):
 
         # GIVEN
         logger = build_logger(queue_handler)
-        script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.sh").resolve()
+        script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.sh").resolve()
         shutil.chown(script_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,

@@ -23,7 +23,7 @@ class TestWindowsProcessKiller:
     def test_suspend_process_tree(self, queue_handler: QueueHandler) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
@@ -41,7 +41,7 @@ class TestWindowsProcessKiller:
     def test_suspend_process(self, queue_handler: QueueHandler) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
@@ -60,7 +60,7 @@ class TestWindowsProcessKiller:
     def test_kill_processes(self, queue_handler: QueueHandler) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
@@ -75,7 +75,7 @@ class TestWindowsProcessKiller:
     def test_kill_windows_process_tree(self, queue_handler: QueueHandler) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When

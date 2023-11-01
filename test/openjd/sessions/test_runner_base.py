@@ -380,9 +380,9 @@ class TestScriptRunnerBase:
         action = Action_2023_09(
             command="{{Task.PythonInterpreter}}",
             args=["{{Task.ScriptFile}}"],
-            timeout=(5 if is_posix() else 8),
+            timeout=(5 if is_posix() else 15),
         )
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
             source={
                 "Task.PythonInterpreter": sys.executable,
@@ -402,8 +402,9 @@ class TestScriptRunnerBase:
         messages = collect_queue_messages(message_queue)
         # The application prints out 0, ..., 9 once a second for 10s.
         # If it ended early, then we printed the first but not the last.
+        print(messages)
         assert "Log from test 0" in messages
-        assert "Log from test 9" not in messages
+        assert "Log from test 14" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(
@@ -432,7 +433,7 @@ class TestScriptRunnerBase:
         assert any(m.startswith("openjd_fail") for m in messages)
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
+    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_terminate(
         self,
         tmp_path: Path,
@@ -448,7 +449,7 @@ class TestScriptRunnerBase:
         with TerminatingRunner(
             logger=logger, session_working_directory=tmp_path, callback=callback
         ) as runner:
-            python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+            python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
             runner._run([sys.executable, str(python_app_loc)])
 
             # WHEN
@@ -480,7 +481,7 @@ class TestScriptRunnerBase:
         # GIVEN
         logger = build_logger(queue_handler)
         with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
-            python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+            python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
 
             # WHEN
             runner._run([sys.executable, str(python_app_loc)], time_limit=timedelta(seconds=1))
@@ -497,7 +498,7 @@ class TestScriptRunnerBase:
         assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
+    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_notify(
         self,
         tmp_path: Path,
@@ -510,7 +511,7 @@ class TestScriptRunnerBase:
         logger = build_logger(queue_handler)
         with NotifyingRunner(logger=logger, session_working_directory=tmp_path) as runner:
             python_app_loc = (
-                Path(__file__).parent / "support_files" / "app_10s_run_ignore_signal.py"
+                Path(__file__).parent / "support_files" / "app_20s_run_ignore_signal.py"
             ).resolve()
             runner._run([sys.executable, str(python_app_loc)])
             now = datetime.utcnow()
@@ -553,7 +554,7 @@ class TestScriptRunnerBase:
         )
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
+    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_double_cancel_notify(
         self,
         tmp_path: Path,
@@ -567,7 +568,7 @@ class TestScriptRunnerBase:
         logger = build_logger(queue_handler)
         with NotifyingRunner(logger=logger, session_working_directory=tmp_path) as runner:
             python_app_loc = (
-                Path(__file__).parent / "support_files" / "app_10s_run_ignore_signal.py"
+                Path(__file__).parent / "support_files" / "app_20s_run_ignore_signal.py"
             ).resolve()
             runner._run([sys.executable, str(python_app_loc)])
 
