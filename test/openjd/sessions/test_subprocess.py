@@ -14,6 +14,11 @@ from queue import SimpleQueue
 from typing import Union
 from unittest.mock import MagicMock
 
+from openjd.sessions._os_checker import is_windows
+
+if is_windows():
+    import win32api
+
 import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
@@ -83,11 +88,12 @@ class TestLoggingSubprocessSameUser:
         # Can we run a process, capture its output, and discover its return code?
 
         # GIVEN
-        current_user = getpass.getuser()
         user: Union[PosixSessionUser, WindowsSessionUser]
         if is_posix():
+            current_user = getpass.getuser()
             user = PosixSessionUser(user=current_user)
         else:
+            current_user = win32api.GetUserNameEx(win32api.NameSamCompatible)
             user = WindowsSessionUser(user=current_user, password="", group="")
 
         logger = build_logger(queue_handler)
@@ -241,7 +247,7 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(python_app_loc)],
@@ -277,7 +283,7 @@ class TestLoggingSubprocessSameUser:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(python_app_loc)],
@@ -325,9 +331,9 @@ class TestLoggingSubprocessSameUser:
         # GIVEN
         logger = build_logger(queue_handler)
         if is_posix():
-            script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.sh").resolve()
+            script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.sh").resolve()
         else:
-            script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.ps1").resolve()
+            script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
 
         subproc = LoggingSubprocess(
             logger=logger,
@@ -502,7 +508,7 @@ class TestLoggingSubprocessPosix(object):
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         shutil.chown(python_app_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
@@ -544,7 +550,7 @@ class TestLoggingSubprocessPosix(object):
 
         # GIVEN
         logger = build_logger(queue_handler)
-        python_app_loc = (Path(__file__).parent / "support_files" / "app_10s_run.py").resolve()
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         shutil.chown(python_app_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
@@ -587,7 +593,7 @@ class TestLoggingSubprocessPosix(object):
 
         # GIVEN
         logger = build_logger(queue_handler)
-        script_loc = (Path(__file__).parent / "support_files" / "app_10s_run.sh").resolve()
+        script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.sh").resolve()
         shutil.chown(script_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,

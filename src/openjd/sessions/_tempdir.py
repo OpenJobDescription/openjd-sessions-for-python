@@ -7,7 +7,12 @@ from shutil import chown, rmtree
 from tempfile import gettempdir, mkdtemp
 from typing import Optional, cast
 
-from ._session_user import PosixSessionUser, SessionUser
+from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
+from ._os_checker import is_posix, is_windows
+
+if is_windows():
+    import win32security
+    import ntsecuritycon
 
 
 class TempDir:
@@ -48,12 +53,10 @@ class TempDir:
                 group ownership of the created directory.
         """
         # pre-flight checks
-        if user and os.name != "posix":  # pragma: nocover
-            raise NotImplementedError("Cross-user is not yet implemented for non-posix systems.")
-        if (
-            user and os.name == "posix" and not isinstance(user, PosixSessionUser)
-        ):  # pragma: nocover
+        if user and is_posix() and not isinstance(user, PosixSessionUser):  # pragma: nocover
             raise ValueError("user must be a posix-user. Got %s", type(user))
+        elif user and is_windows() and not isinstance(user, WindowsSessionUser):
+            raise ValueError("user must be a windows-user. Got %s", type(user))
 
         if not dir:
             dir = Path(gettempdir())
@@ -66,19 +69,54 @@ class TempDir:
 
         # Change the owner
         if user:
-            # TODO - Windows
-            user = cast(PosixSessionUser, user)
-            # Change ownership
-            try:
-                chown(self.path, group=user.group)
-            except OSError as err:
-                raise RuntimeError(
-                    f"Could not change ownership of directory '{str(dir)}' (error: {str(err)}). Please ensure that uid {os.geteuid()} is a member of group {user.group}."  # type: ignore
-                )
-            # Update the permissions to include the group after the group is changed
-            # Note: Only after changing group for security in case the group-ownership
-            # change fails.
-            os.chmod(self.path, mode=stat.S_IRWXU | stat.S_IRWXG)
+            if is_posix():
+                user = cast(PosixSessionUser, user)
+                # Change ownership
+                try:
+                    chown(self.path, group=user.group)
+                except OSError as err:
+                    raise RuntimeError(
+                        f"Could not change ownership of directory '{str(dir)}' (error: {str(err)}). Please ensure that uid {os.geteuid()} is a member of group {user.group}."  # type: ignore
+                    )
+                # Update the permissions to include the group after the group is changed
+                # Note: Only after changing group for security in case the group-ownership
+                # change fails.
+                os.chmod(self.path, mode=stat.S_IRWXU | stat.S_IRWXG)
+            elif is_windows():
+                user = cast(WindowsSessionUser, user)
+                try:
+                    # Change permissions
+                    if user.group:
+                        principal_to_permit = user.group
+                    else:
+                        principal_to_permit = user.user
+
+                    principal_sid, _, _ = win32security.LookupAccountName(None, principal_to_permit)
+
+                    dacl = win32security.ACL()
+                    dacl.AddAccessAllowedAce(
+                        win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, principal_sid
+                    )
+
+                    sd = win32security.GetFileSecurity(
+                        str(self.path), win32security.DACL_SECURITY_INFORMATION
+                    )
+
+                    # Arguments:
+                    # 1. bDaclPresent = 1: Indicates that the DACL is present in the security descriptor.
+                    #    If set to 0, this method ignores the provided DACL and allows access to all principals.
+                    # 2. dacl: The discretionary access control list (DACL) to be set in the security descriptor.
+                    # 3. bDaclDefaulted = 0: Indicates the DACL was provided and not defaulted.
+                    #    If set to 1, indicates the DACL was defaulted, as in the case of permissions inherited from a parent directory.
+                    sd.SetSecurityDescriptorDacl(1, dacl, 0)
+
+                    win32security.SetFileSecurity(
+                        str(self.path), win32security.DACL_SECURITY_INFORMATION, sd
+                    )
+                except Exception as err:
+                    raise RuntimeError(
+                        f"Could not change permissions of directory '{str(dir)}' (error: {str(err)})"
+                    )
 
     def cleanup(self) -> None:
         """Deletes the temporary directory and all of its contents.

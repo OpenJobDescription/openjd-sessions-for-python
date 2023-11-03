@@ -367,17 +367,20 @@ class Session(object):
                 # removal: 1/ `sudo -u <user> -i rm -rf <sessiondir>`, and then 2/ doing a normal
                 # recursive removal to delete the stuff that only this user can delete.
                 if self._user is not None:
+                    files = [str(f) for f in self.working_directory.glob("*")]
+
                     if is_posix():
-                        files = [str(f) for f in self.working_directory.glob("*")]
-                        subprocess = LoggingSubprocess(
-                            logger=self._logger,
-                            args=["rm", "-rf"] + files,
-                            user=self._user,
-                        )
-                        # Note: Blocking call until the process has exited
-                        subprocess.run()
+                        recursive_delete_cmd = ["rm", "-rf"]
                     else:
-                        raise NotImplementedError("Not implemented for non-posix")
+                        recursive_delete_cmd = ["Remove-Item", "-Recurse", "-Force"]
+
+                    subprocess = LoggingSubprocess(
+                        logger=self._logger,
+                        args=recursive_delete_cmd + files,
+                        user=self._user,
+                    )
+                    # Note: Blocking call until the process has exited
+                    subprocess.run()
 
                 self._working_dir.cleanup()
             except RuntimeError as exc:

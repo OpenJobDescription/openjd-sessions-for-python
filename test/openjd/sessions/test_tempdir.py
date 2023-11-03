@@ -5,15 +5,20 @@ import stat
 import tempfile
 from pathlib import Path
 from subprocess import DEVNULL, run
-from openjd.sessions._os_checker import is_posix
+
+from openjd.sessions._os_checker import is_posix, is_windows
 
 if is_posix():
     import grp
     import pwd
 
-import pytest
+if is_windows():
+    import win32security
 
-from openjd.sessions import PosixSessionUser
+import pytest
+from unittest.mock import patch
+
+from openjd.sessions import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._tempdir import TempDir
 
 from .conftest import has_posix_disjoint_user, has_posix_target_user
@@ -85,6 +90,71 @@ class TestTempDir:
         # WHEN
         with pytest.raises(RuntimeError):
             TempDir(dir=dir)
+
+
+@pytest.mark.xfail(not is_windows(), reason="Windows-specific tests")
+class TestTempDirWindowsUser:
+    FULL_CONTROL_MASK = 2032127
+
+    @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
+    def test_windows_user_with_group_permits_group(self, mock_user_match):
+        # GIVEN
+        # Use a builtin account, so we can expect it to exist on any Windows machine
+        windows_user = WindowsSessionUser("Guest", group="Users")
+
+        # WHEN
+        tempdir = TempDir(user=windows_user)
+
+        # THEN
+        sd = win32security.GetFileSecurity(
+            str(tempdir.path), win32security.DACL_SECURITY_INFORMATION
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+
+        assert self.principal_has_full_control_in_dacl(dacl, windows_user.group)
+
+    @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
+    def test_windows_user_without_group_permits_user(self, mock_user_match):
+        # GIVEN
+        windows_user = WindowsSessionUser("Guest")
+
+        # WHEN
+        tempdir = TempDir(user=windows_user)
+
+        # THEN
+        sd = win32security.GetFileSecurity(
+            str(tempdir.path), win32security.DACL_SECURITY_INFORMATION
+        )
+        dacl = sd.GetSecurityDescriptorDacl()
+
+        assert self.principal_has_full_control_in_dacl(dacl, windows_user.user)
+
+    @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
+    def test_invalid_windows_group_raises_exception(self, mock_user_match):
+        # GIVEN
+        # Use a builtin account, so we can expect it to exist on any Windows machine
+        windows_user = WindowsSessionUser("Guest", group="nonexistentgroup")
+
+        # THEN
+        with pytest.raises(RuntimeError, match="Could not change permissions of directory"):
+            TempDir(user=windows_user)
+
+    def principal_has_full_control_in_dacl(self, dacl, principal_to_check):
+        principal_to_check_sid, _, _ = win32security.LookupAccountName(None, principal_to_check)
+
+        for i in range(dacl.GetAceCount()):
+            ace = dacl.GetAce(i)
+
+            access_mask = ace[1]
+            ace_principal_sid = ace[2]
+
+            if (
+                ace_principal_sid == principal_to_check_sid
+                and access_mask == self.FULL_CONTROL_MASK
+            ):
+                return True
+
+        return False
 
 
 @pytest.mark.xfail(
