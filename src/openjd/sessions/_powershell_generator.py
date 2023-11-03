@@ -2,6 +2,7 @@
 
 from typing import Sequence, Optional
 import base64
+import os
 import re
 
 from ._session_user import WindowsSessionUser
@@ -22,10 +23,10 @@ def replace_escapes(args: str) -> str:
         "\\": "\\\\",
         # This is a known issue in PowerShell without installing additional `Native` module
         # https://github.com/MicrosoftDocs/PowerShell-Docs/issues/2361
-        '"': '\\"',
-        # To include a single quotation mark in a single-quoted string, use a second consecutive single quote.
+        "'": "\'",
+        # To include a double quotation mark in a double-quoted string, use a second consecutive double quote.
         # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
-        "'": "''",
+        '"': '""',
     }
     return re.sub(r'[\'\\"]', lambda m: replacements[m.group(0)], args)
 
@@ -101,27 +102,26 @@ def encode_to_base64(command: str) -> str:
     return encoded_command.decode("utf-8")
 
 
-def generate_start_job_wrapper(
-    args: Sequence[str], user: Optional[WindowsSessionUser] = None
+def generate_process_wrapper(
+    args: Sequence[str], signal_script: os.PathLike, user: Optional[WindowsSessionUser] = None,
 ) -> str:
-    """Generate a wrapper outside the command used for executing as a background job.
-    For the background job, it can only return string. Exit code cannot be returned. Therefore, we need to handle the
-    return value and extract the exit code. Inside the job script, the script will return the string
-    `Open Job Description action exits with code: [exit_code]`, and the [exit_code] will be captured by using the
-    regular expression in order to return exit code to the main process correctly.
+    """Generate a wrapper outside the command used for executing as a process.
 
     Args:
         args: Command arguments passed by users.
         user: User used for impersonation. If it is None, the script will run under current user.
 
     Returns:
-        A PowerShell Script contains the user's commands with the Start-Job code wrapper.
+        A PowerShell Script contains the user's commands with the Process code wrapper.
     """
-    cmd_script = generate_exit_code_wrapper(
-        args, exit_action='return "`nOpen Job Description action exits with code: "+'
-    )
 
-    credential_argument = ""
+    cmd = args[0]
+    quoted_args = [f'"{replace_escapes(arg)}"' for arg in args[1:]]
+    arg_list = ""
+    for arg in quoted_args:
+        arg_list += f"$pInfo.ArgumentList.Add({arg})\r\n"
+
+    credential_info = ""
     if user and not user.is_process_user():
         # To include a single quotation mark in a single-quoted string, need to use a second consecutive single quote.
         # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
@@ -130,47 +130,60 @@ def generate_start_job_wrapper(
             password = user.password.replace("'", "''")
         else:
             password = ""
-        credential_argument = (
-            f" -Credential (New-Object -TypeName System.Management.Automation.PSCredential"
-            f" -ArgumentList '{username}', "
-            f"('{password}' | ConvertTo-SecureString -AsPlainText -Force))"
-        )
+        credential_info = (f"""
+$pInfo.UserName = "{username}"
+$pInfo.Password = ("{password}" | ConvertTo-SecureString -AsPlainText -Force)
+$pInfo.CreateNoWindow = $true
+""")
 
-    return f"""function ProcessJobOutput {{
-    param(
-        [Parameter(Mandatory=$true)]
-        [System.Management.Automation.Job]$RunningJob
-    )
-    try{{
-        $jobOutput = Receive-Job -Job $RunningJob -ErrorAction Stop
-        if ($null -ne $jobOutput) {{
-            $pattern = 'Open Job Description action exits with code: (\\d+)'
-            $regex = [System.Text.RegularExpressions.Regex]::Match($jobOutput, $pattern)
-            if ($regex.Success) {{
-                # TODO: Need to ignore the return message but print rest of logging
-                $global:exitCode = $regex.Groups[1].Value
-            }}
-            Write-Output $jobOutput
-        }}
-    }} catch {{
-        Write-Output "Error: $_"
+    return f"""
+$pInfo = New-Object System.Diagnostics.ProcessStartInfo
+
+$pInfo.FileName = '{cmd}'
+{arg_list}
+$pInfo.RedirectStandardOutput = $true
+$pInfo.RedirectStandardError = $true
+$pInfo.UseShellExecute = $false
+{credential_info}
+
+$p = New-Object System.Diagnostics.Process
+$p.StartInfo = $pInfo
+
+$WriteOutputAction = {{ [Console]::WriteLine($Event.SourceEventArgs.Data) }}
+$WriteErrorAction = {{ [Console]::WriteLine("Error: " + $Event.SourceEventArgs.Data) }}
+Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $WriteOutputAction | Out-Null
+Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $WriteErrorAction | Out-Null
+
+$exitCode = $null
+
+try {{
+    $p.Start() | Out-Null
+
+    $p.BeginOutputReadLine()
+    $p.BeginErrorReadLine()
+
+    while (-Not $p.HasExited) {{
+        [Console]::Out.Flush()
+        [Console]::Error.Flush()
+        Start-Sleep 0.5
     }}
 }}
+catch {{
+    Write-Output "Error: $_"
+    $exitCode = 1
+}}
+finally {{
+    if (-Not $p.HasExited) {{
+        # If we got here before process is done, generate a ctrl-break event to the process
+        $j = Start-Job -ScriptBlock {{ {signal_script} $args[0] }} -ArgumentList $p.id
+        Receive-Job -Job $j -Wait -AutoRemoveJob | Write-Host
 
-# If the job finish without error, a new value must be assigned to the exit code.
-# If no value is assigned, there must be an error inside the job, the script will exit with 1
-$global:exitCode = 1
-$job = Start-Job -ScriptBlock {{
-    {cmd_script}
-}}{credential_argument};
-do {{
-    # Get the output that's currently available from the job
-    ProcessJobOutput -RunningJob $job
-    # Check the job's state
-    Start-Sleep -Seconds 0.2
-}} while ($job.State -eq 'Running')
-Wait-Job $job;
-ProcessJobOutput -RunningJob $job
-Remove-Job $job;
-exit $global:exitCode
+        $p.WaitForExit()
+        Start-Sleep 1
+    }}
+
+    if ($exitCode -eq $null) {{ $exitCode = $p.ExitCode }}
+    $p.Close()
+    exit $ExitCode
+ }}
 """

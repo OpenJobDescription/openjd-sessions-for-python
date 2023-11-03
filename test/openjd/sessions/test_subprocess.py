@@ -146,10 +146,8 @@ class TestLoggingSubprocessSameUser:
             assert subproc.exit_code is not None
             assert subproc.exit_code != 0
             assert any(
-                message.startswith(
-                    "Command not found: The term 'test_failed_command' "
-                    "is not recognized as the name of a cmdlet"
-                )
+                "An error occurred trying to start process 'test_failed_command'" in message
+                and "The system cannot find the file specified." in message
                 for message in messages
             )
 
@@ -236,10 +234,6 @@ class TestLoggingSubprocessSameUser:
         # THEN
         callback_mock.assert_called_once()
 
-    @pytest.mark.skipif(
-        is_windows(),
-        reason="Windows is not supported notify and terminate mode",
-    )
     def test_notify_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler
     ) -> None:
@@ -256,7 +250,7 @@ class TestLoggingSubprocessSameUser:
         def end_proc():
             subproc.wait_until_started()
             # Then give the Python subprocess some time to finish loading and start running.
-            time.sleep(1)
+            time.sleep(5)
             subproc.notify()
 
         # WHEN
@@ -268,8 +262,7 @@ class TestLoggingSubprocessSameUser:
         # THEN
         assert not subproc.is_running
         messages = collect_queue_messages(message_queue)
-        # We only print "Trapped" on posix, since we haven't implemented windows signals yet.
-        assert sys.platform.startswith("win") or ("Trapped" in messages)
+        assert "Trapped" in messages
         # Check for the first message that would print
         assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.

@@ -14,11 +14,12 @@ from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
 from typing import Callable, Optional, Sequence, cast
 from pathlib import Path
 from datetime import timedelta
+import signal
 
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 from ._powershell_generator import (
     encode_to_base64,
-    generate_start_job_wrapper,
+    generate_process_wrapper,
 )
 
 __all__ = ("LoggingSubprocess",)
@@ -171,7 +172,7 @@ class LoggingSubprocess(object):
         On Linux/macOS:
             - Send a SIGTERM to the parent process
         On Windows:
-            - Not yet supported.
+            - Send a CTRL_BREAK_EVENT to the process group
 
         TODO: Send the signal to every direct and transitive child of the parent
         process.
@@ -180,8 +181,7 @@ class LoggingSubprocess(object):
             if is_posix():
                 self._posix_signal_subprocess(signal="term", signal_subprocesses=False)
             else:
-                # TODO - On windows, need to investigate which signal should be sent
-                raise NotImplementedError("Notify not implemented on non-posix yet")
+                self._windows_sigbreak_subprocess()
 
     def terminate(self) -> None:
         """The 'Terminate' part of Open Job Description's subprocess cancelation method.
@@ -232,10 +232,15 @@ class LoggingSubprocess(object):
                 command.extend(self._args)
             else:
                 encoded_start_service_command = encode_to_base64(
-                    generate_start_job_wrapper(self._args, cast(WindowsSessionUser, self._user))
+                    generate_process_wrapper(
+                        self._args,
+                        WINDOWS_SIGNAL_SUBPROC_SCRIPT,
+                        cast(WindowsSessionUser, self._user),
+                    )
                 )
                 command = [
-                    "powershell.exe",
+                    "pwsh.exe",
+                    "-NonInteractive",
                     "-ExecutionPolicy",
                     "Unrestricted",
                     "-EncodedCommand",
@@ -312,3 +317,11 @@ class LoggingSubprocess(object):
                 f"Failed to send signal '{signal}' to subprocess {self._process.pid}: %s",
                 result.stdout.decode("utf-8"),
             )
+
+    def _windows_sigbreak_subprocess(self) -> None:
+        """Sends a CTRL_BREAK_EVENT signal to the subprocess"""
+        # Convince the type checker that accessing _process is okay
+        assert self._process is not None
+
+        self._logger.info(f"Send CTRL_BREAK_EVENT to {self._process.pid}")
+        self._process.send_signal(signal.CTRL_BREAK_EVENT)
