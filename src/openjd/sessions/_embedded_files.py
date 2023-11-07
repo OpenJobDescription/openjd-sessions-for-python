@@ -53,20 +53,19 @@ def write_file_for_user(
     with _open_context(filename, flags, mode=mode) as fd:
         os.write(fd, data.encode("utf-8"))
 
-    if user is not None:
-        if os.name != "posix":
-            raise NotImplementedError("Impersonation is not implemented on non-posix systems yet.")
-        user = cast(PosixSessionUser, user)
-        # Set the group of the file
-        chown(filename, group=user.group)
-        # Update the permissions to include the group after the group is changed
-        # Note: Only after changing group for security in case the group-ownership
-        # change fails.
-        mode |= stat.S_IRGRP | stat.S_IWGRP | (additional_permissions & stat.S_IRWXG)
+    if os.name == "posix":
+        if user is not None:
+            user = cast(PosixSessionUser, user)
+            # Set the group of the file
+            chown(filename, group=user.group)
+            # Update the permissions to include the group after the group is changed
+            # Note: Only after changing group for security in case the group-ownership
+            # change fails.
+            mode |= stat.S_IRGRP | stat.S_IWGRP | (additional_permissions & stat.S_IRWXG)
 
-    # The file may have already existed before calling this function (e.g. created by mkstemp)
-    # so unconditionally set the file permissions to ensure that additional_permissions are set.
-    os.chmod(filename, mode=mode)
+        # The file may have already existed before calling this function (e.g. created by mkstemp)
+        # so unconditionally set the file permissions to ensure that additional_permissions are set.
+        os.chmod(filename, mode=mode)
 
 
 class EmbeddedFilesScope(Enum):
