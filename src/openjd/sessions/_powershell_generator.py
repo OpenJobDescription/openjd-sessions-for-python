@@ -21,14 +21,11 @@ def replace_escapes(args: str) -> str:
         # Apply the backslash characters rules from CommandLineToArgvW
         # https://learn.microsoft.com/en-us/archive/blogs/twistylittlepassagesallalike/everyone-quotes-command-line-arguments-the-wrong-way
         "\\": "\\\\",
-        # This is a known issue in PowerShell without installing additional `Native` module
-        # https://github.com/MicrosoftDocs/PowerShell-Docs/issues/2361
-        "'": "\'",
-        # To include a double quotation mark in a double-quoted string, use a second consecutive double quote.
+        # To include a single quotation mark in a single-quoted string, use a second consecutive single quote.
         # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
-        '"': '""',
+        "'": "''",
     }
-    return re.sub(r'[\'\\"]', lambda m: replacements[m.group(0)], args)
+    return re.sub(r"['\\]", lambda m: replacements[m.group(0)], args)
 
 
 def generate_exit_code_powershell(cmd_line: str) -> str:
@@ -103,7 +100,9 @@ def encode_to_base64(command: str) -> str:
 
 
 def generate_process_wrapper(
-    args: Sequence[str], signal_script: os.PathLike, user: Optional[WindowsSessionUser] = None,
+    args: Sequence[str],
+    signal_script: os.PathLike,
+    user: Optional[WindowsSessionUser] = None,
 ) -> str:
     """Generate a wrapper outside the command used for executing as a process.
 
@@ -116,10 +115,10 @@ def generate_process_wrapper(
     """
 
     cmd = args[0]
-    quoted_args = [f'"{replace_escapes(arg)}"' for arg in args[1:]]
+    quoted_args = [f"{replace_escapes(arg)}" for arg in args[1:]]
     arg_list = ""
     for arg in quoted_args:
-        arg_list += f"$pInfo.ArgumentList.Add({arg})\r\n"
+        arg_list += f"$pInfo.ArgumentList.Add('{arg}')\r\n"
 
     credential_info = ""
     if user and not user.is_process_user():
@@ -130,11 +129,11 @@ def generate_process_wrapper(
             password = user.password.replace("'", "''")
         else:
             password = ""
-        credential_info = (f"""
-$pInfo.UserName = "{username}"
-$pInfo.Password = ("{password}" | ConvertTo-SecureString -AsPlainText -Force)
+        credential_info = f"""
+$pInfo.UserName = '{username}'
+$pInfo.Password = ('{password}' | ConvertTo-SecureString -AsPlainText -Force)
 $pInfo.CreateNoWindow = $true
-""")
+"""
 
     return f"""
 $pInfo = New-Object System.Diagnostics.ProcessStartInfo

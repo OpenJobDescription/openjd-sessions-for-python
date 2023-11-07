@@ -250,7 +250,7 @@ class TestLoggingSubprocessSameUser:
         def end_proc():
             subproc.wait_until_started()
             # Then give the Python subprocess some time to finish loading and start running.
-            time.sleep(5)
+            time.sleep(1 if not is_windows() else 5)
             subproc.notify()
 
         # WHEN

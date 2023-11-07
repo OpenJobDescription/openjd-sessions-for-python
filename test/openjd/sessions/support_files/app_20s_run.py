@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 
+
 def hook(handle, frame):
     print("Trapped")
     sys.stdout.flush()

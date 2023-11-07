@@ -178,7 +178,7 @@ class TestScriptRunnerBase:
             assert any(
                 item.startswith(
                     "Command not found: The term 'test_failed_command'"
-                    " is not recognized as the name of a cmdlet"
+                    " is not recognized as a name of a cmdlet"
                 )
                 for item in messages
             ), "Error message in Windows is not correct."

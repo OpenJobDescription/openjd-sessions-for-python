@@ -34,11 +34,11 @@ __all__ = ("LoggingSubprocess",)
 # ========================================================================
 # ========================================================================
 
-POSIX_SIGNAL_SUBPROC_SCRIPT = str(
+POSIX_SIGNAL_SUBPROC_SCRIPT = (
     Path(__file__).parent / "_scripts" / "_posix" / "_signal_subprocess.sh"
 )
 
-WINDOWS_SIGNAL_SUBPROC_SCRIPT = str(
+WINDOWS_SIGNAL_SUBPROC_SCRIPT = (
     Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.ps1"
 )
 
@@ -298,7 +298,7 @@ class LoggingSubprocess(object):
 
         cmd.extend(
             [
-                POSIX_SIGNAL_SUBPROC_SCRIPT,
+                str(POSIX_SIGNAL_SUBPROC_SCRIPT),
                 str(self._process.pid),
                 signal,
                 str(signal_child),
@@ -324,4 +324,4 @@ class LoggingSubprocess(object):
         assert self._process is not None
 
         self._logger.info(f"Send CTRL_BREAK_EVENT to {self._process.pid}")
-        self._process.send_signal(signal.CTRL_BREAK_EVENT)
+        self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore

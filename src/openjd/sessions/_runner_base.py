@@ -293,9 +293,10 @@ class ScriptRunnerBase(ABC):
             )
             self._logger.info(f"Wrote the following script to {filename}:\n{script}")
 
+            subprocess_args = [filename] if is_posix() else ["pwsh.exe", filename]
             self._process = LoggingSubprocess(
                 logger=self._logger,
-                args=[filename],
+                args=subprocess_args,
                 user=self._user,
             )
 

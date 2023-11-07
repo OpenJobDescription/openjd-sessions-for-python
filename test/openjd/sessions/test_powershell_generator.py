@@ -54,4 +54,4 @@ class TestPowershellGenerator:
 
     def test_replace_escapes(self):
         result = replace_escapes("This is a test string with \\, \" and ' characters.")
-        assert result == "This is a test string with \\\\, \\\" and '' characters."
+        assert result == "This is a test string with \\\\, \" and '' characters."
