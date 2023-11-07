@@ -85,7 +85,6 @@ class TempDir:
             elif is_windows():
                 user = cast(WindowsSessionUser, user)
                 try:
-                    # Change permissions
                     if user.group:
                         principal_to_permit = user.group
                     else:
@@ -93,15 +92,23 @@ class TempDir:
 
                     principal_sid, _, _ = win32security.LookupAccountName(None, principal_to_permit)
 
+                    # We don't want to propagate existing permissions, so create a new DACL
                     dacl = win32security.ACL()
-                    dacl.AddAccessAllowedAce(
-                        win32security.ACL_REVISION, ntsecuritycon.FILE_ALL_ACCESS, principal_sid
+
+                    # Add an ACE to the DACL giving the principal full control and enabling inheritance of the ACE
+                    dacl.AddAccessAllowedAceEx(
+                        win32security.ACL_REVISION,
+                        ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE,
+                        ntsecuritycon.FILE_ALL_ACCESS,
+                        principal_sid,
                     )
 
+                    # Get the security descriptor of the tempdir
                     sd = win32security.GetFileSecurity(
                         str(self.path), win32security.DACL_SECURITY_INFORMATION
                     )
 
+                    # Set the security descriptor's DACL to the newly-created DACL
                     # Arguments:
                     # 1. bDaclPresent = 1: Indicates that the DACL is present in the security descriptor.
                     #    If set to 0, this method ignores the provided DACL and allows access to all principals.
@@ -110,6 +117,7 @@ class TempDir:
                     #    If set to 1, indicates the DACL was defaulted, as in the case of permissions inherited from a parent directory.
                     sd.SetSecurityDescriptorDacl(1, dacl, 0)
 
+                    # Set the security descriptor to the tempdir
                     win32security.SetFileSecurity(
                         str(self.path), win32security.DACL_SECURITY_INFORMATION, sd
                     )
