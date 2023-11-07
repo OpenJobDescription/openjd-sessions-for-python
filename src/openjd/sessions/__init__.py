@@ -13,6 +13,7 @@ from ._types import (
     ParameterType,
     StepScriptModel,
 )
+from ._version import version
 
 __all__ = (
     "ActionState",
@@ -32,4 +33,5 @@ __all__ = (
     "SessionUser",
     "StepScriptModel",
     "WindowsSessionUser",
+    "version",
 )
