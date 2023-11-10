@@ -135,6 +135,30 @@ $pInfo.Password = ('{password}' | ConvertTo-SecureString -AsPlainText -Force)
 $pInfo.CreateNoWindow = $true
 """
 
+    if not credential_info:
+        process_end_block = """
+    while (-Not $p.HasExited) {
+        Start-Sleep 0.5
+        [Console]::Out.Flush()
+        [Console]::Error.Flush()
+    }"""
+    else:
+        process_end_block = f"""
+    if (-Not $p.HasExited) {{
+        # If we got here before process is done, generate a ctrl-break event to the process
+        $j = Start-Job -ScriptBlock {{ {signal_script} $args[0] }} -ArgumentList $p.id
+
+        while (-Not $p.HasExited) {{
+            Start-Sleep 0.5
+            Receive-Job -Job $j | Write-Host
+            [Console]::Out.Flush()
+            [Console]::Error.Flush()
+        }}
+
+        Receive-Job -Job $j -Wait -AutoRemove | Write-Host
+    }}"""
+
+    # Generate the ps script
     return f"""
 $pInfo = New-Object System.Diagnostics.ProcessStartInfo
 
@@ -153,7 +177,7 @@ $WriteErrorAction = {{ [Console]::WriteLine("Error: " + $Event.SourceEventArgs.D
 Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $WriteOutputAction | Out-Null
 Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $WriteErrorAction | Out-Null
 
-$exitCode = $null
+$ExitCode = $null
 
 try {{
     $p.Start() | Out-Null
@@ -162,26 +186,22 @@ try {{
     $p.BeginErrorReadLine()
 
     while (-Not $p.HasExited) {{
+        Start-Sleep 0.5
         [Console]::Out.Flush()
         [Console]::Error.Flush()
-        Start-Sleep 0.5
     }}
 }}
 catch {{
     Write-Output "Error: $_"
-    $exitCode = 1
+    $ExitCode = 1
 }}
 finally {{
-    if (-Not $p.HasExited) {{
-        # If we got here before process is done, generate a ctrl-break event to the process
-        $j = Start-Job -ScriptBlock {{ {signal_script} $args[0] }} -ArgumentList $p.id
-        Receive-Job -Job $j -Wait -AutoRemoveJob | Write-Host
-
-        $p.WaitForExit()
-        Start-Sleep 1
+    if (-Not $p.Id) {{
+        exit $ExitCode
     }}
+    {process_end_block}
 
-    if ($exitCode -eq $null) {{ $exitCode = $p.ExitCode }}
+    $ExitCode = $p.ExitCode
     $p.Close()
     exit $ExitCode
  }}

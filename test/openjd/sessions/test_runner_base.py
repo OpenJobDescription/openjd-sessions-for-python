@@ -433,7 +433,6 @@ class TestScriptRunnerBase:
         assert any(m.startswith("openjd_fail") for m in messages)
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_terminate(
         self,
         tmp_path: Path,
@@ -498,7 +497,6 @@ class TestScriptRunnerBase:
         assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_notify(
         self,
         tmp_path: Path,
@@ -514,10 +512,11 @@ class TestScriptRunnerBase:
                 Path(__file__).parent / "support_files" / "app_20s_run_ignore_signal.py"
             ).resolve()
             runner._run([sys.executable, str(python_app_loc)])
-            now = datetime.utcnow()
 
             # WHEN
-            time.sleep(1.5)  # Give the process a little time to do something
+            secs = 2 if not is_windows() else 5
+            time.sleep(secs)  # Give the process a little time to do something
+            now = datetime.utcnow()
             runner.cancel(time_limit=timedelta(seconds=2))
 
             # THEN
@@ -544,17 +543,12 @@ class TestScriptRunnerBase:
         assert "NotifyEnd" in notification_data
         assert notification_data["NotifyEnd"][-1] == "Z"
         time_end = datetime.fromisoformat(notification_data["NotifyEnd"][:-1])
-        # Timestamp should be around 3.5s from start, but give a 1s window
+        # Timestamp should be around 2s from cancel signal, but give a 1s window
         # for timing differences.
         delta_t = time_end - now
-        assert (
-            timedelta(seconds=2, milliseconds=500)
-            < delta_t
-            < timedelta(seconds=4, milliseconds=500)
-        )
+        assert timedelta(seconds=1) < delta_t < timedelta(seconds=3)
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_cancel_double_cancel_notify(
         self,
         tmp_path: Path,
@@ -573,7 +567,8 @@ class TestScriptRunnerBase:
             runner._run([sys.executable, str(python_app_loc)])
 
             # WHEN
-            time.sleep(1.5)  # Give the process a little time to do something
+            secs = 2 if not is_windows() else 5
+            time.sleep(secs)  # Give the process a little time to do something
             runner.cancel(time_limit=timedelta(seconds=15))
             runner.cancel(time_limit=timedelta(seconds=1))
 

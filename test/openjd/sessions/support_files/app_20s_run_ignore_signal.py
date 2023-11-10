@@ -14,6 +14,7 @@ def hook(handle, frame):
 
 if sys.platform.startswith("win"):
     signal.signal(signal.SIGINT, hook)
+    signal.signal(signal.SIGBREAK, hook)
 else:
     signal.signal(signal.SIGTERM, hook)
 

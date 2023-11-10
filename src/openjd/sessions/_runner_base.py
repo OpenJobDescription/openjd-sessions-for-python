@@ -20,7 +20,7 @@ from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model.v2023_09 import Action as Action_2023_09
 from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, write_file_for_user
-from ._os_checker import is_posix
+from ._os_checker import is_posix, is_windows
 from ._powershell_generator import generate_exit_code_wrapper
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
@@ -293,7 +293,9 @@ class ScriptRunnerBase(ABC):
             )
             self._logger.info(f"Wrote the following script to {filename}:\n{script}")
 
-            subprocess_args = [filename] if is_posix() else ["pwsh.exe", filename]
+            subprocess_args = (
+                [filename] if not is_windows() else ["pwsh.exe", "-NonInteractive", filename]
+            )
             self._process = LoggingSubprocess(
                 logger=self._logger,
                 args=subprocess_args,

@@ -328,9 +328,12 @@ class TestLoggingSubprocessSameUser:
         else:
             script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
 
+        args = [str(script_loc), sys.executable]
+        if is_windows():
+            args.insert(0, "pwsh.exe")
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[str(script_loc), sys.executable],
+            args=args,
         )
 
         def end_proc():
@@ -345,7 +348,7 @@ class TestLoggingSubprocessSameUser:
             attempt = 0
             # For Windows, we will have 2 python process 1 powershell process
             # 1 conhost.exe process used for drawing the console window, although this windows is invisible
-            expected_num_children = 4 if is_windows() else 1
+            expected_num_children = 3 if is_windows() else 1
             # Then give the subprocess some time to finish loading and start running some children.
             while len(children) < expected_num_children and attempt < 50:
                 time.sleep(0.25)
