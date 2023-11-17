@@ -135,6 +135,11 @@ $pInfo.Password = ('{password}' | ConvertTo-SecureString -AsPlainText -Force)
 $pInfo.CreateNoWindow = $true
 """
 
+    # When passed user credentials, process.start() will create a new window and
+    # process group. To relay the ctrl-break signal there, we call our signal_script.
+    # When not given user credentials, the new process will be in the current
+    # process group and will receive the ctrl-break signal. We do not need to
+    # call the signal_script.
     if not credential_info:
         process_end_block = """
     while (-Not $p.HasExited) {
