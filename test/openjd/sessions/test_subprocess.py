@@ -250,6 +250,7 @@ class TestLoggingSubprocessSameUser:
         def end_proc():
             subproc.wait_until_started()
             # Then give the Python subprocess some time to finish loading and start running.
+            # For Windows, allow additional time for Powershell
             time.sleep(1 if not is_windows() else 5)
             subproc.notify()
 
@@ -347,7 +348,6 @@ class TestLoggingSubprocessSameUser:
             children = list[Process]()
             attempt = 0
             # For Windows, we will have 2 python process 1 powershell process
-            # 1 conhost.exe process used for drawing the console window, although this windows is invisible
             expected_num_children = 3 if is_windows() else 1
             # Then give the subprocess some time to finish loading and start running some children.
             while len(children) < expected_num_children and attempt < 50:

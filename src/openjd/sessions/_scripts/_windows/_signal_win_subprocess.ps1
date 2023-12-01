@@ -53,4 +53,4 @@ function Send-SIGBREAK {
 }
 
 
-Send-SIGBREAK "$proc_id"
+Send-SIGBREAK "$proc_group_id"

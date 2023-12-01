@@ -114,11 +114,11 @@ def generate_process_wrapper(
         A PowerShell Script contains the user's commands with the Process code wrapper.
     """
 
-    cmd = args[0]
-    quoted_args = [f"{replace_escapes(arg)}" for arg in args[1:]]
-    arg_list = ""
-    for arg in quoted_args:
-        arg_list += f"$pInfo.ArgumentList.Add('{arg}')\r\n"
+    escaped_args = [f"{replace_escapes(arg)}" for arg in args]
+    cmd = escaped_args[0]
+    quoted_arg_list = ""
+    for arg in escaped_args[1:]:
+        quoted_arg_list += f"$pInfo.ArgumentList.Add('{arg}')\r\n"
 
     credential_info = ""
     if user and not user.is_process_user():
@@ -129,6 +129,7 @@ def generate_process_wrapper(
             password = user.password.replace("'", "''")
         else:
             password = ""
+        # TODO:  Verify security of passing password within a command-line argument
         credential_info = f"""
 $pInfo.UserName = '{username}'
 $pInfo.Password = ('{password}' | ConvertTo-SecureString -AsPlainText -Force)
@@ -168,7 +169,7 @@ $pInfo.CreateNoWindow = $true
 $pInfo = New-Object System.Diagnostics.ProcessStartInfo
 
 $pInfo.FileName = '{cmd}'
-{arg_list}
+{quoted_arg_list}
 $pInfo.RedirectStandardOutput = $true
 $pInfo.RedirectStandardError = $true
 $pInfo.UseShellExecute = $false

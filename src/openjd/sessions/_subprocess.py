@@ -34,11 +34,11 @@ __all__ = ("LoggingSubprocess",)
 # ========================================================================
 # ========================================================================
 
-POSIX_SIGNAL_SUBPROC_SCRIPT = (
+POSIX_SIGNAL_SUBPROC_SCRIPT_PATH = (
     Path(__file__).parent / "_scripts" / "_posix" / "_signal_subprocess.sh"
 )
 
-WINDOWS_SIGNAL_SUBPROC_SCRIPT = (
+WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH = (
     Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.ps1"
 )
 
@@ -234,7 +234,7 @@ class LoggingSubprocess(object):
                 encoded_start_service_command = encode_to_base64(
                     generate_process_wrapper(
                         self._args,
-                        WINDOWS_SIGNAL_SUBPROC_SCRIPT,
+                        WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH,
                         cast(WindowsSessionUser, self._user),
                     )
                 )
@@ -298,7 +298,7 @@ class LoggingSubprocess(object):
 
         cmd.extend(
             [
-                str(POSIX_SIGNAL_SUBPROC_SCRIPT),
+                str(POSIX_SIGNAL_SUBPROC_SCRIPT_PATH),
                 str(self._process.pid),
                 signal,
                 str(signal_child),

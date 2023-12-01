@@ -46,6 +46,7 @@ from .conftest import build_logger, collect_queue_messages
 class TestStepScriptRunner:
     WIN_GITHUB_ACTIONS = is_windows() and (os.getenv("GITHUB_ACTIONS") == "true")
 
+    # TODO: Determine why this test failing on Github CI
     @pytest.mark.skipif(
         WIN_GITHUB_ACTIONS,
         reason="Test failing on github. (Related to quoting. Works locally)",
