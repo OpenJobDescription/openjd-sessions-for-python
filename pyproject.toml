@@ -12,6 +12,7 @@ requires-python = ">=3.9"
 dependencies = [
   "openjd-model == 0.1.*",
   "pywin32 == 306; platform_system == 'Windows'",
+  "psutil == 5.9.*; platform_system == 'Windows'",
 ]
 
 [tool.hatch.build]

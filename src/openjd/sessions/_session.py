@@ -373,6 +373,7 @@ class Session(object):
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
                         recursive_delete_cmd = ["Remove-Item", "-Recurse", "-Force"]
+                        files = [", ".join(files)]
 
                     subprocess = LoggingSubprocess(
                         logger=self._logger,
