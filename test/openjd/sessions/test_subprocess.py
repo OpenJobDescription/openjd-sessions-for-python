@@ -146,10 +146,8 @@ class TestLoggingSubprocessSameUser:
             assert subproc.exit_code is not None
             assert subproc.exit_code != 0
             assert any(
-                message.startswith(
-                    "Command not found: The term 'test_failed_command' "
-                    "is not recognized as the name of a cmdlet"
-                )
+                "An error occurred trying to start process 'test_failed_command'" in message
+                and "The system cannot find the file specified." in message
                 for message in messages
             )
 
@@ -236,10 +234,6 @@ class TestLoggingSubprocessSameUser:
         # THEN
         callback_mock.assert_called_once()
 
-    @pytest.mark.skipif(
-        is_windows(),
-        reason="Windows is not supported notify and terminate mode",
-    )
     def test_notify_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler
     ) -> None:
@@ -256,7 +250,8 @@ class TestLoggingSubprocessSameUser:
         def end_proc():
             subproc.wait_until_started()
             # Then give the Python subprocess some time to finish loading and start running.
-            time.sleep(1)
+            # For Windows, allow additional time for Powershell
+            time.sleep(1 if not is_windows() else 5)
             subproc.notify()
 
         # WHEN
@@ -268,8 +263,7 @@ class TestLoggingSubprocessSameUser:
         # THEN
         assert not subproc.is_running
         messages = collect_queue_messages(message_queue)
-        # We only print "Trapped" on posix, since we haven't implemented windows signals yet.
-        assert sys.platform.startswith("win") or ("Trapped" in messages)
+        assert "Trapped" in messages
         # Check for the first message that would print
         assert "Log from test 0" in messages
         # If there's no 9, then we ended before the app naturally finished.
@@ -335,9 +329,12 @@ class TestLoggingSubprocessSameUser:
         else:
             script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
 
+        args = [str(script_loc), sys.executable]
+        if is_windows():
+            args.insert(0, "pwsh.exe")
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[str(script_loc), sys.executable],
+            args=args,
         )
 
         def end_proc():
@@ -351,8 +348,7 @@ class TestLoggingSubprocessSameUser:
             children = list[Process]()
             attempt = 0
             # For Windows, we will have 2 python process 1 powershell process
-            # 1 conhost.exe process used for drawing the console window, although this windows is invisible
-            expected_num_children = 4 if is_windows() else 1
+            expected_num_children = 3 if is_windows() else 1
             # Then give the subprocess some time to finish loading and start running some children.
             while len(children) < expected_num_children and attempt < 50:
                 time.sleep(0.25)
