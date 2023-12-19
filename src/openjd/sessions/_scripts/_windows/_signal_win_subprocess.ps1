@@ -1,6 +1,7 @@
-param([Parameter(Mandatory=$true)][int32]$proc_id)
+param([Parameter(Mandatory=$true)][int32]$proc_group_id)
+
 function Send-SIGBREAK {
-    # Geneates a console CTRL_EVENT_BREAK signal to a process group id.
+    # Generates a console CTRL_EVENT_BREAK signal to a process group id.
     param (
         [int]$pgid
     )
@@ -32,6 +33,12 @@ function Send-SIGBREAK {
         }
 "@ -Language CSharp
 
+    $proc = Get-Process -Id $pgid -ErrorAction SilentlyContinue
+    if (-not $proc) {
+        Write-Host "Process $pgid not found"
+        return
+    }
+
     #  Detach from current console
     if (-not [WinConsoleAPIWrapper]::FreeConsole()) {
         Write-Error "ERROR - Failed to free console: $([WinConsoleAPIWrapper]::GetLastErrorMessage())"
@@ -53,4 +60,4 @@ function Send-SIGBREAK {
 }
 
 
-Send-SIGBREAK "$proc_group_id"
+Send-SIGBREAK $proc_group_id
