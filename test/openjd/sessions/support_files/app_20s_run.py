@@ -4,7 +4,7 @@
 # Prints out an increasing series of integers (0, 1, 2, ...)
 # every second for 10 seconds
 #
-# Hook SIGTERM (posix) or CTRL_C_EVENT (windows) and print "Trapped"
+# Hook SIGTERM (posix) or CTRL_BREAK_EVENT (windows) and print "Trapped"
 # and exit if we get the signal
 
 import signal
@@ -19,7 +19,7 @@ def hook(handle, frame):
 
 
 if sys.platform.startswith("win"):
-    signal.signal(signal.SIGINT, hook)
+    signal.signal(signal.SIGBREAK, hook)
 else:
     signal.signal(signal.SIGTERM, hook)
 

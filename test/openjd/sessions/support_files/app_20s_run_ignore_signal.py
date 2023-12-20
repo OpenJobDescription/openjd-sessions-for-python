@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-# As app_20s_run.py except it does not exit when it gets a SIGTERM
+# As app_20s_run.py except it does not exit when it gets a SIGTERM/SIGBREAK
 
 import signal
 import sys
@@ -13,7 +13,7 @@ def hook(handle, frame):
 
 
 if sys.platform.startswith("win"):
-    signal.signal(signal.SIGINT, hook)
+    signal.signal(signal.SIGBREAK, hook)
 else:
     signal.signal(signal.SIGTERM, hook)
 
