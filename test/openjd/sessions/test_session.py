@@ -577,6 +577,46 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             assert "Jvalue Jvalue" in caplog.messages
             assert "Pvalue Pvalue" in caplog.messages
 
+    def test_run_task_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+        # GIVEN
+        step_script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(command=sys.executable, args=["{{ Task.File.Foo }}"])
+            ),
+            embeddedFiles=[
+                EmbeddedFileText_2023_09(
+                    name="Foo",
+                    type=EmbeddedFileTypes_2023_09.TEXT,
+                    data='import time; import os; time.sleep(0.5); print(f\'{os.environ["SESSION_VAR"]} {os.environ["ACTION_VAR"]}\')',
+                )
+            ],
+        )
+
+        session_id = uuid.uuid4().hex
+        job_params = list[Parameter]()
+        task_params = list[Parameter]()
+        session_env_vars = {"SESSION_VAR": "session_value"}
+        action_env_vars = {"ACTION_VAR": "action_value"}
+        with Session(
+            session_id=session_id, job_parameter_values=job_params, os_env_vars=session_env_vars
+        ) as session:
+            # WHEN
+            session.run_task(
+                step_script=step_script,
+                task_parameter_values=task_params,
+                os_env_vars=action_env_vars,
+            )
+
+            # THEN
+            assert session.state == SessionState.RUNNING
+            assert session.action_status == ActionStatus(state=ActionState.RUNNING)
+            # Wait for the process to exit
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            assert session.state == SessionState.READY
+            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert "session_value action_value" in caplog.messages
+
     @pytest.mark.parametrize(
         "state",
         [
@@ -888,6 +928,49 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "Jvalue Jvalue" in caplog.messages
 
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_enter_environment_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+        # GIVEN
+        # Crafting a EnvironmentScript that ensures that references to Job parameters.
+        # This ensures that we are correctly constructing the symbol table for the run.
+        environment = _environment_from_script(
+            EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(command=sys.executable, args=["{{ Env.File.Foo }}"])
+                ),
+                embeddedFiles=[
+                    EmbeddedFileText_2023_09(
+                        name="Foo",
+                        type=EmbeddedFileTypes_2023_09.TEXT,
+                        data='import time; import os; time.sleep(0.5); print(f\'{os.environ["SESSION_VAR"]} {os.environ["ACTION_VAR"]}\')',
+                    )
+                ],
+            )
+        )
+        session_id = uuid.uuid4().hex
+        job_params = list[Parameter]()
+        session_env_vars = {"SESSION_VAR": "session_value"}
+        action_env_vars = {"ACTION_VAR": "action_value"}
+        with Session(
+            session_id=session_id, job_parameter_values=job_params, os_env_vars=session_env_vars
+        ) as session:
+            # WHEN
+            identifier = session.enter_environment(
+                environment=environment, os_env_vars=action_env_vars
+            )
+
+            # THEN
+            assert session.state == SessionState.RUNNING
+            assert session.action_status == ActionStatus(state=ActionState.RUNNING)
+            # Wait for the process to exit
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            assert len(session.environments_entered) == 1
+            assert session.environments_entered[0] == identifier
+            assert session.state == SessionState.READY
+            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert "session_value action_value" in caplog.messages
+
     @pytest.mark.parametrize(
         "state",
         [
@@ -1185,6 +1268,49 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "Jvalue Jvalue" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_exit_environment_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+        # GIVEN
+        # Crafting a EnvironmentScript that ensures that references to Job parameters.
+        # This ensures that we are correctly constructing the symbol table for the run.
+        environment = _environment_from_script(
+            EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onExit=Action_2023_09(command=sys.executable, args=["{{ Env.File.Foo }}"])
+                ),
+                embeddedFiles=[
+                    EmbeddedFileText_2023_09(
+                        name="Foo",
+                        type=EmbeddedFileTypes_2023_09.TEXT,
+                        data='import time; import os; time.sleep(0.5); print(f\'{os.environ["SESSION_VAR"]} {os.environ["ACTION_VAR"]}\')',
+                    )
+                ],
+            )
+        )
+        session_id = uuid.uuid4().hex
+        job_params = list[Parameter]()
+        session_env_vars = {"SESSION_VAR": "session_value"}
+        action_env_vars = {"ACTION_VAR": "action_value"}
+        with Session(
+            session_id=session_id, job_parameter_values=job_params, os_env_vars=session_env_vars
+        ) as session:
+            identifier = session.enter_environment(environment=environment)
+
+            # WHEN
+            session.exit_environment(identifier=identifier, os_env_vars=action_env_vars)
+
+            # THEN
+            assert session.state == SessionState.RUNNING
+            assert session.action_status == ActionStatus(state=ActionState.RUNNING)
+            # Wait for the process to exit
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            assert len(session.environments_entered) == 0
+            assert identifier not in session._environments
+            assert session.state == SessionState.READY_ENDING
+            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert "session_value action_value" in caplog.messages
 
     @pytest.mark.parametrize(
         "state",
