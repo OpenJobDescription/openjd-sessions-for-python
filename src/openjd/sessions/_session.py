@@ -482,6 +482,7 @@ class Session(object):
         *,
         environment: EnvironmentModel,
         identifier: Optional[EnvironmentIdentifier] = None,
+        os_env_vars: Optional[dict[str, str]] = None,
     ) -> EnvironmentIdentifier:
         """Enters an Open Job Description Environment within this Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -494,6 +495,12 @@ class Session(object):
             identifier (Optional[EnvironmentIdentifier]): If provided then this is the identifier
                 that the Environment will be known by to this Session.
                 Default: An identifier is randomly generated.
+            os_env_vars (Optional[dict[str,str]): Definitions for additional OS Environment
+                Variables that should be injected into the process that is run for this action.
+                Values provided override values provided to the Session constructor, and are overriden
+                by values defined in Environments.
+                    Key: Environment variable name
+                    Value: Value for the environment variable.
 
         Returns:
             EnvironmentIdentifier: An identifier by which the Environment is known by to this Session.
@@ -537,9 +544,9 @@ class Session(object):
             )
 
         # Must be called _after_ we append to _environments_entered
-        os_env_vars = self._evaluate_current_session_env_vars()
+        action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
 
-        self._materialize_path_mapping(environment.version, os_env_vars, symtab)
+        self._materialize_path_mapping(environment.version, action_env_vars, symtab)
 
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
@@ -552,7 +559,7 @@ class Session(object):
         self._runner = EnvironmentScriptRunner(
             logger=self._logger,
             user=self._user,
-            os_env_vars=os_env_vars,
+            os_env_vars=action_env_vars,
             session_working_directory=self.working_directory,
             startup_directory=self.working_directory,
             callback=self._action_callback,
@@ -564,7 +571,9 @@ class Session(object):
 
         return identifier
 
-    def exit_environment(self, *, identifier: EnvironmentIdentifier) -> None:
+    def exit_environment(
+        self, *, identifier: EnvironmentIdentifier, os_env_vars: Optional[dict[str, str]] = None
+    ) -> None:
         """Exits an Open Job Description Environment from this Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
         started running, or has failed to be started.
@@ -575,6 +584,12 @@ class Session(object):
         Arguments:
             identifier (EnvironmentIdentifier): The identifier of the previously entered
                 Environment to exit.
+            os_env_vars (Optional[dict[str,str]): Definitions for additional OS Environment
+                Variables that should be injected into the process that is run for this action.
+                Values provided override values provided to the Session constructor, and are overriden
+                by values defined in Environments.
+                    Key: Environment variable name
+                    Value: Value for the environment variable.
 
         Raises:
             ValueError - If the given identifier is not that of the next one that must be exited.
@@ -598,7 +613,7 @@ class Session(object):
         environment = self._environments[identifier]
 
         # Must be run _before_ we pop _environments_entered
-        os_env_vars = self._evaluate_current_session_env_vars()
+        action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
 
         # Remove the environment from our tracking since we're now exiting it.
         del self._environments[identifier]
@@ -607,7 +622,7 @@ class Session(object):
         self._running_environment_identifier = identifier
 
         symtab = self._symbol_table(environment.version)
-        self._materialize_path_mapping(environment.version, os_env_vars, symtab)
+        self._materialize_path_mapping(environment.version, action_env_vars, symtab)
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
         self._action_state = ActionState.RUNNING
@@ -619,7 +634,7 @@ class Session(object):
         self._runner = EnvironmentScriptRunner(
             logger=self._logger,
             user=self._user,
-            os_env_vars=os_env_vars,
+            os_env_vars=action_env_vars,
             session_working_directory=self.working_directory,
             startup_directory=self.working_directory,
             callback=self._action_callback,
@@ -634,6 +649,7 @@ class Session(object):
         *,
         step_script: StepScriptModel,
         task_parameter_values: list[Parameter],
+        os_env_vars: Optional[dict[str, str]] = None,
     ) -> None:
         """Run a Task within the Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -643,18 +659,24 @@ class Session(object):
             step_script (StepScriptModel): The Step Script that the Task will be running.
             task_parameter_values (list[Parameter]): Values of the Task parameters that define the
                 specific Task.
+            os_env_vars (Optional[dict[str,str]): Definitions for additional OS Environment
+                Variables that should be injected into the process that is run for this action.
+                Values provided override values provided to the Session constructor, and are overriden
+                by values defined in Environments.
+                    Key: Environment variable name
+                    Value: Value for the environment variable.
         """
         if self.state != SessionState.READY:
             raise RuntimeError("Session must be in the READY state to run a task.")
 
         self._reset_action_state()
         symtab = self._symbol_table(step_script.version, task_parameter_values)
-        os_env_vars = self._evaluate_current_session_env_vars()
-        self._materialize_path_mapping(step_script.version, os_env_vars, symtab)
+        action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
+        self._materialize_path_mapping(step_script.version, action_env_vars, symtab)
         self._runner = StepScriptRunner(
             logger=self._logger,
             user=self._user,
-            os_env_vars=os_env_vars,
+            os_env_vars=action_env_vars,
             session_working_directory=self.working_directory,
             startup_directory=self.working_directory,
             callback=self._action_callback,
@@ -892,11 +914,15 @@ class Session(object):
             assert action_status is not None
             self._callback(self._session_id, action_status)
 
-    def _evaluate_current_session_env_vars(self) -> dict[str, Optional[str]]:
+    def _evaluate_current_session_env_vars(
+        self, extra_env_vars: Optional[dict[str, str]] = None
+    ) -> dict[str, Optional[str]]:
         """Get a dictionary representing the cummulative state of env vars set
         and unset from the currently applied environments.
         """
         result = dict[str, Optional[str]](self._process_env)  # Make a copy
+        if extra_env_vars:
+            result.update(**extra_env_vars)
         for identifier in self._environments_entered:
             if identifier in self._created_env_vars:
                 self._created_env_vars[identifier].apply_to_environment(result)
