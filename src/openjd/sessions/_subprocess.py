@@ -148,11 +148,13 @@ class LoggingSubprocess(object):
             return
 
         self._logger.info(f"Command started as pid: {self._process.pid}")
+        self._logger.info("Output:")
 
         stream = self._process.stdout
         # Convince type checker that stdout is not None
         assert stream is not None
 
+        # Process stdout/stderr of the job; echoing it to our logger
         def _stream_readline_max_length():
             nonlocal stream
             # Enforce a max line length for readline to ensure we don't infinitely grow the buffer
@@ -198,7 +200,7 @@ class LoggingSubprocess(object):
                 self._posix_signal_subprocess(signal="kill", signal_subprocesses=True)
             else:
                 self._logger.info(
-                    f"Start killing the process tree with the root pid: {self._process.pid}"
+                    f"INTERRUPT: Start killing the process tree with the root pid: {self._process.pid}"
                 )
                 kill_windows_process_tree(self._logger, self._process.pid, signal_subprocesses=True)
 
@@ -305,7 +307,7 @@ class LoggingSubprocess(object):
                 str(signal_subprocesses),
             ]
         )
-        self._logger.info(f"Running: {shlex.join(cmd)}")
+        self._logger.info(f"INTERRUPT: Running: {shlex.join(cmd)}")
         result = run(
             cmd,
             stdout=PIPE,
@@ -323,5 +325,5 @@ class LoggingSubprocess(object):
         # Convince the type checker that accessing _process is okay
         assert self._process is not None
 
-        self._logger.info(f"Send CTRL_BREAK_EVENT to {self._process.pid}")
+        self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
         self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore

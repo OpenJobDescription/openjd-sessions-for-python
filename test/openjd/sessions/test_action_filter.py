@@ -101,6 +101,30 @@ class TestActionMonitoringFilter:
                 "foo",
                 id="unset_env, leading whitespace",
             ),
+            pytest.param(
+                "openjd_session_runtime_loglevel: DEBUG",
+                ActionMessageKind.SESSION_RUNTIME_LOGLEVEL,
+                logging.DEBUG,
+                id="loglevel debug",
+            ),
+            pytest.param(
+                "openjd_session_runtime_loglevel: INFO",
+                ActionMessageKind.SESSION_RUNTIME_LOGLEVEL,
+                logging.INFO,
+                id="loglevel debug",
+            ),
+            pytest.param(
+                "openjd_session_runtime_loglevel: WARNING",
+                ActionMessageKind.SESSION_RUNTIME_LOGLEVEL,
+                logging.WARNING,
+                id="loglevel debug",
+            ),
+            pytest.param(
+                "openjd_session_runtime_loglevel: ERROR",
+                ActionMessageKind.SESSION_RUNTIME_LOGLEVEL,
+                logging.ERROR,
+                id="loglevel debug",
+            ),
         ),
     )
     def test_captures_suppress(

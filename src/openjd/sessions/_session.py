@@ -23,7 +23,7 @@ from openjd.model.v2023_09 import (
 )
 from ._action_filter import ActionMessageKind, ActionMonitoringFilter
 from ._embedded_files import write_file_for_user
-from ._logging import LOG
+from ._logging import LOG, log_section_banner
 from ._os_checker import is_posix
 from ._path_mapping import PathMappingRule
 from ._runner_base import ScriptRunnerBase
@@ -361,6 +361,8 @@ class Session(object):
             return
         self._cleanup_called = True
         if self._working_dir is not None and not self._retain_working_dir:
+            log_section_banner(self._logger, "Session Cleanup")
+            self._logger.info(f"Deleting working directory: {str(self.working_directory)}")
             try:
                 # If running as a different user, then that user could have written files to the
                 # session diretory that make removing it as our user impossible. So, do a 2-phase
@@ -512,6 +514,7 @@ class Session(object):
             raise RuntimeError(
                 f"Environment {identifier} has already been entered in this Session."
             )
+        log_section_banner(self._logger, f"Entering Environment: {environment.name}")
 
         self._reset_action_state()
 
@@ -611,6 +614,7 @@ class Session(object):
         self._ending_only = True
 
         environment = self._environments[identifier]
+        log_section_banner(self._logger, f"Exiting Environment: {environment.name}")
 
         # Must be run _before_ we pop _environments_entered
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
@@ -668,6 +672,12 @@ class Session(object):
         """
         if self.state != SessionState.READY:
             raise RuntimeError("Session must be in the READY state to run a task.")
+
+        log_section_banner(self._logger, "Running Task")
+        if task_parameter_values:
+            self._logger.info("Parameter values:")
+            for p in task_parameter_values:
+                self._logger.info(f"{p.name}({str(p.type.value)}) = {p.value}")
 
         self._reset_action_state()
         symtab = self._symbol_table(step_script.version, task_parameter_values)
@@ -865,7 +875,7 @@ class Session(object):
                 changes=[EnvironmentVariableSetChange(name=value["name"], value=value["value"])]
             )
             return
-        else:  # ActionMessageKind.UNSET_ENV
+        elif kind == ActionMessageKind.UNSET_ENV:
             if self._running_environment_identifier is None:
                 # Ignore the message if we're not running an environment
                 return
@@ -873,6 +883,10 @@ class Session(object):
             assert isinstance(value, str)
             env_vars = self._created_env_vars[self._running_environment_identifier]
             env_vars.simplify_ordered_changes(changes=[EnvironmentVariableUnsetChange(name=value)])
+            return
+        else:  # ActionMessageKind.SESSION_RUNTIME_LOGLEVEL
+            assert isinstance(value, int)
+            self._logger.setLevel(value)
             return
 
         if self._callback:
