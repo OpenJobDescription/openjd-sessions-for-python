@@ -20,6 +20,7 @@ from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model.v2023_09 import Action as Action_2023_09
 from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, write_file_for_user
+from ._logging import log_subsection_banner
 from ._os_checker import is_posix, is_windows
 from ._powershell_generator import generate_exit_code_wrapper
 from ._session_user import SessionUser
@@ -291,7 +292,7 @@ class ScriptRunnerBase(ABC):
                 user=self._user,
                 additional_permissions=stat.S_IXUSR | stat.S_IXGRP,
             )
-            self._logger.info(f"Wrote the following script to {filename}:\n{script}")
+            self._logger.debug(f"Wrote the following script to {filename}:\n{script}")
 
             subprocess_args = (
                 [filename] if not is_windows() else ["pwsh.exe", "-NonInteractive", filename]
@@ -306,6 +307,7 @@ class ScriptRunnerBase(ABC):
                 self._runtime_limit = Timer(time_limit.total_seconds(), self._on_timelimit)
                 self._runtime_limit.start()
 
+            log_subsection_banner(self._logger, "Phase: Running action")
             self._run_future = self._pool.submit(self._process.run)
         # Intentionally leave the lock section. If the process was *really* fast,
         # then it's possible for the future to have finished before we get to add

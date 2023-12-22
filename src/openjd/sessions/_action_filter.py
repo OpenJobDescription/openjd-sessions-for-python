@@ -19,6 +19,9 @@ class ActionMessageKind(Enum):
     ENV = "env"  # Defining an environment variable
     UNSET_ENV = "unset_env"  # Unsetting an environment variable
 
+    # The following are not in the spec, but are utility provided by this runtime.
+    SESSION_RUNTIME_LOGLEVEL = "session_runtime_loglevel"  # Setting the log level of this runtime
+
 
 # A composite regex that matches one of the message kinds to a named capture group
 # with the same name as the message kind.
@@ -43,6 +46,9 @@ class ActionMonitoringFilter(logging.Filter):
     openjd_progress: <progress in the form of a float between 0.0 and 100.0>
     openjd_status: <string indicating the new status>
     openjd_fail: <string indicating a failure message>
+    openjd_env: <env var name>=<string value>
+    openjd_unset_env: <env var name>
+    openjd_session_runtime_loglevel: [ERROR | WARNING | INFO | DEBUG]
 
     When such a message is detected in the log stream a given callback will be
     called with the details of the update message. The callback will be called
@@ -52,6 +58,7 @@ class ActionMonitoringFilter(logging.Filter):
         callback(ActionMessageKind.FAIL, <string indicating a failure message>)
         callback(ActionMessageKind.ENV, {"name": <envvar name>, "value": <envvar value>})
         callback(ActionMessageKind.UNSET_ENV, <string indicating the name of the env var>)
+        callback(ActionMessageKind.RUNTIME_LOGLEVEL, <integer log level>)
     """
 
     _session_id: str
@@ -108,6 +115,7 @@ class ActionMonitoringFilter(logging.Filter):
             ActionMessageKind.FAIL: self._handle_fail,
             ActionMessageKind.ENV: self._handle_env,
             ActionMessageKind.UNSET_ENV: self._handle_unset_env,
+            ActionMessageKind.SESSION_RUNTIME_LOGLEVEL: self._handle_session_runtime_loglevel,
         }
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -227,3 +235,24 @@ class ActionMonitoringFilter(logging.Filter):
         if not envvar_unset_matcher.match(message):
             raise ValueError("Failed to parse environment variable name.")
         self._callback(ActionMessageKind.UNSET_ENV, message)
+
+    def _handle_session_runtime_loglevel(self, message: str) -> None:
+        """Local handling of the session runtime loglevel messages.
+
+        Args:
+            message (str): The message after the leading 'openjd_session_runtime_loglevel: ' prefix
+        """
+        message = message.upper().strip()
+        levels = {
+            "DEBUG": logging.DEBUG,
+            "INFO": logging.INFO,
+            "WARNING": logging.WARNING,
+            "ERROR": logging.ERROR,
+        }
+        loglevel = levels.get(message, None)
+        if loglevel is not None:
+            self._callback(ActionMessageKind.SESSION_RUNTIME_LOGLEVEL, loglevel)
+        else:
+            raise ValueError(
+                f"Unknown log level: {message}. Known values: {','.join(levels.keys())}"
+            )

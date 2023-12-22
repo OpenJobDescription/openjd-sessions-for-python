@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from logging import LoggerAdapter
 from pathlib import Path
 from typing import Callable, Optional
@@ -13,8 +13,8 @@ from openjd.model.v2023_09 import (
 )
 from openjd.model.v2023_09 import EnvironmentScript as EnvironmentScript_2023_09
 from ._embedded_files import EmbeddedFilesScope
+from ._logging import log_subsection_banner
 from ._runner_base import (
-    TIME_FORMAT_STR,
     CancelMethod,
     NotifyCancelMethod,
     ScriptRunnerBase,
@@ -105,6 +105,9 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
 
     def _run_env_action(self, action: ActionModel) -> None:
         """Run a specific given action from this Environment."""
+
+        log_subsection_banner(self._logger, "Phase: Setup")
+
         # Write any embedded files to disk
         if (
             self._environment_script is not None
@@ -143,9 +146,6 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 self._callback(ActionState.SUCCESS)
             return
 
-        self._logger.info(
-            f"Starting Environment onEnter Action at {datetime.utcnow().strftime(TIME_FORMAT_STR)}"
-        )
         self._run_env_action(self._environment_script.actions.onEnter)
 
     def exit(self) -> None:
@@ -164,9 +164,6 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 self._callback(ActionState.SUCCESS)
             return
 
-        self._logger.info(
-            f"Starting Environment onExit Action at {datetime.utcnow().strftime(TIME_FORMAT_STR)}"
-        )
         self._run_env_action(self._environment_script.actions.onExit)
 
     def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:

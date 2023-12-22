@@ -132,7 +132,7 @@ class EmbeddedFiles:
             # Add symbols to the symbol table
             for record in records:
                 symtab[record.symbol] = str(record.filename)
-                self._logger.info(f"\tMapping: {record.symbol} -> {record.filename}")
+                self._logger.info(f"Mapping: {record.symbol} -> {record.filename}")
 
             # Write the files to disk.
             for record in records:
@@ -209,4 +209,5 @@ class EmbeddedFiles:
         # Create the file as r/w owner, and optionally group
         write_file_for_user(filename, data, self._user, additional_permissions=execute_permissions)
 
-        self._logger.info(f"\tWrote: {file.name} -> {str(filename)}")
+        self._logger.info(f"Wrote: {file.name} -> {str(filename)}")
+        self._logger.debug("Contents:\n%s", data)

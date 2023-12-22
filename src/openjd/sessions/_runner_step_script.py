@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from logging import LoggerAdapter
 from pathlib import Path
 from typing import Callable, Optional
@@ -12,8 +12,8 @@ from openjd.model.v2023_09 import (
     CancelationMethodNotifyThenTerminate as CancelationMethodNotifyThenTerminate_2023_09,
 )
 from ._embedded_files import EmbeddedFilesScope
+from ._logging import log_subsection_banner
 from ._runner_base import (
-    TIME_FORMAT_STR,
     CancelMethod,
     NotifyCancelMethod,
     ScriptRunnerBase,
@@ -99,11 +99,11 @@ class StepScriptRunner(ScriptRunnerBase):
         """Run the Step Script's onRun Action."""
         if self.state != ScriptRunnerState.READY:
             raise RuntimeError("This cannot be used to run a second subprocess.")
+
+        log_subsection_banner(self._logger, "Phase: Setup")
+
         # For the type checker.
         assert isinstance(self._script, StepScript_2023_09)
-        self._logger.info(
-            f"Starting Task onRun Action at {datetime.utcnow().strftime(TIME_FORMAT_STR)}"
-        )
         # Write any embedded files to disk
         if self._script.embeddedFiles is not None:
             symtab = SymbolTable(source=self._symtab)
