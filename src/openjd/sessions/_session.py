@@ -42,6 +42,10 @@ from ._types import (
 )
 from ._version import version
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
     from openjd.model.v2023_09._model import EnvironmentVariableObject
 
@@ -218,6 +222,11 @@ class Session(object):
     are materialized.
     """
 
+    _manifests_dir: TempDir
+    """The subdirectory of the Working Directory where manifest files
+    are materialized.
+    """
+
     _retain_working_dir: bool
     """If True, then the working directory is not deleted on cleanup.
     """
@@ -345,6 +354,7 @@ class Session(object):
         try:
             self._working_dir = self._create_working_directory()
             self._files_dir = self._create_files_directory()
+            self._manifests_dir = self._create_manifests_directory()
         except RuntimeError as exc:
             self._logger.error(f"ERROR creating Session Working Directory: {str(exc)}")
             self._state = SessionState.ENDED
@@ -426,6 +436,13 @@ class Session(object):
         been inlined into a Job Template are stored.
         """
         return self._files_dir.path
+
+    @property
+    def manifests_directory(self) -> Path:
+        """The subdirectory of the working_directory where manifest files
+        for the session are stored.
+        """
+        return self._manifests_dir.path
 
     @property
     def state(self) -> SessionState:
@@ -804,6 +821,12 @@ class Session(object):
         any embedded files from the Job Template."""
         # Raises: RuntimeError
         return TempDir(dir=self.working_directory, prefix="embedded_files", user=self._user)
+
+    def _create_manifests_directory(self) -> TempDir:
+        """Creates the subdirectory of the working directory in which we'll materialize
+        the manifest files."""
+        # Raises: RuntimeError
+        return TempDir(dir=self.working_directory, prefix="manifest_files")
 
     def _materialize_path_mapping(
         self, version: SchemaVersion, os_env: dict[str, Optional[str]], symtab: SymbolTable

@@ -79,6 +79,7 @@ class TestSessionInitialization:
         assert session.state == SessionState.READY
         assert os.path.exists(session.working_directory)
         assert os.path.exists(session.files_directory)
+        assert os.path.exists(session.manifests_directory)
         assert session._session_id == session_id
         assert session._job_parameter_values == job_params
         assert session._job_parameter_values is not job_params
@@ -317,7 +318,10 @@ class TestSessionInitialization:
         assert not os.path.exists(working_dir)
         assert filter not in LOG.filters
 
-    @pytest.mark.parametrize("method", ["_create_working_directory", "_create_files_directory"])
+    @pytest.mark.parametrize(
+        "method",
+        ["_create_working_directory", "_create_files_directory", "_create_manifests_directory"],
+    )
     @pytest.mark.usefixtures("caplog")  # built-in fixture
     def test_failed_directory_create(self, method: str, caplog: pytest.LogCaptureFixture) -> None:
         # Test that we immediately end the Session and send an error to the log if
