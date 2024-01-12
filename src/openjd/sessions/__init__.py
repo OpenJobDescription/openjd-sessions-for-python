@@ -3,7 +3,13 @@
 from ._logging import LOG
 from ._path_mapping import PathFormat, PathMappingRule
 from ._session import ActionStatus, Session, SessionCallbackType, SessionState
-from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
+from ._session_user import (
+    PosixSessionUser,
+    SessionUser,
+    WindowsSessionUser,
+    BadCredentialsException,
+    BadUserNameException,
+)
 from ._types import (
     ActionState,
     EnvironmentIdentifier,
@@ -33,5 +39,7 @@ __all__ = (
     "SessionUser",
     "StepScriptModel",
     "WindowsSessionUser",
+    "BadCredentialsException",
+    "BadUserNameException",
     "version",
 )
