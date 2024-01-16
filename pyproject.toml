@@ -8,12 +8,32 @@ dynamic = ["version"]
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.9"
-
+description = "Provides a library that can be used to build a runtime that is able to run Jobs in a Session as defined by Open Job Description."
+# https://pypi.org/classifiers/
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: MacOS",
+  "License :: OSI Approved :: Apache Software License",
+  "Intended Audience :: Developers",
+  "Topic :: Software Development :: Libraries"
+]
 dependencies = [
   "openjd-model == 0.2.*",
   "pywin32 == 306; platform_system == 'Windows'",
   "psutil == 5.9.*; platform_system == 'Windows'",
 ]
+
+[project.urls]
+Homepage = "https://github.com/OpenJobDescription/openjd-specifications/wiki"
+Source = "https://github.com/OpenJobDescription/openjd-sessions-for-python"
 
 [tool.hatch.build]
 artifacts = [
