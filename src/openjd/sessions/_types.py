@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from openjd.model import ParameterValueType
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import EmbeddedFiles as EmbeddedFiles_2023_09
 from openjd.model.v2023_09 import EmbeddedFileText as EmbeddedFileText_2023_09
@@ -38,16 +39,9 @@ class ActionState(str, Enum):
     return code."""
 
 
-class ParameterType(str, Enum):
-    INT = "INT"
-    FLOAT = "FLOAT"
-    STRING = "STRING"
-    PATH = "PATH"
-
-
 @dataclass(frozen=True)
 class Parameter:
-    type: ParameterType
+    type: ParameterValueType
     name: str
     value: str
 

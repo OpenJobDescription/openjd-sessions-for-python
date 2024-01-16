@@ -16,7 +16,7 @@ from tempfile import gettempdir, mkstemp
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
 
-from openjd.model import SchemaVersion, SymbolTable
+from openjd.model import ParameterValueType, SchemaVersion, SymbolTable
 from openjd.model import version as model_version
 from openjd.model.v2023_09 import (
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
@@ -37,7 +37,6 @@ from ._types import (
     EnvironmentIdentifier,
     EnvironmentModel,
     Parameter,
-    ParameterType,
     StepScriptModel,
 )
 from ._version import version
@@ -726,7 +725,7 @@ class Session(object):
         """Construct a SymbolTable, with fully qualified value names, suitable for running a Script."""
 
         def processed_parameter_value(param: Parameter, value: str) -> str:
-            if param.type == ParameterType.PATH and self._path_mapping_rules is not None:
+            if param.type == ParameterValueType.PATH and self._path_mapping_rules is not None:
                 # Apply path mapping rules in the order given until one does a replacement
                 for rule in self._path_mapping_rules:
                     changed, result = rule.apply(path=value)
