@@ -248,7 +248,7 @@ class WindowsSessionUser(SessionUser):
         This function checks if the given username adheres to the following criteria:
         1. It must be a string.
         2. Its length should not exceed 256 characters.
-        3. It should not contain any restricted characters ("/[]:|<>+=;,?*%). @ is allowed here for AD user.
+        3. It should not contain any restricted characters ("/[]:|<>+=;,?*%@).
         4. It should not be the specific name "NONE".
 
         Parameters:
@@ -270,7 +270,7 @@ class WindowsSessionUser(SessionUser):
             raise BadUserNameException("Username must have a length between 1 and 256 characters.")
 
         # Set of restricted characters
-        restricted_chars = set('"/[]:|<>+=;,?*%')
+        restricted_chars = set('"/[]:|<>+=;,?*%@')
 
         if restricted_chars.intersection(username):
             raise BadUserNameException(
