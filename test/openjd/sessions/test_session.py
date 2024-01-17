@@ -15,8 +15,7 @@ from subprocess import DEVNULL, run
 
 import pytest
 
-from openjd.model import SymbolTable
-from openjd.model import SchemaVersion
+from openjd.model import ParameterValueType, SchemaVersion, SymbolTable
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import (
     EmbeddedFileText as EmbeddedFileText_2023_09,
@@ -38,7 +37,6 @@ from openjd.sessions import (
     ActionState,
     ActionStatus,
     Parameter,
-    ParameterType,
     PathFormat,
     PathMappingRule,
     Session,
@@ -70,7 +68,7 @@ class TestSessionInitialization:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
 
         # WHEN
         session = Session(session_id=session_id, job_parameter_values=job_params)
@@ -125,7 +123,7 @@ class TestSessionInitialization:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
         session = Session(session_id=session_id, job_parameter_values=job_params)
         working_dir = session.working_directory
         filter = session._log_filter
@@ -154,7 +152,7 @@ class TestSessionInitialization:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
         session = Session(
             session_id=session_id, job_parameter_values=job_params, user=posix_target_user
         )
@@ -306,7 +304,7 @@ class TestSessionInitialization:
         # Test the context manager interface of the Session
 
         # GIVEN
-        job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
 
         # WHEN
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
@@ -326,7 +324,7 @@ class TestSessionInitialization:
             # GIVEN
             method_mock.side_effect = RuntimeError("Permission denied")
             session_id = uuid.uuid4().hex
-            job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+            job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
             expected_error = "ERROR creating Session Working Directory: Permission denied"
 
             # WHEN
@@ -356,7 +354,7 @@ class TestSessionInitialization:
 
                     os_stat_mock.return_value = StatReturn()
                     session_id = uuid.uuid4().hex
-                    job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+                    job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
                     expected_err_prefix = "Sticky bit is not set"
 
                     # WHEN
@@ -385,7 +383,7 @@ class TestSessionInitialization:
 
                     os_stat_mock.return_value = StatReturn()
                     session_id = uuid.uuid4().hex
-                    job_params = [Parameter(ParameterType.STRING, "foo", "bar")]
+                    job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
                     expected_err_prefix = "WARNING: Sticky bit is not set"
 
                     # WHEN
@@ -560,8 +558,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
         # Crafting a StepScript that ensures that references both Job & Task parameters.
         # This ensures that we are correctly constructing the symbol table for the run.
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
-        task_params = [Parameter(ParameterType.STRING, "P", "Pvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        task_params = [Parameter(ParameterValueType.STRING, "P", "Pvalue")]
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.run_task(step_script=fix_basic_task_script, task_parameter_values=task_params)
@@ -653,7 +651,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         task_params = list[Parameter]()
         step_script = StepScript_2023_09(
             actions=StepActions_2023_09(
@@ -714,7 +712,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         task_params = list[Parameter]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
@@ -733,8 +731,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
-        task_params = [Parameter(ParameterType.STRING, "P", "Pvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        task_params = [Parameter(ParameterValueType.STRING, "P", "Pvalue")]
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(environment=fix_foo_baz_environment)
@@ -911,7 +909,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier = session.enter_environment(environment=environment)
@@ -1081,7 +1079,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(environment=environment)
@@ -1149,7 +1147,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     def test_enter_environment_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         variables = {
             "FOO": "bar",
         }
@@ -1171,7 +1169,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         variables = {
             "FOO": "{{Param.J}}",
         }
@@ -1204,7 +1202,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     def test_enter_two_environments_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         variables1 = {
             "FOO": "bar",
         }
@@ -1250,7 +1248,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
 
@@ -1388,7 +1386,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
 
@@ -1465,7 +1463,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
     def test_exit_environment_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         variables = {
             "FOO": "bar",
         }
@@ -1488,7 +1486,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
     def test_exit_two_environments_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterType.STRING, "J", "Jvalue")]
+        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
         variables1 = {
             "FOO": "bar",
         }
@@ -1893,8 +1891,8 @@ class TestPathMapping_v2023_09:  # noqa: N801
 
         # GIVEN
         params: list[Parameter] = [
-            Parameter(type=ParameterType.PATH, name="Path", value=given),
-            Parameter(type=ParameterType.STRING, name="String", value=given),
+            Parameter(type=ParameterValueType.PATH, name="Path", value=given),
+            Parameter(type=ParameterValueType.STRING, name="String", value=given),
         ]
         with Session(
             session_id="test", job_parameter_values=params, path_mapping_rules=rules

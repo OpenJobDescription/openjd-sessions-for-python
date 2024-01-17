@@ -10,7 +10,6 @@ from ._types import (
     EnvironmentModel,
     EnvironmentScriptModel,
     Parameter,
-    ParameterType,
     StepScriptModel,
 )
 from ._version import version
@@ -23,7 +22,6 @@ __all__ = (
     "EnvironmentScriptModel",
     "LOG",
     "Parameter",
-    "ParameterType",
     "PathFormat",
     "PathMappingRule",
     "PosixSessionUser",
