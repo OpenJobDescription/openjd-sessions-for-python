@@ -94,7 +94,7 @@ class TestLoggingSubprocessSameUser:
             user = PosixSessionUser(user=current_user)
         else:
             current_user = win32api.GetUserNameEx(win32api.NameSamCompatible)
-            user = WindowsSessionUser(user=current_user, password="", group="")
+            user = WindowsSessionUser(user=current_user)
 
         logger = build_logger(queue_handler)
         message = "this is output"

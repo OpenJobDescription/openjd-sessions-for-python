@@ -570,7 +570,7 @@ class TestScriptRunnerBase:
             secs = 2 if not is_windows() else 5
             time.sleep(secs)  # Give the process a little time to do something
             runner.cancel(time_limit=timedelta(seconds=15))
-            runner.cancel(time_limit=timedelta(seconds=1))
+            runner.cancel(time_limit=timedelta(seconds=1 if not is_windows() else 3))
 
             # THEN
             assert runner.state == ScriptRunnerState.CANCELING
