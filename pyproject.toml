@@ -10,7 +10,7 @@ license = "Apache-2.0"
 requires-python = ">=3.9"
 
 dependencies = [
-  "openjd-model == 0.1.*",
+  "openjd-model == 0.2.*",
   "pywin32 == 306; platform_system == 'Windows'",
   "psutil == 5.9.*; platform_system == 'Windows'",
 ]
