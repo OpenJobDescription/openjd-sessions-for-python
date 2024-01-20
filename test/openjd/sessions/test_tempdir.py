@@ -97,6 +97,19 @@ class TestTempDirWindowsUser:
     FULL_CONTROL_MASK = 2032127
 
     @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
+    def test_windows_user_permits_admins_group(self, mock_user_match):
+        # GIVEN
+        # Use a builtin group, so we can expect it to exist on any Windows machine
+        # The mocked `is_process_user` is only used in WindowsSessionUser for parameter validation
+        windows_user = WindowsSessionUser("arbitrary_user", group="Users")
+
+        # WHEN
+        tempdir = TempDir(user=windows_user)
+
+        # THEN
+        assert self.principal_has_full_control_of_object(str(tempdir.path), "Administrators")
+
+    @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
     def test_windows_user_with_group_permits_group(self, mock_user_match):
         # GIVEN
         # Use a builtin group, so we can expect it to exist on any Windows machine

@@ -90,17 +90,30 @@ class TempDir:
                     else:
                         principal_to_permit = user.user
 
-                    principal_sid, _, _ = win32security.LookupAccountName(None, principal_to_permit)
+                    user_or_group_sid, _, _ = win32security.LookupAccountName(
+                        None, principal_to_permit
+                    )
+                    administrators_sid, _, _ = win32security.LookupAccountName(
+                        None, "Administrators"
+                    )
 
                     # We don't want to propagate existing permissions, so create a new DACL
                     dacl = win32security.ACL()
 
-                    # Add an ACE to the DACL giving the principal full control and enabling inheritance of the ACE
+                    # Add an ACE to the DACL giving the user or group full control and enabling inheritance of the ACE
                     dacl.AddAccessAllowedAceEx(
                         win32security.ACL_REVISION,
                         ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE,
                         ntsecuritycon.FILE_ALL_ACCESS,
-                        principal_sid,
+                        user_or_group_sid,
+                    )
+
+                    # Add an ACE to the DACL giving the Administrators group full control and enabling inheritance of the ACE
+                    dacl.AddAccessAllowedAceEx(
+                        win32security.ACL_REVISION,
+                        ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE,
+                        ntsecuritycon.FILE_ALL_ACCESS,
+                        administrators_sid,
                     )
 
                     # Get the security descriptor of the tempdir
