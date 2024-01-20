@@ -44,14 +44,14 @@ from openjd.sessions import (
 )
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
 from openjd.sessions._action_filter import ActionMessageKind
-from openjd.sessions._os_checker import is_posix
+from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session import (
     EnvironmentVariableChange,
     EnvironmentVariableSetChange,
     EnvironmentVariableUnsetChange,
     SimplifiedEnvironmentVariableChanges,
 )
-from openjd.sessions._session_user import PosixSessionUser
+from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 
 from .conftest import has_posix_target_user
 
@@ -136,6 +136,66 @@ class TestSessionInitialization:
         assert filter not in LOG.filters
         assert session.state == SessionState.ENDED
 
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only test.")
+    @pytest.mark.usefixtures("caplog")  # built-in fixture
+    def test_cleanup_windows_user(
+        self, win_test_user: tuple[str, str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Test of the functionality of a Session's cleanup when files may have been
+        # written to the directory by a separate user
+        # This should nuke the working directory and disconnect its handler from LOG
+
+        # GIVEN
+        username, password = win_test_user
+        win_session_user = WindowsSessionUser(username, password=password)
+
+        session_id = uuid.uuid4().hex
+        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+        session = Session(
+            session_id=session_id, job_parameter_values=job_params, user=win_session_user
+        )
+        """
+        working_dir = session.working_directory
+
+        # Create a directory and file that are owned by the Windows test user,
+        subdir_path = str(working_dir / "suddir")
+        create_subdir_cmd = f"$securePassword = ConvertTo-SecureString '{password}' -AsPlainText -Force; " \
+                            f"$credential = New-Object System.Management.Automation.PSCredential('{username}', $securePassword); " \
+                            f"Start-Process powershell -Credential $credential -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command \"New-Item -ItemType Directory -Path {subdir_path}\"'"
+        runresult = run(
+            [
+                "powershell",
+                "-Command",
+                create_subdir_cmd
+            ],
+            stdin=DEVNULL,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+        ).returncode
+
+        subfile_path = str(working_dir / "subdir" / "file.test")
+        create_file_cmd = f"$securePassword = ConvertTo-SecureString '{password}' -AsPlainText -Force; " \
+                            f"$credential = New-Object System.Management.Automation.PSCredential('{username}', $securePassword); " \
+                            f"Start-Process powershell -Credential $credential -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command \"New-Item -ItemType File -Path {subfile_path}\"'"
+        runresult |= run(
+            [
+                "powershell",
+                "-Command",
+                create_file_cmd
+            ],
+            stdin=DEVNULL,
+            stdout=DEVNULL,
+            stderr=DEVNULL,
+        ).returncode
+
+        # WHEN
+        session.cleanup()
+
+        # THEN
+        assert runresult == 0
+        assert not os.path.exists(working_dir)
+        """
+
     @pytest.mark.skipif(os.name != "posix", reason="Posix-only test.")
     @pytest.mark.xfail(
         not has_posix_target_user(),
@@ -144,7 +204,7 @@ class TestSessionInitialization:
     @pytest.mark.usefixtures("posix_target_user")
     @pytest.mark.usefixtures("caplog")  # built-in fixture
     def test_cleanup_posix_user(
-        self, posix_target_user: PosixSessionUser, caplog: pytest.LogCaptureFixture
+            self, posix_target_user: PosixSessionUser, caplog: pytest.LogCaptureFixture
     ) -> None:
         # Test of the functionality of a Session's cleanup when files may have been
         # written to the directory by a separate user

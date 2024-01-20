@@ -37,6 +37,7 @@ class TempDir:
         dir: Optional[Path] = None,
         prefix: Optional[str] = None,
         user: Optional[SessionUser] = None,
+        called_from_create_files_dir: bool = False
     ):
         """
         Arguments:

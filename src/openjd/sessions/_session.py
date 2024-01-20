@@ -802,7 +802,7 @@ class Session(object):
         """Creates the subdirectory of the working directory in which we'll materialize
         any embedded files from the Job Template."""
         # Raises: RuntimeError
-        return TempDir(dir=self.working_directory, prefix="embedded_files", user=self._user)
+        return TempDir(dir=self.working_directory, prefix="embedded_files", user=self._user, called_from_create_files_dir=True)
 
     def _materialize_path_mapping(
         self, version: SchemaVersion, os_env: dict[str, Optional[str]], symtab: SymbolTable
