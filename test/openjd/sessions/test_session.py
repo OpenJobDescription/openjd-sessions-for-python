@@ -154,38 +154,21 @@ class TestSessionInitialization:
         session = Session(
             session_id=session_id, job_parameter_values=job_params, user=win_session_user
         )
-        """
         working_dir = session.working_directory
 
         # Create a directory and file that are owned by the Windows test user,
-        subdir_path = str(working_dir / "suddir")
+        subdir_path = str(working_dir / "subdir")
+        file_path = str(working_dir / "subdir" / "file.test")
         create_subdir_cmd = f"$securePassword = ConvertTo-SecureString '{password}' -AsPlainText -Force; " \
                             f"$credential = New-Object System.Management.Automation.PSCredential('{username}', $securePassword); " \
-                            f"Start-Process powershell -Credential $credential -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command \"New-Item -ItemType Directory -Path {subdir_path}\"'"
+                            f"Start-Process Powershell -Credential $credential -WorkingDirectory {working_dir} -NoNewWindow -ArgumentList '-NoProfile -Command \"New-Item -ItemType Directory -Path {subdir_path}\"; New-Item -ItemType File -Path {file_path}'"
         runresult = run(
             [
-                "powershell",
+                "pwsh",
                 "-Command",
                 create_subdir_cmd
             ],
             stdin=DEVNULL,
-            stdout=DEVNULL,
-            stderr=DEVNULL,
-        ).returncode
-
-        subfile_path = str(working_dir / "subdir" / "file.test")
-        create_file_cmd = f"$securePassword = ConvertTo-SecureString '{password}' -AsPlainText -Force; " \
-                            f"$credential = New-Object System.Management.Automation.PSCredential('{username}', $securePassword); " \
-                            f"Start-Process powershell -Credential $credential -ArgumentList '-NoProfile -ExecutionPolicy Bypass -Command \"New-Item -ItemType File -Path {subfile_path}\"'"
-        runresult |= run(
-            [
-                "powershell",
-                "-Command",
-                create_file_cmd
-            ],
-            stdin=DEVNULL,
-            stdout=DEVNULL,
-            stderr=DEVNULL,
         ).returncode
 
         # WHEN
@@ -194,7 +177,6 @@ class TestSessionInitialization:
         # THEN
         assert runresult == 0
         assert not os.path.exists(working_dir)
-        """
 
     @pytest.mark.skipif(os.name != "posix", reason="Posix-only test.")
     @pytest.mark.xfail(
@@ -204,7 +186,7 @@ class TestSessionInitialization:
     @pytest.mark.usefixtures("posix_target_user")
     @pytest.mark.usefixtures("caplog")  # built-in fixture
     def test_cleanup_posix_user(
-            self, posix_target_user: PosixSessionUser, caplog: pytest.LogCaptureFixture
+        self, posix_target_user: PosixSessionUser, caplog: pytest.LogCaptureFixture
     ) -> None:
         # Test of the functionality of a Session's cleanup when files may have been
         # written to the directory by a separate user

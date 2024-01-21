@@ -112,7 +112,6 @@ def win_test_user() -> Generator:
         uppercase = random.choice(string.ascii_uppercase)
         lowercase = random.choice(string.ascii_lowercase)
         digit = random.choice(string.digits)
-        special_char = random.choice(string.punctuation)
 
         # Ensure the rest of the password is made up of a random mix of characters
         remaining_length = password_length - 4
@@ -122,7 +121,7 @@ def win_test_user() -> Generator:
         )
 
         # Combine and shuffle
-        password_characters = list(uppercase + lowercase + digit + special_char + other_chars)
+        password_characters = list(uppercase + lowercase + digit + other_chars)
         random.shuffle(password_characters)
         return "".join(password_characters)
 
