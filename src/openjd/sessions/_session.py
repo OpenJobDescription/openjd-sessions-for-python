@@ -40,7 +40,6 @@ from ._types import (
     StepScriptModel,
 )
 from ._version import version
-from ._windows_permission_helper import WindowsPermissionHelper
 
 if TYPE_CHECKING:
     from openjd.model.v2023_09._model import EnvironmentVariableObject

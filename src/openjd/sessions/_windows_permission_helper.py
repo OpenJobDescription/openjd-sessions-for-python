@@ -16,6 +16,17 @@ class WindowsPermissionHelper:
 
     @staticmethod
     def set_permissions_full_control(file_path, principals_to_permit):
+        """
+        Grants full control over the object at file_path to all principals in principals_to_permit.
+        Sets flags so both child files and directories inherit these permissions.
+
+        Arguments:
+            file_path (str): The path to the file or directory.
+            principals_to_permit (List[str]): The names of the principals to permit.
+
+        Raises:
+            RuntimeError if there is a problem modifying the security attributes.
+        """
         try:
             # We don't want to propagate existing permissions, so create a new DACL
             dacl = win32security.ACL()
@@ -55,4 +66,10 @@ class WindowsPermissionHelper:
 
     @staticmethod
     def get_process_user():
+        """
+        Gets the user running the current process.
+
+        Returns:
+            str: The user running the current process.
+        """
         return win32api.GetUserNameEx(win32con.NameSamCompatible)

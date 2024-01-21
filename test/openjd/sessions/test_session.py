@@ -159,15 +159,13 @@ class TestSessionInitialization:
         # Create a directory and file that are owned by the Windows test user,
         subdir_path = str(working_dir / "subdir")
         file_path = str(working_dir / "subdir" / "file.test")
-        create_subdir_cmd = f"$securePassword = ConvertTo-SecureString '{password}' -AsPlainText -Force; " \
-                            f"$credential = New-Object System.Management.Automation.PSCredential('{username}', $securePassword); " \
-                            f"Start-Process Powershell -Credential $credential -WorkingDirectory {working_dir} -NoNewWindow -ArgumentList '-NoProfile -Command \"New-Item -ItemType Directory -Path {subdir_path}\"; New-Item -ItemType File -Path {file_path}'"
+        create_subdir_cmd = (
+            f"$securePassword = ConvertTo-SecureString '{password}' -AsPlainText -Force; "
+            f"$credential = New-Object System.Management.Automation.PSCredential('{username}', $securePassword); "
+            f"Start-Process Powershell -Credential $credential -WorkingDirectory {working_dir} -NoNewWindow -ArgumentList '-NoProfile -Command \"New-Item -ItemType Directory -Path {subdir_path}\"; New-Item -ItemType File -Path {file_path}'"
+        )
         runresult = run(
-            [
-                "pwsh",
-                "-Command",
-                create_subdir_cmd
-            ],
+            ["pwsh", "-Command", create_subdir_cmd],
             stdin=DEVNULL,
         ).returncode
 

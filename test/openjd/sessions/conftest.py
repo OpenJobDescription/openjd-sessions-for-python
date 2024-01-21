@@ -125,7 +125,7 @@ def win_test_user() -> Generator:
         random.shuffle(password_characters)
         return "".join(password_characters)
 
-    username = "RuntimeAdaptorTester"
+    username = "OpenJDTester"
     # No one need to know this password. So we will generate it randomly.
     password = generate_strong_password()
 
