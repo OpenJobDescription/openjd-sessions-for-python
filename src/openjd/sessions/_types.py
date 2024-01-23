@@ -1,9 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from dataclasses import dataclass
 from enum import Enum
 
-from openjd.model import ParameterValueType
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import EmbeddedFiles as EmbeddedFiles_2023_09
 from openjd.model.v2023_09 import EmbeddedFileText as EmbeddedFileText_2023_09
@@ -40,13 +38,6 @@ class ActionState(str, Enum):
     SUCCESS = "success"
     """The action is no longer running, and exited with a zero
     return code."""
-
-
-@dataclass(frozen=True)
-class Parameter:
-    type: ParameterValueType
-    name: str
-    value: str
 
 
 # --- Internal types

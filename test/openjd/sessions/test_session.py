@@ -15,7 +15,7 @@ from subprocess import DEVNULL, run
 
 import pytest
 
-from openjd.model import ParameterValueType, SchemaVersion, SymbolTable
+from openjd.model import ParameterValue, ParameterValueType, SchemaVersion, SymbolTable
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import (
     EmbeddedFileText as EmbeddedFileText_2023_09,
@@ -36,7 +36,6 @@ from openjd.sessions import (
     LOG,
     ActionState,
     ActionStatus,
-    Parameter,
     PathFormat,
     PathMappingRule,
     Session,
@@ -68,7 +67,7 @@ class TestSessionInitialization:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+        job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
 
         # WHEN
         session = Session(session_id=session_id, job_parameter_values=job_params)
@@ -123,7 +122,7 @@ class TestSessionInitialization:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+        job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
         session = Session(session_id=session_id, job_parameter_values=job_params)
         working_dir = session.working_directory
         filter = session._log_filter
@@ -152,7 +151,7 @@ class TestSessionInitialization:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+        job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
         session = Session(
             session_id=session_id, job_parameter_values=job_params, user=posix_target_user
         )
@@ -304,7 +303,7 @@ class TestSessionInitialization:
         # Test the context manager interface of the Session
 
         # GIVEN
-        job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+        job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
 
         # WHEN
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
@@ -324,7 +323,7 @@ class TestSessionInitialization:
             # GIVEN
             method_mock.side_effect = RuntimeError("Permission denied")
             session_id = uuid.uuid4().hex
-            job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+            job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
             expected_error = "ERROR creating Session Working Directory: Permission denied"
 
             # WHEN
@@ -354,7 +353,9 @@ class TestSessionInitialization:
 
                     os_stat_mock.return_value = StatReturn()
                     session_id = uuid.uuid4().hex
-                    job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+                    job_params = {
+                        "foo": ParameterValue(type=ParameterValueType.STRING, value="bar")
+                    }
                     expected_err_prefix = "Sticky bit is not set"
 
                     # WHEN
@@ -383,7 +384,9 @@ class TestSessionInitialization:
 
                     os_stat_mock.return_value = StatReturn()
                     session_id = uuid.uuid4().hex
-                    job_params = [Parameter(ParameterValueType.STRING, "foo", "bar")]
+                    job_params = {
+                        "foo": ParameterValue(type=ParameterValueType.STRING, value="bar")
+                    }
                     expected_err_prefix = "WARNING: Sticky bit is not set"
 
                     # WHEN
@@ -428,7 +431,7 @@ class TestSessionCallbacks:
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         callback = MagicMock()
         with Session(
             session_id=session_id, job_parameter_values=job_params, callback=callback
@@ -457,7 +460,7 @@ class TestSessionCallbacks:
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         callback = MagicMock()
         with Session(
             session_id=session_id, job_parameter_values=job_params, callback=callback
@@ -510,7 +513,7 @@ class TestSessionCallbacks:
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         callback = MagicMock()
         with Session(
             session_id=session_id, job_parameter_values=job_params, callback=callback
@@ -558,8 +561,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
         # Crafting a StepScript that ensures that references both Job & Task parameters.
         # This ensures that we are correctly constructing the symbol table for the run.
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
-        task_params = [Parameter(ParameterValueType.STRING, "P", "Pvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
+        task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.run_task(step_script=fix_basic_task_script, task_parameter_values=task_params)
@@ -591,8 +594,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
         )
 
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
+        task_params = dict[str, ParameterValue]()
         session_env_vars = {"SESSION_VAR": "session_value"}
         action_env_vars = {"ACTION_VAR": "action_value"}
         with Session(
@@ -635,8 +638,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             ),
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
+        task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session._state = state
@@ -651,8 +654,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
-        task_params = list[Parameter]()
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
+        task_params = dict[str, ParameterValue]()
         step_script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(command=sys.executable, args=["{{ Task.File.Foo }}"])
@@ -693,8 +696,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             ],
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
+        task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.run_task(step_script=script, task_parameter_values=task_params)
@@ -712,8 +715,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
 
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
-        task_params = list[Parameter]()
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
+        task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session._state = SessionState.READY_ENDING
@@ -731,8 +734,8 @@ class TestSessionRunTask_2023_09:  # noqa: N801
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
-        task_params = [Parameter(ParameterValueType.STRING, "P", "Pvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
+        task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(environment=fix_foo_baz_environment)
@@ -767,8 +770,8 @@ class TestSessionCancel:
             ],
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
+        task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.run_task(step_script=script, task_parameter_values=task_params)
             time.sleep(0.5)  # A bit of time to startup
@@ -824,8 +827,8 @@ class TestSessionCancel:
             ],
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
+        task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.run_task(step_script=script, task_parameter_values=task_params)
             time.sleep(0.5)  # A bit of time to startup
@@ -909,7 +912,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier = session.enter_environment(environment=environment)
@@ -946,7 +949,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         session_env_vars = {"SESSION_VAR": "session_value"}
         action_env_vars = {"ACTION_VAR": "action_value"}
         with Session(
@@ -992,7 +995,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session._state = state
@@ -1017,7 +1020,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
         environment1 = _environment_from_script(script)
         environment2 = _environment_from_script(script)
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier1 = session.enter_environment(environment=environment1)
@@ -1047,7 +1050,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier1 = session.enter_environment(environment=environment)
@@ -1079,7 +1082,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(environment=environment)
@@ -1110,7 +1113,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(environment=environment)
@@ -1135,7 +1138,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(environment=environment)
@@ -1147,7 +1150,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     def test_enter_environment_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         variables = {
             "FOO": "bar",
         }
@@ -1169,7 +1172,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         variables = {
             "FOO": "{{Param.J}}",
         }
@@ -1202,7 +1205,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     def test_enter_two_environments_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         variables1 = {
             "FOO": "bar",
         }
@@ -1248,7 +1251,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
 
@@ -1287,7 +1290,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         session_env_vars = {"SESSION_VAR": "session_value"}
         action_env_vars = {"ACTION_VAR": "action_value"}
         with Session(
@@ -1331,7 +1334,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
 
@@ -1356,7 +1359,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier1 = session.enter_environment(environment=environment)
@@ -1386,7 +1389,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
 
@@ -1419,7 +1422,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
 
@@ -1446,7 +1449,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             )
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             identifier = session.enter_environment(environment=environment)
             # Wait for the process to exit
@@ -1463,7 +1466,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
     def test_exit_environment_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         variables = {
             "FOO": "bar",
         }
@@ -1486,7 +1489,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
     def test_exit_two_environments_with_variables(self) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
-        job_params = [Parameter(ParameterValueType.STRING, "J", "Jvalue")]
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         variables1 = {
             "FOO": "bar",
         }
@@ -1650,7 +1653,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
         # schema.
 
         # GIVEN
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         env_vars = dict[str, Optional[str]]()
         symtab = SymbolTable()
         with Session(
@@ -1690,8 +1693,8 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 )
             ],
         )
-        job_params = list[Parameter]()
-        task_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
+        task_params = dict[str, ParameterValue]()
         path_mapping_rules = [
             PathMappingRule(
                 source_path_format=PathFormat.POSIX,
@@ -1736,7 +1739,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 ],
             )
         )
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         path_mapping_rules = [
             PathMappingRule(
                 source_path_format=PathFormat.POSIX,
@@ -1781,7 +1784,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
                 ],
             )
         )
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         path_mapping_rules = [
             PathMappingRule(
                 source_path_format=PathFormat.POSIX,
@@ -1890,10 +1893,10 @@ class TestPathMapping_v2023_09:  # noqa: N801
         # A test that PATH type parameters are path mapped as expected.
 
         # GIVEN
-        params: list[Parameter] = [
-            Parameter(type=ParameterValueType.PATH, name="Path", value=given),
-            Parameter(type=ParameterValueType.STRING, name="String", value=given),
-        ]
+        params = {
+            "Path": ParameterValue(type=ParameterValueType.PATH, value=given),
+            "String": ParameterValue(type=ParameterValueType.STRING, value=given),
+        }
         with Session(
             session_id="test", job_parameter_values=params, path_mapping_rules=rules
         ) as session:
@@ -2127,13 +2130,14 @@ class TestEnvironmentVariablesInTasks_2023_09:
             name="Env", variables={"FOO": "FOO-value", "BAR": "BAR-value"}
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.enter_environment(environment=environment)
 
             # WHEN
             session.run_task(
-                step_script=step_script_definition, task_parameter_values=list[Parameter]()
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
             )
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
@@ -2157,14 +2161,15 @@ class TestEnvironmentVariablesInTasks_2023_09:
             name="Env", variables={"FOO": "FOO-override", "BAR": "BAR-override"}
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.enter_environment(environment=environment_outer)
             session.enter_environment(environment=environment_inner)
 
             # WHEN
             session.run_task(
-                step_script=step_script_definition, task_parameter_values=list[Parameter]()
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
             )
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
@@ -2205,7 +2210,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             name="Env", variables={"FOO": "FOO-override", "BAR": "BAR-override"}
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             outer_env_id = session.enter_environment(environment=environment_outer)
             inner_env_id = session.enter_environment(environment=environment_inner)
@@ -2242,7 +2247,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             variables={"BAR": "BAR-value"},
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.enter_environment(environment=environment)
             while session.state == SessionState.RUNNING:
@@ -2250,7 +2255,8 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
             # WHEN
             session.run_task(
-                step_script=step_script_definition, task_parameter_values=list[Parameter]()
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
             )
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
@@ -2279,7 +2285,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             variables={"BAR": "BAR-value", "FOO": "NOT FOO"},
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.enter_environment(environment=environment)
             while session.state == SessionState.RUNNING:
@@ -2287,7 +2293,8 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
             # WHEN
             session.run_task(
-                step_script=step_script_definition, task_parameter_values=list[Parameter]()
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
             )
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
@@ -2319,7 +2326,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             ),
         )
         session_id = uuid.uuid4().hex
-        job_params = list[Parameter]()
+        job_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             session.enter_environment(environment=outer_environment)
             session.enter_environment(environment=inner_environment)
@@ -2328,7 +2335,8 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
             # WHEN
             session.run_task(
-                step_script=step_script_definition, task_parameter_values=list[Parameter]()
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
             )
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
