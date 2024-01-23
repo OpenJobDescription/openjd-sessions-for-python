@@ -98,6 +98,7 @@ def encode_to_base64(command: str) -> str:
     encoded_command = base64.b64encode(command_bytes)
     return encoded_command.decode("utf-8")
 
+
 def decode_from_base64(command: str):
     a = command.encode("utf-8")
     b = base64.b64decode(a)

@@ -640,17 +640,18 @@ class TestLoggingSubprocessPosix(object):
                 break
         assert num_children_running == 0
 
+
 @pytest.mark.usefixtures("message_queue", "queue_handler")
 class TestLoggingSubprocessWindows(object):
     """Tests for LoggingSubprocess's ability to run the subprocess as a separate user
     on POSIX systems using sudo."""
 
     def test_basic_operation_success(
-            self,
-            message_queue: SimpleQueue,
-            queue_handler: QueueHandler,
-            win_test_user: tuple[str, str],
-            working_directory: str
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        win_test_user: tuple[str, str],
+        working_directory: str,
     ) -> None:
         # Test that we run the subprocess as a desired user that differs from the current user.
 
@@ -664,11 +665,9 @@ class TestLoggingSubprocessWindows(object):
 
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[
-                'Write-Host "Current working directory: $(Get-Location)"; Write-Host asdf'
-            ],
+            args=['Write-Host "Current working directory: $(Get-Location)"; Write-Host asdf'],
             user=test_user,
-            working_directory=working_directory
+            working_directory=working_directory,
         )
 
         """
@@ -699,10 +698,10 @@ class TestLoggingSubprocessWindows(object):
         assert test_user.user in messages
 
     def test_basic_operation_failure(
-            self,
-            message_queue: SimpleQueue,
-            queue_handler: QueueHandler,
-            win_test_user: tuple[str, str]
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        win_test_user: tuple[str, str],
     ) -> None:
         # Test that we run the subprocess as a desired user that differs from the current user.
 
@@ -721,7 +720,7 @@ class TestLoggingSubprocessWindows(object):
                 "-c",
                 f'import sys; import getpass; print(getpass.getuser()); print("{message}"); sys.exit({exitcode})',
             ],
-            user=test_user
+            user=test_user,
         )
 
         # WHEN
@@ -739,10 +738,10 @@ class TestLoggingSubprocessWindows(object):
 
     @pytest.mark.skip()
     def test_notify_ends_process(
-            self,
-            message_queue: SimpleQueue,
-            queue_handler: QueueHandler,
-            posix_target_user: PosixSessionUser,
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        posix_target_user: PosixSessionUser,
     ) -> None:
         # Make sure that process is sent a notification signal
 
@@ -782,10 +781,10 @@ class TestLoggingSubprocessWindows(object):
     @pytest.mark.usefixtures("posix_target_user")
     @pytest.mark.skip()
     def test_terminate_ends_process(
-            self,
-            message_queue: SimpleQueue,
-            queue_handler: QueueHandler,
-            posix_target_user: PosixSessionUser,
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        posix_target_user: PosixSessionUser,
     ) -> None:
         # Make sure that the subprocess is forcefully killed when terminated
 
@@ -825,10 +824,10 @@ class TestLoggingSubprocessWindows(object):
     @pytest.mark.usefixtures("posix_target_user")
     @pytest.mark.skip()
     def test_terminate_ends_process_tree(
-            self,
-            message_queue: SimpleQueue,
-            queue_handler: QueueHandler,
-            posix_target_user: PosixSessionUser,
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        posix_target_user: PosixSessionUser,
     ) -> None:
         # Make sure that the subprocess and all of its children are forcefully killed when terminated
         from psutil import Process, NoSuchProcess

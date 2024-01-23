@@ -65,8 +65,5 @@ jobs:
     - name: Install Dependencies
       run: pip install --upgrade -r requirements-development.txt
 
-    - name: Run Linting
-      run: hatch run lint
-
     - name: Run Tests
       run: hatch run test

@@ -103,6 +103,7 @@ def queue_handler(message_queue: SimpleQueue) -> QueueHandler:
 def session_id() -> str:
     return "some Id"
 
+
 @pytest.fixture(scope="function")
 def working_directory(win_test_user) -> str:
     username, _ = win_test_user
@@ -117,6 +118,7 @@ def working_directory(win_test_user) -> str:
     WindowsPermissionHelper.set_permissions_full_control(working_dir, [username, process_user])
     yield working_dir
     os.remove(working_dir)
+
 
 @pytest.fixture(scope="session")
 def win_test_user() -> Generator:
@@ -170,12 +172,7 @@ def win_test_user() -> Generator:
 
     def add_user_to_group(group_name: str):
         try:
-            win32net.NetLocalGroupAddMembers(
-                None,
-                group_name,
-                3,
-                [{"domainandname": username}]
-            )
+            win32net.NetLocalGroupAddMembers(None, group_name, 3, [{"domainandname": username}])
             print(f"User {username} added to local users group successfully.")
         except Exception as e:
             print(f"Failed to add user {username} to local users group ")

@@ -267,9 +267,8 @@ class LoggingSubprocess(object):
                     "-ExecutionPolicy",
                     "Unrestricted",
                     "-Command",
-                    'Write-Host $((Get-Command python).Source)'
+                    "Write-Host $((Get-Command python).Source)",
                 ]
-
 
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
 
