@@ -398,7 +398,7 @@ class TestScriptRunnerBase:
                 time.sleep(0.2)
 
         # THEN
-        assert runner.state == ScriptRunnerState.CANCELED
+        assert runner.state == ScriptRunnerState.TIMEOUT
         messages = collect_queue_messages(message_queue)
         # The application prints out 0, ..., 9 once a second for 10s.
         # If it ended early, then we printed the first but not the last.
@@ -489,7 +489,7 @@ class TestScriptRunnerBase:
             # Wait until the process exits.
             while runner.exit_code is None:
                 time.sleep(0.2)
-            assert runner.state == ScriptRunnerState.CANCELED
+            assert runner.state == ScriptRunnerState.TIMEOUT
             assert runner.exit_code != 0
             assert cast(TerminatingRunner, runner)._cancel_called
         messages = collect_queue_messages(message_queue)
@@ -524,6 +524,8 @@ class TestScriptRunnerBase:
             # Wait until the process exits.
             while runner.exit_code is None:
                 time.sleep(0.2)
+            # This should be CANCELED rather than TIMEOUT because this test is manually calling
+            # the cancel() method rather than letting the action reach its runtime limit.
             assert runner.state == ScriptRunnerState.CANCELED
             assert runner.exit_code != 0
         messages = collect_queue_messages(message_queue)
@@ -577,6 +579,8 @@ class TestScriptRunnerBase:
             # Wait until the process exits.
             while runner.exit_code is None:
                 time.sleep(0.2)
+        # This should be CANCELED rather than TIMEOUT because this test is manually calling
+        # the cancel() method rather than letting the action reach its runtime limit.
         assert runner.state == ScriptRunnerState.CANCELED
         assert runner.exit_code != 0
         messages = collect_queue_messages(message_queue)

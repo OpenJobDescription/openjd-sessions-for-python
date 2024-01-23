@@ -30,6 +30,9 @@ class ActionState(str, Enum):
     CANCELED = "canceled"
     """The action has been canceled and is no longer running."""
 
+    TIMEOUT = "timeout"
+    """The action has been canceled due to reaching its runtime limit."""
+
     FAILED = "failed"
     """The action is no longer running, and exited with a non-zero
     return code."""
