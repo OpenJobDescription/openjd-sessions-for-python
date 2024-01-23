@@ -98,10 +98,16 @@ def encode_to_base64(command: str) -> str:
     encoded_command = base64.b64encode(command_bytes)
     return encoded_command.decode("utf-8")
 
+def decode_from_base64(command: str):
+    a = command.encode("utf-8")
+    b = base64.b64decode(a)
+    return b.decode("utf-16le")
+
 
 def generate_process_wrapper(
     args: Sequence[str],
     signal_script: os.PathLike,
+    working_dir,
     user: Optional[WindowsSessionUser] = None,
 ) -> str:
     """Generate a wrapper outside the command used for executing as a process.
@@ -173,6 +179,7 @@ $pInfo.FileName = '{cmd}'
 $pInfo.RedirectStandardOutput = $true
 $pInfo.RedirectStandardError = $true
 $pInfo.UseShellExecute = $false
+$pInfo.WorkingDirectory = '{working_dir}'
 {credential_info}
 
 $p = New-Object System.Diagnostics.Process

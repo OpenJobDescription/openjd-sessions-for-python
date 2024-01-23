@@ -83,14 +83,13 @@ class TempDir:
             elif is_windows():
                 user = cast(WindowsSessionUser, user)
                 if user.group:
-                    principal_to_permit = user.group
+                    principals_to_permit = [user.group]
                 else:
-                    principal_to_permit = user.user
-
-                process_user = WindowsPermissionHelper.get_process_user()
+                    process_user = WindowsPermissionHelper.get_process_user()
+                    principals_to_permit = [user.user, process_user]
 
                 WindowsPermissionHelper.set_permissions_full_control(
-                    self.path, [principal_to_permit, process_user]
+                    str(self.path), principals_to_permit
                 )
 
     def cleanup(self) -> None:

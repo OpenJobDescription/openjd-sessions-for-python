@@ -12,6 +12,7 @@ import pytest
 
 from openjd.sessions import PosixSessionUser
 from openjd.sessions._os_checker import is_posix, is_windows
+from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
 
 if is_windows():
     import win32net
@@ -102,6 +103,20 @@ def queue_handler(message_queue: SimpleQueue) -> QueueHandler:
 def session_id() -> str:
     return "some Id"
 
+@pytest.fixture(scope="function")
+def working_directory(win_test_user) -> str:
+    username, _ = win_test_user
+    process_user = WindowsPermissionHelper.get_process_user()
+
+    working_dir = os.path.join(os.getcwd(), "working_dir")
+    try:
+        os.removedirs(working_dir)
+    except:
+        pass
+    os.mkdir(working_dir)
+    WindowsPermissionHelper.set_permissions_full_control(working_dir, [username, process_user])
+    yield working_dir
+    os.remove(working_dir)
 
 @pytest.fixture(scope="session")
 def win_test_user() -> Generator:
@@ -153,6 +168,19 @@ def win_test_user() -> Generator:
                 print(f"Failed to create user '{username}': {e}")
                 raise e
 
+    def add_user_to_group(group_name: str):
+        try:
+            win32net.NetLocalGroupAddMembers(
+                None,
+                group_name,
+                3,
+                [{"domainandname": username}]
+            )
+            print(f"User {username} added to local users group successfully.")
+        except Exception as e:
+            print(f"Failed to add user {username} to local users group ")
+            raise e
+
     def delete_user() -> None:
         try:
             win32net.NetUserDel(None, username)
@@ -162,6 +190,7 @@ def win_test_user() -> Generator:
             raise e
 
     create_user()
+    add_user_to_group("USERS")
     yield username, password
     # Delete the user after test completes
     delete_user()

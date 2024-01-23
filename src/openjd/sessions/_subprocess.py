@@ -19,6 +19,7 @@ import signal
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 from ._powershell_generator import (
     encode_to_base64,
+    decode_from_base64,
     generate_process_wrapper,
 )
 
@@ -64,6 +65,7 @@ class LoggingSubprocess(object):
         args: Sequence[str],
         encoding: str = "utf-8",
         user: Optional[SessionUser] = None,  # OS-user to run as
+        working_directory: Optional[str],
         callback: Optional[Callable[[], None]] = None,
     ):
         if len(args) < 1:
@@ -81,6 +83,7 @@ class LoggingSubprocess(object):
         self._process = None
         self._start_failed = False
         self._has_started = Event()
+        self._working_directory = working_directory
 
     @property
     def pid(self) -> Optional[int]:
@@ -237,17 +240,36 @@ class LoggingSubprocess(object):
                     generate_process_wrapper(
                         self._args,
                         WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH,
+                        self._working_directory,
                         cast(WindowsSessionUser, self._user),
                     )
                 )
+                """
+                with open("command.txt", "w") as f:
+                    f.write(decode_from_base64(encoded_start_service_command))
+                    
                 command = [
                     "pwsh.exe",
+                    "-WorkingDirectory",
+                    self._working_directory,
                     "-NonInteractive",
                     "-ExecutionPolicy",
                     "Unrestricted",
                     "-EncodedCommand",
                     encoded_start_service_command,
                 ]
+                """
+                command = [
+                    "pwsh.exe",
+                    "-WorkingDirectory",
+                    self._working_directory,
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Unrestricted",
+                    "-Command",
+                    'Write-Host $((Get-Command python).Source)'
+                ]
+
 
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
 

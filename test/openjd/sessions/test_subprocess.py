@@ -639,3 +639,249 @@ class TestLoggingSubprocessPosix(object):
             if num_children_running == 0:
                 break
         assert num_children_running == 0
+
+@pytest.mark.usefixtures("message_queue", "queue_handler")
+class TestLoggingSubprocessWindows(object):
+    """Tests for LoggingSubprocess's ability to run the subprocess as a separate user
+    on POSIX systems using sudo."""
+
+    def test_basic_operation_success(
+            self,
+            message_queue: SimpleQueue,
+            queue_handler: QueueHandler,
+            win_test_user: tuple[str, str],
+            working_directory: str
+    ) -> None:
+        # Test that we run the subprocess as a desired user that differs from the current user.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        message = "this is output"
+        exitcode = 0
+
+        username, password = win_test_user
+        test_user = WindowsSessionUser(username, password=password)
+
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[
+                'Write-Host "Current working directory: $(Get-Location)"; Write-Host asdf'
+            ],
+            user=test_user,
+            working_directory=working_directory
+        )
+
+        """
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[
+                "python",
+                "-c",
+                f'import sys; import getpass; print(getpass.getuser()); print("{message}"); sys.exit({exitcode})',
+            ],
+            user=test_user,
+            working_directory=working_directory
+        )
+        """
+        # WHEN
+        subproc.run()
+        messages = collect_queue_messages(message_queue)
+        print(messages)
+
+        # THEN
+        assert not subproc.is_running
+        assert subproc.pid is not None
+        assert subproc.exit_code == exitcode
+        assert message_queue.qsize() > 0
+        messages = collect_queue_messages(message_queue)
+        print(messages)
+        assert message in messages
+        assert test_user.user in messages
+
+    def test_basic_operation_failure(
+            self,
+            message_queue: SimpleQueue,
+            queue_handler: QueueHandler,
+            win_test_user: tuple[str, str]
+    ) -> None:
+        # Test that we run the subprocess as a desired user that differs from the current user.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        message = "this is output"
+        exitcode = 1
+
+        username, password = win_test_user
+        test_user = WindowsSessionUser(username, password=password)
+
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[
+                "python",
+                "-c",
+                f'import sys; import getpass; print(getpass.getuser()); print("{message}"); sys.exit({exitcode})',
+            ],
+            user=test_user
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert not subproc.is_running
+        assert subproc.pid is not None
+        assert subproc.exit_code == exitcode
+        assert message_queue.qsize() > 0
+        messages = collect_queue_messages(message_queue)
+        print(messages)
+        assert message in messages
+        assert test_user.user in messages
+
+    @pytest.mark.skip()
+    def test_notify_ends_process(
+            self,
+            message_queue: SimpleQueue,
+            queue_handler: QueueHandler,
+            posix_target_user: PosixSessionUser,
+    ) -> None:
+        # Make sure that process is sent a notification signal
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
+        shutil.chown(python_app_loc, group=posix_target_user.group)
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[sys.executable, str(python_app_loc)],
+            user=posix_target_user,
+        )
+
+        def end_proc():
+            subproc.wait_until_started()
+            # Then give the Python subprocess some time to finish loading and start running.
+            time.sleep(1)
+            subproc.notify()
+
+        # WHEN
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future1 = pool.submit(subproc.run)
+            future2 = pool.submit(end_proc)
+            wait((future1, future2), return_when="ALL_COMPLETED")
+
+        # THEN
+        assert not subproc.is_running
+        messages = collect_queue_messages(message_queue)
+        # We only print "Trapped" on posix, since we haven't implemented windows signals yet.
+        assert sys.platform.startswith("win") or ("Trapped" in messages)
+        # Check for the first message that would print
+        assert "Log from test 0" in messages
+        # If there's no 9, then we ended before the app naturally finished.
+        assert "Log from test 9" not in messages
+        assert subproc.exit_code != 0
+
+    @pytest.mark.usefixtures("posix_target_user")
+    @pytest.mark.skip()
+    def test_terminate_ends_process(
+            self,
+            message_queue: SimpleQueue,
+            queue_handler: QueueHandler,
+            posix_target_user: PosixSessionUser,
+    ) -> None:
+        # Make sure that the subprocess is forcefully killed when terminated
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
+        shutil.chown(python_app_loc, group=posix_target_user.group)
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[sys.executable, str(python_app_loc)],
+            user=posix_target_user,
+        )
+
+        def end_proc():
+            subproc.wait_until_started()
+            # Then give the Python subprocess some time to finish loading and start running.
+            time.sleep(1)
+            subproc.terminate()
+
+        # WHEN
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future1 = pool.submit(subproc.run)
+            future2 = pool.submit(end_proc)
+            wait((future1, future2), return_when="ALL_COMPLETED")
+
+        # THEN
+        assert not subproc.is_running
+        messages = collect_queue_messages(message_queue)
+        # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
+        assert "Trapped" not in messages
+        # Check for the first message that would print
+        assert "Log from test 0" in messages
+        # If there's no 9, then we ended before the app naturally finished.
+        assert "Log from test 9" not in messages
+        assert subproc.exit_code != 0
+
+    @pytest.mark.usefixtures("posix_target_user")
+    @pytest.mark.skip()
+    def test_terminate_ends_process_tree(
+            self,
+            message_queue: SimpleQueue,
+            queue_handler: QueueHandler,
+            posix_target_user: PosixSessionUser,
+    ) -> None:
+        # Make sure that the subprocess and all of its children are forcefully killed when terminated
+        from psutil import Process, NoSuchProcess
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.sh").resolve()
+        shutil.chown(script_loc, group=posix_target_user.group)
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[str(script_loc), sys.executable],
+            user=posix_target_user,
+        )
+
+        def end_proc():
+            time.sleep(1)
+            subproc.terminate()
+
+        # WHEN
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future1 = pool.submit(subproc.run)
+            subproc.wait_until_started()
+            children = list[Process]()
+            attempt = 0
+            while len(children) == 0 and attempt < 50:
+                time.sleep(0.25)
+                children = Process(subproc.pid).children(recursive=True)
+                attempt += 1
+            future2 = pool.submit(end_proc)
+            wait((future1, future2), return_when="ALL_COMPLETED")
+
+        # THEN
+        messages = collect_queue_messages(message_queue)
+        # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
+        assert "Trapped" not in messages
+        # Check for the first message that would print
+        assert "Log from test 0" in messages
+        # If there's no 9, then we ended before the app naturally finished.
+        assert "Log from test 9" not in messages
+        assert subproc.exit_code != 0
+        assert len(children) == 2  # .sh & .py scripts parented under 'sudo'
+        num_children_running = 0
+        for _ in range(0, 50):
+            time.sleep(0.25)  # Give the child processes some time to end.
+            num_children_running = 0
+            for child in children:
+                try:
+                    # Raises NoSuchProcess if the process is gone
+                    child.status()
+                    num_children_running += 1
+                except NoSuchProcess:
+                    # Expected. This is a success
+                    pass
+            if num_children_running == 0:
+                break
+        assert num_children_running == 0
