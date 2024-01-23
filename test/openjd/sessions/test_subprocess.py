@@ -642,6 +642,7 @@ class TestLoggingSubprocessPosix(object):
 
 
 @pytest.mark.usefixtures("message_queue", "queue_handler")
+@pytest.mark.skipif(not is_windows(), reason="Windows-specific tests")
 class TestLoggingSubprocessWindows(object):
     """Tests for LoggingSubprocess's ability to run the subprocess as a separate user
     on POSIX systems using sudo."""

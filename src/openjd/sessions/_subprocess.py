@@ -65,7 +65,7 @@ class LoggingSubprocess(object):
         args: Sequence[str],
         encoding: str = "utf-8",
         user: Optional[SessionUser] = None,  # OS-user to run as
-        working_directory: Optional[str],
+        working_directory: Optional[str] = None,
         callback: Optional[Callable[[], None]] = None,
     ):
         if len(args) < 1:
@@ -83,7 +83,7 @@ class LoggingSubprocess(object):
         self._process = None
         self._start_failed = False
         self._has_started = Event()
-        self._working_directory = working_directory
+        self._working_directory = working_directory if working_directory else os.getcwd()
 
     @property
     def pid(self) -> Optional[int]:
