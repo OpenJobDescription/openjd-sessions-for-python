@@ -43,7 +43,6 @@ from openjd.sessions import (
     LOG,
     ActionState,
     ActionStatus,
-    Parameter,
     Session
 )
 import logging
@@ -132,18 +131,10 @@ def action_complete_callback(session_id: str, status: ActionStatus) -> None:
     if status.state != ActionState.RUNNING:
         action_event.set()
 
-job_parameter_values = [
-    Parameter(
-        type=param.type,
-        name=name,
-        value=param.value
-    )
-    for name,param in job_parameters.items()
-]
 # Run all tasks in the DemoStep within a Session
 with Session(
     session_id="demo",
-    job_parameter_values=job_parameter_values,
+    job_parameter_values=job_parameters,
     callback=action_complete_callback
 ) as session:
     unwind_session: bool = False
@@ -168,17 +159,9 @@ with Session(
         # Run each task in the step
         for task_parameters in StepParameterSpaceIterator(space=step.parameterSpace):
             action_event.clear()
-            task_parameter_values = [
-                Parameter(
-                    name=name,
-                    type=param.type,
-                    value=param.value
-                )
-                for name,param in task_parameters.items()
-            ]
             session.run_task(
                 step_script=step.script,
-                task_parameter_values=task_parameter_values
+                task_parameter_values=task_parameters
             )
             # run_task is non-blocking, wait for the process to complete
             action_event.wait()

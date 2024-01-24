@@ -16,7 +16,14 @@ from tempfile import gettempdir, mkstemp
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
 
-from openjd.model import ParameterValueType, SchemaVersion, SymbolTable
+from openjd.model import (
+    JobParameterValues,
+    ParameterValue,
+    ParameterValueType,
+    SchemaVersion,
+    SymbolTable,
+    TaskParameterSet,
+)
 from openjd.model import version as model_version
 from openjd.model.v2023_09 import (
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
@@ -36,7 +43,6 @@ from ._types import (
     ActionState,
     EnvironmentIdentifier,
     EnvironmentModel,
-    Parameter,
     StepScriptModel,
 )
 from ._version import version
@@ -227,8 +233,11 @@ class Session(object):
     Defaults to the current process user.
     """
 
-    _job_parameter_values: list[Parameter]
+    _job_parameter_values: JobParameterValues
     """Values for any defined Job Parameters.
+    This is a dictionary.
+        key = Parameter name (e.g. "Foo")
+        value = Parameter's type and value
     """
 
     _cleanup_called: bool
@@ -262,7 +271,7 @@ class Session(object):
         self,
         *,
         session_id: str,
-        job_parameter_values: list[Parameter],
+        job_parameter_values: JobParameterValues,
         path_mapping_rules: Optional[list[PathMappingRule]] = None,
         retain_working_dir: bool = False,
         user: Optional[SessionUser] = None,
@@ -272,7 +281,9 @@ class Session(object):
         """
         Arguments:
             session_id (str): An application-defined string value with which the session is identified.
-            job_parameter_values (list[Parameter]): Values for any defined Job Parameters.
+            job_parameter_values (JobParameterValues): Values for any defined Job Parameters. This is a
+                dictionary where the keys are parameter names, and the values are instances of
+                ParameterValue (a dataclass containing the type and value of the parameter)
             path_mapping_rules (Optional[list[PathMappingRule]]): A list of the path mapping rules to apply
                 within all actions running within this session. Defaults to None.
             retain_working_dir (bool, optional): If set, then the Session's Working Directory
@@ -316,7 +327,7 @@ class Session(object):
         self._created_env_vars = dict()
         self._retain_working_dir = retain_working_dir
         self._user = user
-        self._job_parameter_values = job_parameter_values[:]
+        self._job_parameter_values = dict(job_parameter_values) if job_parameter_values else dict()
         self._cleanup_called = False
         self._callback = callback
         self._path_mapping_rules = path_mapping_rules[:] if path_mapping_rules else None
@@ -653,7 +664,7 @@ class Session(object):
         self,
         *,
         step_script: StepScriptModel,
-        task_parameter_values: list[Parameter],
+        task_parameter_values: TaskParameterSet,
         os_env_vars: Optional[dict[str, str]] = None,
     ) -> None:
         """Run a Task within the Session.
@@ -662,8 +673,9 @@ class Session(object):
 
         Arguments:
             step_script (StepScriptModel): The Step Script that the Task will be running.
-            task_parameter_values (list[Parameter]): Values of the Task parameters that define the
-                specific Task.
+            task_parameter_values (TaskParameterSet): Values of the Task parameters that define the
+                specific Task. This is a dictionary where the keys are parameter names, and the values
+                are instances of ParameterValue (a dataclass containing the type and value of the parameter)
             os_env_vars (Optional[dict[str,str]): Definitions for additional OS Environment
                 Variables that should be injected into the process that is run for this action.
                 Values provided override values provided to the Session constructor, and are overriden
@@ -677,8 +689,8 @@ class Session(object):
         log_section_banner(self._logger, "Running Task")
         if task_parameter_values:
             self._logger.info("Parameter values:")
-            for p in task_parameter_values:
-                self._logger.info(f"{p.name}({str(p.type.value)}) = {p.value}")
+            for name, value in task_parameter_values.items():
+                self._logger.info(f"{name}({str(value.type.value)}) = {value.value}")
 
         self._reset_action_state()
         symtab = self._symbol_table(step_script.version, task_parameter_values)
@@ -722,39 +734,39 @@ class Session(object):
             self._runner = None
 
     def _symbol_table(
-        self, version: SchemaVersion, task_parameter_values: Optional[list[Parameter]] = None
+        self, version: SchemaVersion, task_parameter_values: Optional[TaskParameterSet] = None
     ) -> SymbolTable:
         """Construct a SymbolTable, with fully qualified value names, suitable for running a Script."""
 
-        def processed_parameter_value(param: Parameter, value: str) -> str:
+        def processed_parameter_value(param: ParameterValue) -> str:
             if param.type == ParameterValueType.PATH and self._path_mapping_rules is not None:
                 # Apply path mapping rules in the order given until one does a replacement
                 for rule in self._path_mapping_rules:
-                    changed, result = rule.apply(path=value)
+                    changed, result = rule.apply(path=param.value)
                     if changed:
                         return result
-            return value
+            return param.value
 
         if version == SchemaVersion.v2023_09:
             symtab = SymbolTable()
             symtab[ValueReferenceConstants_2023_09.WORKING_DIRECTORY.value] = str(
                 self.working_directory
             )
-            for param in self._job_parameter_values:
+            for param_name, param_props in self._job_parameter_values.items():
                 symtab[
-                    f"{ValueReferenceConstants_2023_09.JOB_PARAMETER_RAWPREFIX.value}.{param.name}"
-                ] = param.value
+                    f"{ValueReferenceConstants_2023_09.JOB_PARAMETER_RAWPREFIX.value}.{param_name}"
+                ] = param_props.value
                 symtab[
-                    f"{ValueReferenceConstants_2023_09.JOB_PARAMETER_PREFIX.value}.{param.name}"
-                ] = processed_parameter_value(param, param.value)
+                    f"{ValueReferenceConstants_2023_09.JOB_PARAMETER_PREFIX.value}.{param_name}"
+                ] = processed_parameter_value(param_props)
             if task_parameter_values:
-                for param in task_parameter_values:
+                for param_name, param_props in task_parameter_values.items():
                     symtab[
-                        f"{ValueReferenceConstants_2023_09.TASK_PARAMETER_RAWPREFIX.value}.{param.name}"
-                    ] = param.value
+                        f"{ValueReferenceConstants_2023_09.TASK_PARAMETER_RAWPREFIX.value}.{param_name}"
+                    ] = param_props.value
                     symtab[
-                        f"{ValueReferenceConstants_2023_09.TASK_PARAMETER_PREFIX.value}.{param.name}"
-                    ] = processed_parameter_value(param, param.value)
+                        f"{ValueReferenceConstants_2023_09.TASK_PARAMETER_PREFIX.value}.{param_name}"
+                    ] = processed_parameter_value(param_props)
             return symtab
         else:
             raise NotImplementedError(f"Schema version {str(version.value)} is not supported.")
