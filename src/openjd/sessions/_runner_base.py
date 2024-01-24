@@ -308,7 +308,9 @@ class ScriptRunnerBase(ABC):
             self._logger.debug(f"Wrote the following script to {filename}:\n{script}")
 
             subprocess_args = (
-                [filename] if not is_windows() else ["pwsh.exe", "-NonInteractive", filename]
+                [filename]
+                if not is_windows()
+                else ["powershell.exe", "-NonInteractive", "-File", filename]
             )
             self._process = LoggingSubprocess(
                 logger=self._logger,
