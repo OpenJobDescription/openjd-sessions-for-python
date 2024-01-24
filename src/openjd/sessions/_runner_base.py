@@ -55,6 +55,9 @@ class ScriptRunnerState(str, Enum):
     """The Action that was run by the runner was canceled.
     """
 
+    TIMEOUT = "timeout"
+    """The action has been canceled due to reaching its runtime limit."""
+
     FAILED = "failed"
     """Runner is done running the subprocess, and the subprocess failed.
     """
@@ -149,6 +152,9 @@ class ScriptRunnerBase(ABC):
     limit.
     """
 
+    _runtime_limit_reached: bool
+    """True if and only if the Action was terminated due to reaching its runtime limit."""
+
     _pool: ThreadPoolExecutor
     """Pool in which to run futures for this runner.
     """
@@ -204,6 +210,7 @@ class ScriptRunnerBase(ABC):
         self._cancel_gracetime_end = None
         self._canceled = False
         self._runtime_limit = None
+        self._runtime_limit_reached = False
         self._lock = Lock()
         # Will run at most the run futures
         self._pool = ThreadPoolExecutor(max_workers=1)
@@ -253,7 +260,9 @@ class ScriptRunnerBase(ABC):
         # Check on the state of the future for done/canceled
         assert self._run_future is not None
         if self._run_future.done():
-            if self._canceled:
+            if self._canceled and self._runtime_limit_reached:
+                return ScriptRunnerState.TIMEOUT
+            elif self._canceled:
                 return ScriptRunnerState.CANCELED
             elif self._process.failed_to_start or self._process.exit_code != 0:
                 return ScriptRunnerState.FAILED
@@ -261,6 +270,10 @@ class ScriptRunnerBase(ABC):
                 return ScriptRunnerState.SUCCESS
         # If the future's not done, then we're still running.
         return ScriptRunnerState.RUNNING
+
+    @property
+    def runtime_limit_reached(self) -> bool:
+        return self._runtime_limit_reached
 
     @property
     def exit_code(self) -> Optional[int]:
@@ -544,7 +557,8 @@ class ScriptRunnerBase(ABC):
         with self._lock:
             self._runtime_limit = None
         self._logger.info(
-            "Runtime limit reached at %s. Canceling action.",
+            "TIMEOUT - Runtime limit reached at %s. Canceling action.",
             datetime.utcnow().strftime(TIME_FORMAT_STR),
         )
+        self._runtime_limit_reached = True
         self.cancel()
