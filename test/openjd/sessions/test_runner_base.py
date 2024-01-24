@@ -184,8 +184,7 @@ class TestScriptRunnerBase:
         if is_windows():
             assert any(
                 item.startswith(
-                    "Command not found: The term 'test_failed_command'"
-                    " is not recognized as a name of a cmdlet"
+                    "Command not found: The term 'test_failed_command' is not recognized"
                 )
                 for item in messages
             ), "Error message in Windows is not correct."
