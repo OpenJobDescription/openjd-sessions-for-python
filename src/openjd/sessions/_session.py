@@ -535,6 +535,8 @@ class Session(object):
             resolved_variables = self._resolve_env_variable_format_strings(
                 symtab, environment.variables
             )
+            for name, value in resolved_variables.items():
+                self._logger.info("Setting: %s=%s", name, value)
             env_var_changes = SimplifiedEnvironmentVariableChanges(resolved_variables)
             self._created_env_vars[identifier] = env_var_changes
         else:
