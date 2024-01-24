@@ -17,10 +17,6 @@ from datetime import timedelta
 import signal
 
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
-from ._powershell_generator import (
-    encode_to_base64,
-    generate_process_wrapper,
-)
 
 __all__ = ("LoggingSubprocess",)
 
@@ -222,36 +218,19 @@ class LoggingSubprocess(object):
                         # 2/ The self._user cannot kill the root-owned sudo process group.
                         command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
 
+            command.extend(self._args)
+
             # Append the given environment to the current one.
             popen_args: dict[str, Any] = dict(
+                args=command,
                 stdin=DEVNULL,
                 stdout=PIPE,
                 stderr=STDOUT,
                 encoding=self._encoding,
                 start_new_session=True,
             )
-            if is_posix():
-                command.extend(self._args)
-            else:
-                encoded_start_service_command = encode_to_base64(
-                    generate_process_wrapper(
-                        self._args,
-                        WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH,
-                        cast(WindowsSessionUser, self._user),
-                    )
-                )
-                command = [
-                    "pwsh.exe",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Unrestricted",
-                    "-EncodedCommand",
-                    encoded_start_service_command,
-                ]
-
+            if is_windows():
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
-
-            popen_args["args"] = command
 
             cmd_line_for_logger: str
             if is_posix():

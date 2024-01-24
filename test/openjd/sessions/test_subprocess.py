@@ -130,21 +130,10 @@ class TestLoggingSubprocessSameUser:
         # THEN
         assert not subproc.is_running
         messages = collect_queue_messages(message_queue)
-        if is_posix():
-            assert subproc.pid is None
-            assert subproc.exit_code is None
-            assert subproc.failed_to_start
-            assert any(message.startswith("Process failed to start") for message in messages)
-        elif is_windows():
-            # We need to use powershell to run the command. Powershell will always run and return an exit code
-            assert subproc.pid is not None
-            assert subproc.exit_code is not None
-            assert subproc.exit_code != 0
-            assert any(
-                "An error occurred trying to start process 'test_failed_command'" in message
-                and "The system cannot find the file specified." in message
-                for message in messages
-            )
+        assert subproc.pid is None
+        assert subproc.exit_code is None
+        assert subproc.failed_to_start
+        assert any(message.startswith("Process failed to start") for message in messages)
 
     def test_cannot_run_with_callback(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler
@@ -185,9 +174,6 @@ class TestLoggingSubprocessSameUser:
 
         # THEN
         messages = collect_queue_messages(message_queue)
-        # Some error messages from the powershell are not obvious. We add a `Error:` prefix for logging.
-        if is_windows():
-            message = "Error: " + message
         assert message in messages
 
     def test_cannot_run_twice(self, queue_handler: QueueHandler) -> None:
@@ -326,7 +312,7 @@ class TestLoggingSubprocessSameUser:
 
         args = [str(script_loc), sys.executable]
         if is_windows():
-            args.insert(0, "pwsh.exe")
+            args.insert(0, "powershell.exe")
         subproc = LoggingSubprocess(
             logger=logger,
             args=args,
@@ -342,13 +328,15 @@ class TestLoggingSubprocessSameUser:
             subproc.wait_until_started()
             children = list[Process]()
             attempt = 0
-            # For Windows, we will have 2 python process 1 powershell process
-            expected_num_children = 3 if is_windows() else 1
+            # For Windows, we will have 2 processes
+            expected_num_children = 2 if is_windows() else 1
             # Then give the subprocess some time to finish loading and start running some children.
             while len(children) < expected_num_children and attempt < 50:
                 time.sleep(0.25)
                 children = Process(subproc.pid).children(recursive=True)
                 attempt += 1
+            # give process time to get running
+            time.sleep(2)
             future2 = pool.submit(end_proc)
             wait((future1, future2), return_when="ALL_COMPLETED")
 
@@ -358,8 +346,8 @@ class TestLoggingSubprocessSameUser:
         assert "Trapped" not in messages
         # Check for the first message that would print
         assert "Log from test 0" in messages
-        # If there's no 9, then we ended before the app naturally finished.
-        assert "Log from test 9" not in messages
+        # If there's no 19, then we ended before the app naturally finished.
+        assert "Log from test 19" not in messages
         assert subproc.exit_code != 0
         assert len(children) == expected_num_children  # .sh/.ps1 script runs a .py script
 
