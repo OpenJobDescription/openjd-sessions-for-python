@@ -260,6 +260,11 @@ class Session(object):
     """A list of the Path Mapping rules to communicate to Actions run via this Session.
     """
 
+    _session_root_directory: Optional[Path]
+    """If non-None, then this is the directory within-which the Session creator wants
+    the session's working directory to be created.
+    """
+
     # Status fields for the currently running process, if any.
     _action_state: Optional[ActionState]
     _action_progress: Optional[float]
@@ -277,6 +282,7 @@ class Session(object):
         user: Optional[SessionUser] = None,
         callback: Optional[SessionCallbackType] = None,
         os_env_vars: Optional[dict[str, str]] = None,
+        session_root_directory: Optional[Path] = None,
     ):
         """
         Arguments:
@@ -312,6 +318,11 @@ class Session(object):
                 Variables that should be injected into all running processes in the Session.
                     Key: Environment variable name
                     Value: Value for the environment variable.
+            session_root_directory (Optional[Path]): If provided, then:
+                1. The given directory must already exist;
+                2. The 'user' (if given) must have at least read permissions to it; and
+                3. The Working Directory for this Session will be created in the given directory.
+                If not provided, then the default of gettempdir()/"openjd" is used instead.
 
         Raises:
             RuntimeError - If the Session initialization fails for any reason.
@@ -335,6 +346,12 @@ class Session(object):
             # Path mapping rules are applied in order of longest to shortest source path,
             # so sort them for when we apply them.
             self._path_mapping_rules.sort(key=lambda rule: -len(rule.source_path.parts))
+        self._session_root_directory = session_root_directory
+        if self._session_root_directory is not None:
+            if not self._session_root_directory.is_dir():
+                raise RuntimeError(
+                    f"Ensure that the root directory ({str(self._session_root_directory)}) exists and is a directory."
+                )
         self._reset_action_state()
 
         # Set up our logging hook & callback
@@ -771,12 +788,14 @@ class Session(object):
         else:
             raise NotImplementedError(f"Schema version {str(version.value)} is not supported.")
 
-    @staticmethod
-    def _openjd_session_root_dir() -> Path:
+    def _openjd_session_root_dir(self) -> Path:
         """
         Returns (and creates if necessary) the top-level directory where Open Job Description step session
         directories are kept
         """
+        if self._session_root_directory is not None:
+            return self._session_root_directory
+
         tempdir = Path(gettempdir()) / "openjd"
 
         # Note: If this doesn't have group permissions, then we will be unable to access files
@@ -792,23 +811,27 @@ class Session(object):
 
     def _create_working_directory(self) -> TempDir:
         """Creates and returns the temporary working directory for this Session"""
+        root_dir = self._openjd_session_root_dir()
+
         if os_name == "posix":
-            tmpdir = gettempdir()
-            tmpdir_stat = os_stat(tmpdir)
-            # Check the sticky bit. If it's not set on the tmpdir, then
+            # Check the sticky bit. If we have any world-writeable parents to
+            # the root_dir that don't have the sticky bit set, then
             # the system has an insecure setup for multiuser systems.
-            if (tmpdir_stat.st_mode & stat.S_ISVTX) == 0:
+            for parent in root_dir.parents:
+                parent_stat = os_stat(parent)
                 # Note There is a nuanced security risks to putting the session directory in a world-writable parent
                 # directory. Normally, users with write permissions to a directory can delete files/directories within
                 # that directory and this is a problem for world-writable dirs like /tmp. Linux distros typically
                 # default to the system temp dir having the sticky bit set which restricts deletion of files/dirs in
                 # world-writable dirs to only the owning user or a privileged/root user. Not all distros may respect this,
                 # or system administrators may unset the sticky bit.
-                self._logger.warning(
-                    f"Sticky bit is not set on {tmpdir}. This may pose a risk when running work on this host as users may modify or delete files in this directory which do not belong to them."
-                )
+                if (parent_stat.st_mode & stat.S_IWOTH) != 0 and (
+                    parent_stat.st_mode & stat.S_ISVTX
+                ) == 0:
+                    self._logger.warning(
+                        f"Sticky bit is not set on {str(parent)}. This may pose a risk when running work on this host as users may modify or delete files in this directory which do not belong to them."
+                    )
 
-        root_dir = self._openjd_session_root_dir()
         # Raises: RuntimeError
         return TempDir(dir=root_dir, prefix=self._session_id, user=self._user)
 

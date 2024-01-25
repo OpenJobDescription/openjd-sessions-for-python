@@ -8,7 +8,7 @@ import sys
 import time
 import uuid
 from datetime import timedelta
-from pathlib import PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath, Path
 from typing import Any, Optional
 from unittest.mock import MagicMock, PropertyMock, patch
 from subprocess import DEVNULL, run
@@ -86,6 +86,39 @@ class TestSessionInitialization:
 
         session.cleanup()
 
+    @pytest.mark.usefixtures("tmp_path")  # built-in fixture
+    def test_initialize_with_root_dir(self, tmp_path: Path) -> None:
+        # Test that we create the Session Working Directory in the given directory, if there is one.
+
+        # GIVEN
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        session = Session(
+            session_id=session_id, job_parameter_values=job_params, session_root_directory=tmp_path
+        )
+
+        # THEN
+        assert session.working_directory.parent == tmp_path
+
+    @pytest.mark.usefixtures("tmp_path")  # built-in fixture
+    def test_initialize_raises_with_bad_root_dir(self, tmp_path: Path) -> None:
+        # Test that we create the Session Working Directory in the given directory, if there is one.
+
+        # GIVEN
+        root_dir = tmp_path / "does_not_exist"
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+
+        # THEN
+        with pytest.raises(RuntimeError):
+            Session(
+                session_id=session_id,
+                job_parameter_values=job_params,
+                session_root_directory=root_dir,
+            )
+
     def test_root_dir_permissions(self) -> None:
         # Ensures that the permissions of the session root dir
         # allow:
@@ -93,8 +126,13 @@ class TestSessionInitialization:
         #  The group nothing (it doesn't need it since we create subdirs in it for each Session)
         #  The world r/x so that subdirs within it can be accessed by the Session's user.
 
+        # GIVEN
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        session = Session(session_id=session_id, job_parameter_values=job_params)
+
         # WHEN
-        filename = Session._openjd_session_root_dir()
+        filename = session._openjd_session_root_dir()
 
         # THEN
         if is_posix():
