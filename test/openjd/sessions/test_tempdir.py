@@ -28,7 +28,7 @@ from .conftest import has_posix_disjoint_user, has_posix_target_user
 class TestTempDirPosix:
     def test_defaults(self) -> None:
         # GIVEN
-        tmpdir = Path(tempfile.gettempdir())
+        tmpdir = Path(tempfile.gettempdir()).resolve()
 
         # WHEN
         result = TempDir()
