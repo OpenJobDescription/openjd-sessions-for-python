@@ -379,7 +379,7 @@ class TestSessionInitialization:
     @pytest.mark.usefixtures("caplog")  # built-in fixture
     def test_posix_permissions_warning(self, caplog: pytest.LogCaptureFixture) -> None:
         # On POSIX systems, we check the sticky bit of the system /tmp dir
-        # If its not set, then we emit a security warning into the logs.
+        # If it is not set, then we emit a security warning into the logs.
         # This tests that we do in fact emit that message when the sticky bit isn't set.
         with patch("openjd.sessions._session.TempDir", MagicMock()):
             with patch("openjd.sessions._session.os_name", "posix"):

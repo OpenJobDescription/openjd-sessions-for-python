@@ -2,6 +2,7 @@
 
 import os
 import stat
+from logging import LoggerAdapter
 from pathlib import Path
 from shutil import chown, rmtree
 from tempfile import gettempdir, mkdtemp
@@ -13,6 +14,37 @@ from ._os_checker import is_posix, is_windows
 if is_windows():
     import win32security
     import ntsecuritycon
+
+
+def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
+    """
+    Get a platform-specific temporary directory.
+
+    For Windows systems, this function returns a specific directory path,
+    '%PROGRAMDATA%\\Amazon\\'. If this directory does not exist, it will be created.
+    For non-Windows systems, it returns the system's default temporary directory.
+
+    Args:
+        logger (Optional[LoggerAdapter]): The logger to which all messages should be sent from this and the
+                subprocess.
+
+    Returns:
+        str: The path to the temporary directory specific to the operating system.
+    """
+    if is_windows():
+        program_data_path = os.getenv("PROGRAMDATA")
+        if program_data_path is None:
+            program_data_path = r"C:\ProgramData"
+            if logger:
+                logger.warning(
+                    f'"PROGRAMDATA" is not set. Set the root directory to the {program_data_path}'
+                )
+
+        temp_dir = os.path.join(program_data_path, "Amazon")
+        os.makedirs(temp_dir, exist_ok=True)
+    else:
+        temp_dir = gettempdir()
+    return os.path.join(temp_dir, "OpenJD")
 
 
 class TempDir:
@@ -37,6 +69,7 @@ class TempDir:
         dir: Optional[Path] = None,
         prefix: Optional[str] = None,
         user: Optional[SessionUser] = None,
+        logger: Optional[LoggerAdapter] = None,
     ):
         """
         Arguments:
@@ -47,6 +80,8 @@ class TempDir:
             user (Optional[SessionUser]): A group that will own the created directory.
                 The group-write bit will be set on the directory if this option is supplied.
                 Defaults to this process' effective user/group.
+            logger (Optional[LoggerAdapter]): The logger to which all messages should be sent from this and the
+                subprocess.
 
         Raises:
             RuntimeError - If this process cannot create the temporary directory, or change the
@@ -59,7 +94,7 @@ class TempDir:
             raise ValueError("user must be a windows-user. Got %s", type(user))
 
         if not dir:
-            dir = Path(gettempdir())
+            dir = Path(custom_gettempdir(logger))
 
         dir = dir.resolve()
         try:
