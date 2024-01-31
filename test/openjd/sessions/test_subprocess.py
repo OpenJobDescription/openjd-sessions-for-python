@@ -14,11 +14,6 @@ from queue import SimpleQueue
 from typing import Union
 from unittest.mock import MagicMock
 
-from openjd.sessions._os_checker import is_windows
-
-if is_windows():
-    import win32api
-
 import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
@@ -93,7 +88,7 @@ class TestLoggingSubprocessSameUser:
             current_user = getpass.getuser()
             user = PosixSessionUser(user=current_user)
         else:
-            current_user = win32api.GetUserNameEx(win32api.NameSamCompatible)
+            current_user = WindowsSessionUser.get_process_user()
             user = WindowsSessionUser(user=current_user)
 
         logger = build_logger(queue_handler)

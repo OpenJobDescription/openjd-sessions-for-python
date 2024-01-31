@@ -9,11 +9,8 @@ from tempfile import gettempdir, mkdtemp
 from typing import Optional, cast
 
 from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
+from ._windows_permission_helper import WindowsPermissionHelper
 from ._os_checker import is_posix, is_windows
-
-if is_windows():
-    import win32security
-    import ntsecuritycon
 
 
 def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
@@ -125,36 +122,10 @@ class TempDir:
                     else:
                         principal_to_permit = user.user
 
-                    principal_sid, _, _ = win32security.LookupAccountName(None, principal_to_permit)
+                    process_user = WindowsSessionUser.get_process_user()
 
-                    # We don't want to propagate existing permissions, so create a new DACL
-                    dacl = win32security.ACL()
-
-                    # Add an ACE to the DACL giving the principal full control and enabling inheritance of the ACE
-                    dacl.AddAccessAllowedAceEx(
-                        win32security.ACL_REVISION,
-                        ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE,
-                        ntsecuritycon.FILE_ALL_ACCESS,
-                        principal_sid,
-                    )
-
-                    # Get the security descriptor of the tempdir
-                    sd = win32security.GetFileSecurity(
-                        str(self.path), win32security.DACL_SECURITY_INFORMATION
-                    )
-
-                    # Set the security descriptor's DACL to the newly-created DACL
-                    # Arguments:
-                    # 1. bDaclPresent = 1: Indicates that the DACL is present in the security descriptor.
-                    #    If set to 0, this method ignores the provided DACL and allows access to all principals.
-                    # 2. dacl: The discretionary access control list (DACL) to be set in the security descriptor.
-                    # 3. bDaclDefaulted = 0: Indicates the DACL was provided and not defaulted.
-                    #    If set to 1, indicates the DACL was defaulted, as in the case of permissions inherited from a parent directory.
-                    sd.SetSecurityDescriptorDacl(1, dacl, 0)
-
-                    # Set the security descriptor to the tempdir
-                    win32security.SetFileSecurity(
-                        str(self.path), win32security.DACL_SECURITY_INFORMATION, sd
+                    WindowsPermissionHelper.set_permissions_full_control(
+                        str(self.path), [principal_to_permit, process_user]
                     )
                 except Exception as err:
                     raise RuntimeError(
