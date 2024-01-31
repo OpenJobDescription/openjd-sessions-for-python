@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
+import shutil
 import stat
 import tempfile
 from pathlib import Path
@@ -19,7 +20,7 @@ import pytest
 from unittest.mock import patch
 
 from openjd.sessions import PosixSessionUser, WindowsSessionUser
-from openjd.sessions._tempdir import TempDir
+from openjd.sessions._tempdir import TempDir, custom_gettempdir
 
 from .conftest import has_posix_disjoint_user, has_posix_target_user
 
@@ -28,7 +29,7 @@ from .conftest import has_posix_disjoint_user, has_posix_target_user
 class TestTempDirPosix:
     def test_defaults(self) -> None:
         # GIVEN
-        tmpdir = Path(tempfile.gettempdir()).resolve()
+        tmpdir = Path(os.path.join(tempfile.gettempdir(), "OpenJD")).resolve()
 
         # WHEN
         result = TempDir()
@@ -56,7 +57,7 @@ class TestTempDir:
 
     def test_given_prefix(self) -> None:
         # GIVEN
-        tmpdir = Path(tempfile.gettempdir())
+        tmpdir = Path(custom_gettempdir())
         prefix = "testprefix"
 
         # WHEN
@@ -219,6 +220,23 @@ class TestTempDirWindowsUser:
         access_allowed_masks, _ = self.get_aces_for_principal_on_object(object_path, principal_name)
 
         return len(access_allowed_masks) == 0
+
+    @pytest.fixture
+    def clean_up_directory(self):
+        created_dirs = []
+        yield created_dirs
+        for dir_path in created_dirs:
+            if os.path.exists(dir_path):
+                shutil.rmtree(dir_path)
+
+    def test_windows_temp_dir(self, monkeypatch, clean_up_directory):
+        monkeypatch.setenv("PROGRAMDATA", r"C:\ProgramDataForOpenJDTest")
+        expected_dir = r"C:\ProgramDataForOpenJDTest\Amazon\OpenJD"
+        clean_up_directory.append(expected_dir)
+        assert custom_gettempdir() == expected_dir
+        assert os.path.exists(
+            Path(expected_dir).parent
+        ), r"Directory C:\ProgramDataForOpenJDTest\Amazon should be created."
 
 
 @pytest.mark.xfail(

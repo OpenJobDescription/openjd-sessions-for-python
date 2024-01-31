@@ -12,7 +12,7 @@ from logging import Filter, LoggerAdapter
 from os import name as os_name
 from os import stat as os_stat
 from pathlib import Path
-from tempfile import gettempdir, mkstemp
+from tempfile import mkstemp
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
 
@@ -38,7 +38,7 @@ from ._runner_env_script import EnvironmentScriptRunner
 from ._runner_step_script import StepScriptRunner
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
-from ._tempdir import TempDir
+from ._tempdir import TempDir, custom_gettempdir
 from ._types import (
     ActionState,
     EnvironmentIdentifier,
@@ -796,7 +796,7 @@ class Session(object):
         if self._session_root_directory is not None:
             return self._session_root_directory
 
-        tempdir = Path(gettempdir()) / "openjd"
+        tempdir = Path(custom_gettempdir(self._logger))
 
         # Note: If this doesn't have group permissions, then we will be unable to access files
         #  under this directory if the default group of the current user is the group that
@@ -833,13 +833,18 @@ class Session(object):
                     )
 
         # Raises: RuntimeError
-        return TempDir(dir=root_dir, prefix=self._session_id, user=self._user)
+        return TempDir(dir=root_dir, prefix=self._session_id, user=self._user, logger=self._logger)
 
     def _create_files_directory(self) -> TempDir:
         """Creates the subdirectory of the working directory in which we'll materialize
         any embedded files from the Job Template."""
         # Raises: RuntimeError
-        return TempDir(dir=self.working_directory, prefix="embedded_files", user=self._user)
+        return TempDir(
+            dir=self.working_directory,
+            prefix="embedded_files",
+            user=self._user,
+            logger=self._logger,
+        )
 
     def _materialize_path_mapping(
         self, version: SchemaVersion, os_env: dict[str, Optional[str]], symtab: SymbolTable
