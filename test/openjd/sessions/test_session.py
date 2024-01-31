@@ -612,7 +612,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
             assert session.state == SessionState.READY
-            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "Jvalue Jvalue" in caplog.messages
             assert "Pvalue Pvalue" in caplog.messages
 
@@ -653,7 +653,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
             assert session.state == SessionState.READY
-            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "session_value action_value" in caplog.messages
 
     @pytest.mark.parametrize(
@@ -964,7 +964,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert len(session.environments_entered) == 1
             assert session.environments_entered[0] == identifier
             assert session.state == SessionState.READY
-            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "Jvalue Jvalue" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
@@ -1007,7 +1007,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert len(session.environments_entered) == 1
             assert session.environments_entered[0] == identifier
             assert session.state == SessionState.READY
-            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "session_value action_value" in caplog.messages
 
     @pytest.mark.parametrize(
@@ -1305,7 +1305,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert len(session.environments_entered) == 0
             assert identifier not in session._environments
             assert session.state == SessionState.READY_ENDING
-            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "Jvalue Jvalue" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
@@ -1348,7 +1348,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert len(session.environments_entered) == 0
             assert identifier not in session._environments
             assert session.state == SessionState.READY_ENDING
-            session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
+            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "session_value action_value" in caplog.messages
 
     @pytest.mark.parametrize(
