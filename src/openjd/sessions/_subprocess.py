@@ -16,6 +16,7 @@ from typing import Callable, Optional, Sequence, cast
 from pathlib import Path
 from datetime import timedelta
 import signal
+import sys
 
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 
@@ -37,7 +38,7 @@ POSIX_SIGNAL_SUBPROC_SCRIPT_PATH = (
 )
 
 WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH = (
-    Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.ps1"
+    Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.py"
 )
 
 LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
@@ -315,4 +316,23 @@ class LoggingSubprocess(object):
         assert self._process is not None
 
         self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
-        self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore
+
+        if self._user is None:
+            self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore
+        else:
+            cmd = [
+                sys.executable,
+                str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
+                str(self._process.pid),
+            ]
+            result = run(
+                cmd,
+                stdout=PIPE,
+                stderr=STDOUT,
+                stdin=DEVNULL,
+            )
+            if result.returncode != 0:
+                self._logger.warning(
+                    f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}: %s",
+                    result.stdout.decode("utf-8"),
+                )
