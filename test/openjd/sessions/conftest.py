@@ -9,8 +9,11 @@ from queue import Empty, SimpleQueue
 
 import pytest
 
-from openjd.sessions import PosixSessionUser
-from openjd.sessions._os_checker import is_posix
+from openjd.sessions import PosixSessionUser, WindowsSessionUser, BadCredentialsException
+from openjd.sessions._os_checker import is_posix, is_windows
+
+WIN_USERNAME_ENV_VAR = "OJD_SESSIONS_USER_NAME"
+WIN_PASS_ENV_VAR = "OJD_SESSIONS_USER_PASSWORD"
 
 
 def build_logger(handler: QueueHandler) -> LoggerAdapter:
@@ -81,6 +84,30 @@ def posix_disjoint_user() -> PosixSessionUser:
         # Intentionally fail if the var is not defined.
         group=os.environ["OPENJD_TEST_SUDO_DISJOINT_GROUP"],
     )
+
+
+def has_windows_user() -> bool:
+    """Has the testing environment exported the env variables for doing
+    cross-account Windows tests.
+    """
+    return (
+        os.environ.get(WIN_USERNAME_ENV_VAR) is not None
+        and os.environ.get(WIN_PASS_ENV_VAR) is not None
+    )
+
+
+@pytest.fixture(scope="function")
+def windows_user() -> WindowsSessionUser:
+    if not is_windows():
+        pytest.skip("Windows-specific feature")
+    # Intentionally fail if the var is not defined.
+    user = os.environ[WIN_USERNAME_ENV_VAR]
+    password = os.environ[WIN_PASS_ENV_VAR]
+
+    try:
+        return WindowsSessionUser(user, password=password)
+    except BadCredentialsException as e:
+        raise Exception("Invalid credentials for cross-user test account.") from e
 
 
 @pytest.fixture(scope="function")
