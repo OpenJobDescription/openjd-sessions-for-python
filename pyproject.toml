@@ -151,6 +151,7 @@ source = [
 
 [tool.coverage.report]
 show_missing = true
+<<<<<<< HEAD
 fail_under = 82
 
 [tool.semantic_release]
@@ -170,3 +171,4 @@ lstrip_blocks = true
 
 [tool.semantic_release.branches.release]
 match = "(mainline|release)"
+fail_under = 80
