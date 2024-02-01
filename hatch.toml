@@ -34,3 +34,11 @@ PIP_INDEX_URL=""
 
 [envs.container.env-vars]
 
+[envs.release]
+pre-install-commands = [
+  "pip install -r requirements-release.txt"
+]
+
+[envs.release.scripts]
+bump = "semantic-release -v --strict version --no-push --no-commit --skip-build"
+version = "semantic-release -v --strict version --print"

@@ -1,0 +1,60 @@
+name: "Release: Bump"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  TestMainline:
+    name: Test Mainline
+    uses: ./.github/workflows/code_quality.yml
+    with:
+      branch: mainline
+    secrets: inherit
+
+  Bump:
+    needs: TestMainline
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: mainline
+          fetch-depth: 0
+          token: ${{ secrets.CI_TOKEN }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Bump
+        run: |
+          pip install --upgrade hatch
+          hatch env create release
+          NEXT_SEMVER=$(hatch run release:bump)
+
+          git config --local user.email "client-software-ci@amazon.com"
+          git config --local user.name "client-software-ci"
+
+          git checkout -b bump/$NEXT_SEMVER
+          git add CHANGELOG.md
+          git commit -m "chore(release): $NEXT_SEMVER"
+
+          echo "NEXT_SEMVER=$NEXT_SEMVER" >> $GITHUB_ENV
+          {
+            echo 'RELEASE_NOTES<<EOF'
+            python .github/scripts/get_latest_changelog.py
+            echo EOF
+          } >> $GITHUB_ENV
+
+      - name: PushPR
+        env:
+          GH_TOKEN: ${{ secrets.CI_TOKEN }}
+        run: |
+          git push -u origin bump/$NEXT_SEMVER
+
+          # Needs "Allow GitHub Actions to create and approve pull requests" under Settings > Actions
+          gh pr create --base release --title "chore(release): $NEXT_SEMVER" --body "$RELEASE_NOTES"
