@@ -463,7 +463,7 @@ class TestScriptRunnerBase:
         action = Action_2023_09(
             command="{{Task.PythonInterpreter}}",
             args=["{{Task.ScriptFile}}"],
-            timeout=(5 if is_posix() else 15),
+            timeout=(5),
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
@@ -487,7 +487,7 @@ class TestScriptRunnerBase:
         # If it ended early, then we printed the first but not the last.
         print(messages)
         assert "Log from test 0" in messages
-        assert "Log from test 14" not in messages
+        assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(
