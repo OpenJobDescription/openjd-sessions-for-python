@@ -401,7 +401,13 @@ class Session(object):
                     if is_posix():
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
-                        recursive_delete_cmd = ["Remove-Item", "-Recurse", "-Force"]
+                        recursive_delete_cmd = [
+                            "powershell",
+                            "-Command",
+                            "Remove-Item",
+                            "-Recurse",
+                            "-Force",
+                        ]
                         files = [", ".join(files)]
 
                     subprocess = LoggingSubprocess(

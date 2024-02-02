@@ -43,16 +43,17 @@ from openjd.sessions import (
 )
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
 from openjd.sessions._action_filter import ActionMessageKind
-from openjd.sessions._os_checker import is_posix
+from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session import (
     EnvironmentVariableChange,
     EnvironmentVariableSetChange,
     EnvironmentVariableUnsetChange,
     SimplifiedEnvironmentVariableChanges,
 )
-from openjd.sessions._session_user import PosixSessionUser
+from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
+from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
 
-from .conftest import has_posix_target_user
+from .conftest import has_posix_target_user, has_windows_user, SET_ENV_VARS_MESSAGE
 
 
 def _environment_from_script(script: EnvironmentScript_2023_09) -> Environment_2023_09:
@@ -336,6 +337,44 @@ class TestSessionInitialization:
         assert runresult == 0
         assert not os.path.exists(working_dir)
         assert all("rm: cannot remove" not in msg for msg in caplog.messages)
+
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only test.")
+    @pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
+    def test_cleanup_windows_user(
+        self,
+        windows_user: WindowsSessionUser,
+    ) -> None:
+        # Test of the functionality of a Session's cleanup when files may have been
+        # written to the directory by a separate user
+        # This should nuke the working directory and disconnect its handler from LOG
+
+        # GIVEN
+        session_id = uuid.uuid4().hex
+        job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
+        session = Session(session_id=session_id, job_parameter_values=job_params, user=windows_user)
+        working_dir = session.working_directory
+
+        # Create a directory and file that are owned by the Windows test user,
+        working_dir_file_path = str(working_dir / "file.test")
+        subdir_path = str(working_dir / "subdir")
+        subdir_file_path = str(working_dir / "subdir" / "file.test")
+
+        os.mkdir(subdir_path)
+        with open(subdir_file_path, "w") as f:
+            f.write("File content")
+        with open(working_dir_file_path, "w") as f:
+            f.write("File content")
+
+        WindowsPermissionHelper.set_permissions_full_control(subdir_path, [windows_user.user])
+        WindowsPermissionHelper.set_permissions_full_control(subdir_file_path, [windows_user.user])
+        WindowsPermissionHelper.set_permissions_full_control(
+            working_dir_file_path, [windows_user.user]
+        )
+
+        session.cleanup()
+
+        # THEN
+        assert not os.path.exists(working_dir)
 
     def test_contextmanager(self, session_id: str) -> None:
         # Test the context manager interface of the Session
