@@ -18,7 +18,7 @@ This library requires:
 3. On Linux/MacOS:
     * `sudo`
 4. On Windows:
-    * PowerShell 7+
+    * PowerShell 5.x
 
 ## Versioning
 
