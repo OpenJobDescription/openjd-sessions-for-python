@@ -21,7 +21,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          ref: mainline
+          ref: release
           fetch-depth: 0
           token: ${{ secrets.CI_TOKEN }}
 
@@ -30,14 +30,21 @@ jobs:
         with:
           python-version: '3.9'
 
+      - name: ConfigureGit
+        run: |
+          git config --local user.email "client-software-ci@amazon.com"
+          git config --local user.name "client-software-ci"
+
+      - name: MergePushRelease
+        run: |
+          git merge --ff-only origin/mainline -v
+          git push origin release
+
       - name: Bump
         run: |
           pip install --upgrade hatch
           hatch env create release
           NEXT_SEMVER=$(hatch run release:bump)
-
-          git config --local user.email "client-software-ci@amazon.com"
-          git config --local user.name "client-software-ci"
 
           git checkout -b bump/$NEXT_SEMVER
           git add CHANGELOG.md

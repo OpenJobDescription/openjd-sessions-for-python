@@ -5,13 +5,34 @@ on:
   push:
     branches:
       - release
+    paths:
+      - CHANGELOG.md
 
 jobs:
+  VerifyCommit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 0
+
+      - name: VerifyAuthor
+        run: |
+          AUTHOR=$(git show -s --format='%ae' HEAD)
+          if [[ $AUTHOR != "client-software-ci@amazon.com" ]]; then
+            echo "ERROR: Expected author email to be 'client-software-ci@amazon.com', but got '$AUTHOR'. Aborting release."
+            exit 1
+          fi
+
   Release:
+    needs: VerifyCommit
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      pull-requests: write
     outputs:
       tag: ${{ steps.prep-release.outputs.tag }}
     steps:
@@ -39,7 +60,6 @@ jobs:
           git config --local user.email "client-software-ci@amazon.com"
           git config --local user.name "client-software-ci"
 
-          git branch merge-back/$NEXT_SEMVER
           git tag -a $TAG -m "Release $TAG"
 
           echo "NEXT_SEMVER=$NEXT_SEMVER" >> $GITHUB_ENV
@@ -59,15 +79,29 @@ jobs:
           GH_TOKEN: ${{ secrets.CI_TOKEN }}
           TAG: ${{ steps.prep-release.outputs.tag }}
         run: |
-          git push origin $TAG merge-back/$NEXT_SEMVER
+          git push origin $TAG
 
           gh release create $TAG \
-            dist/playground-$NEXT_SEMVER-py3-none-any.whl \
-            dist/playground-$NEXT_SEMVER.tar.gz \
+            dist/openjd_sessions-$NEXT_SEMVER-py3-none-any.whl \
+            dist/openjd_sessions-$NEXT_SEMVER.tar.gz \
             --notes "$RELEASE_NOTES"
 
-          # Needs "Allow GitHub Actions to create and approve pull requests" under Settings > Actions
-          gh pr create --head merge-back/$NEXT_SEMVER --base mainline --title "chore(merge-back): $NEXT_SEMVER" --body "$RELEASE_NOTES"
+  MergeBack:
+    needs: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: mainline
+          fetch-depth: 0
+
+      - name: MergeBackMainline
+        run: |
+          git merge --ff-only origin/release
+          git push origin mainline
 
   PublishToRepository:
     needs: Release
@@ -124,7 +158,7 @@ jobs:
           export TWINE_REPOSITORY_URL=`aws codeartifact get-repository-endpoint --domain ${{ secrets.CUSTOMER_DOMAIN }} --domain-owner ${{ secrets.CODEARTIFACT_ACCOUNT_ID }} --repository ${{ secrets.CUSTOMER_REPOSITORY }} --format pypi --query repositoryEndpoint --output text`
           twine upload dist/*
 
-  PublishToService:
+  PublishToInternal:
     needs: Release
     runs-on: ubuntu-latest
     environment: release
