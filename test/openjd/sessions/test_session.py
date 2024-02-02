@@ -836,15 +836,17 @@ class TestSessionCancel:
     @pytest.mark.parametrize(
         argnames="time_limit",
         argvalues=(
-            None,
-            timedelta(seconds=1),
-            timedelta(seconds=2),
-        )
-        if is_posix()
-        else (
-            None,
-            timedelta(seconds=2),
-            timedelta(seconds=3),
+            (
+                None,
+                timedelta(seconds=1),
+                timedelta(seconds=2),
+            )
+            if is_posix()
+            else (
+                None,
+                timedelta(seconds=2),
+                timedelta(seconds=3),
+            )
         ),
     )
     def test_cancel_time_limit(self, time_limit: Optional[timedelta]) -> None:
@@ -903,12 +905,16 @@ def _make_environment(
     script = (
         EnvironmentScript_2023_09(
             actions=EnvironmentActions_2023_09(
-                onEnter=Action_2023_09(command=sys.executable, args=["{{ Env.File.Foo }}"])
-                if enter_script
-                else None,
-                onExit=Action_2023_09(command=sys.executable, args=["{{ Env.File.Foo }}"])
-                if exit_script
-                else None,
+                onEnter=(
+                    Action_2023_09(command=sys.executable, args=["{{ Env.File.Foo }}"])
+                    if enter_script
+                    else None
+                ),
+                onExit=(
+                    Action_2023_09(command=sys.executable, args=["{{ Env.File.Foo }}"])
+                    if exit_script
+                    else None
+                ),
             ),
             embeddedFiles=[
                 EmbeddedFileText_2023_09(

@@ -22,9 +22,10 @@ from openjd.model.v2023_09 import (
 from openjd.model.v2023_09 import (
     EmbeddedFileTypes as EmbeddedFileTypes_2023_09,
 )
-from openjd.sessions import ActionState, PosixSessionUser
+from openjd.sessions import ActionState, PosixSessionUser, WindowsSessionUser
 from openjd.sessions._embedded_files import EmbeddedFilesScope
 from openjd.sessions._os_checker import is_posix, is_windows
+
 from openjd.sessions._runner_base import (
     NotifyCancelMethod,
     ScriptRunnerBase,
@@ -33,7 +34,13 @@ from openjd.sessions._runner_base import (
 )
 from openjd.sessions._tempdir import TempDir
 
-from .conftest import build_logger, collect_queue_messages, has_posix_target_user
+from .conftest import (
+    build_logger,
+    collect_queue_messages,
+    has_posix_target_user,
+    has_windows_user,
+    SET_ENV_VARS_MESSAGE,
+)
 
 
 # For testing, since ScriptRunnerBase is an abstract base class.
@@ -298,11 +305,45 @@ class TestScriptRunnerBase:
         tmpdir.cleanup()
 
     @pytest.mark.xfail(
+        not has_windows_user(),
+        reason=SET_ENV_VARS_MESSAGE,
+    )
+    def test_run_as_windows_user(
+        self,
+        windows_user: WindowsSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Test that we run the process as a specific desired user
+
+        # GIVEN
+        tmpdir = TempDir(user=windows_user)
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(
+            logger=logger, session_working_directory=tmpdir.path, user=windows_user
+        ) as runner:
+            # WHEN
+            runner._run(["powershell", "-Command", "whoami"])
+            # Wait until the process exits.
+            while runner.exit_code is None:
+                time.sleep(0.1)
+
+        # THEN
+        assert runner.state == ScriptRunnerState.SUCCESS
+        assert runner.exit_code == 0
+        messages = collect_queue_messages(message_queue)
+        process_user = WindowsSessionUser.get_process_user()
+        assert all([process_user not in message for message in messages])
+        assert any(windows_user.user in message for message in messages)
+
+        tmpdir.cleanup()
+
+    @pytest.mark.xfail(
         not has_posix_target_user(),
         reason="Must be running inside of the sudo_environment testing container.",
     )
     @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
-    def test_does_not_inherit_env_vars(
+    def test_does_not_inherit_env_vars_posix(
         self,
         posix_target_user: PosixSessionUser,
         message_queue: SimpleQueue,
@@ -335,6 +376,49 @@ class TestScriptRunnerBase:
                     f"import time; import os; time.sleep(0.25); print(os.environ.get('{var_name}', 'NOT_PRESENT')); print(os.environ)",
                 ]
             )
+
+            # THEN
+            assert runner.state == ScriptRunnerState.RUNNING
+            assert runner.exit_code is None
+            current_wait_seconds = 0
+            while runner.state == ScriptRunnerState.RUNNING and current_wait_seconds < 10:
+                time.sleep(1)
+                current_wait_seconds += 1
+            assert runner.state == ScriptRunnerState.SUCCESS
+            assert runner.exit_code == 0
+
+        messages = collect_queue_messages(message_queue)
+        assert os.environ[var_name] not in messages
+        assert "NOT_PRESENT" in messages
+
+    @pytest.mark.xfail(
+        not has_windows_user(),
+        reason=SET_ENV_VARS_MESSAGE,
+    )
+    def test_does_not_inherit_env_vars_windows(
+        self,
+        windows_user: WindowsSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Security test.
+        # Run a command that tries to read from this process's environment. It should not be able
+        # to obtain values from it.
+        # Only the cross-user case ensures that environment is not passed through; this is to ensure
+        # that sensitive information that is defines in the initiating process' environment is not
+        # propagated through a user boundary to the subprocess.
+
+        # GIVEN
+        tmpdir = TempDir(user=windows_user)
+        var_name = "TEST_DOES_NOT_INHERIT_ENV_VARS_VAR"
+        os.environ[var_name] = "TEST_VALUE"
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(
+            logger=logger, session_working_directory=tmpdir.path, user=windows_user
+        ) as runner:
+            # WHEN
+            command = f"$var = if ($env:{var_name}) {{ $env:{var_name} }} else {{ 'NOT_PRESENT' }}; Write-Host $var"
+            runner._run(["powershell", "-NoProfile", "-Command", command])
 
             # THEN
             assert runner.state == ScriptRunnerState.RUNNING

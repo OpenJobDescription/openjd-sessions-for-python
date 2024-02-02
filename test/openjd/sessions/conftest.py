@@ -14,6 +14,7 @@ from openjd.sessions._os_checker import is_posix, is_windows
 
 WIN_USERNAME_ENV_VAR = "OJD_SESSIONS_USER_NAME"
 WIN_PASS_ENV_VAR = "OJD_SESSIONS_USER_PASSWORD"
+SET_ENV_VARS_MESSAGE = f"To run impersonation test, environment vars {WIN_USERNAME_ENV_VAR} and {WIN_PASS_ENV_VAR} must be set."
 
 
 def build_logger(handler: QueueHandler) -> LoggerAdapter:
