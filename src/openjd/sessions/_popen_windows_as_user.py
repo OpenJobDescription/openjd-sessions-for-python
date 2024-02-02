@@ -2,6 +2,7 @@
 
 import sys
 from ._os_checker import is_windows
+from typing import Any
 
 if is_windows():
     import ctypes
@@ -9,6 +10,7 @@ if is_windows():
     from ctypes import wintypes
     from subprocess import Handle, list2cmdline, Popen  # type: ignore
 
+# Tell type checker to ignore on non-windows platforms
 assert sys.platform == "win32"
 
 advapi32 = ctypes.WinDLL("advapi32")
@@ -19,6 +21,7 @@ LOGON_WITH_PROFILE = 0x00000001
 
 
 # Structures
+# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa
 class STARTUPINFO(ctypes.Structure):
     _fields_ = [
         ("cb", wintypes.DWORD),
@@ -42,6 +45,7 @@ class STARTUPINFO(ctypes.Structure):
     ]
 
 
+# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
 class PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("hProcess", wintypes.HANDLE),
@@ -52,7 +56,19 @@ class PROCESS_INFORMATION(ctypes.Structure):
 
 
 class PopenWindowsAsUser(Popen):
-    def __init__(self, username, password, *args, **kwargs):
+    """Class to run a process as another user on Windows.
+    Derived from Popen, it defines the _execute_child() method to call CreateProcessWithLogonW.
+    """
+
+    def __init__(self, username: str, password: str, *args: Any, **kwargs: Any):
+        """
+        Arguments:
+            username (str):  Name of user to run subprocess as
+            password (str):  Password for username
+            args (Any):  Popen constructor args
+            kwargs (Any):  Popen constructor kwargs
+            https://docs.python.org/3/library/subprocess.html#popen-constructor
+        """
         self.username = username
         self.password = password
         self.domain = None
@@ -81,7 +97,9 @@ class PopenWindowsAsUser(Popen):
         *additional_args,
         **kwargs,
     ):
-        """Execute program (MS Windows version)"""
+        """Execute program (MS Windows version).
+        Calls CreateProcessWithLogonW to run a process as another user.
+        """
 
         assert not pass_fds, "pass_fds not supported on Windows."
 
@@ -97,6 +115,7 @@ class PopenWindowsAsUser(Popen):
         si.hStdError = int(errwrite)
         si.dwFlags |= win32process.STARTF_USESTDHANDLES
 
+        # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
         result = advapi32.CreateProcessWithLogonW(
             self.username,
             self.domain,

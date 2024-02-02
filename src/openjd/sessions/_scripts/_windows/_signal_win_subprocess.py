@@ -1,5 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+# Note: This script will only be run as a subprocess.
+
 import sys
 from psutil import Process
 from signal import CTRL_BREAK_EVENT  # type: ignore
