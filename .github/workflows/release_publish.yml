@@ -50,9 +50,8 @@ jobs:
       - name: PrepRelease
         id: prep-release
         run: |
-          pip install --upgrade hatch
-          hatch env create release
-          NEXT_SEMVER=$(hatch run release:version)
+          COMMIT_TITLE=$(git show -s --format='%s' HEAD)
+          NEXT_SEMVER=$(python -c 'import sys, re; print(re.match(r"chore\(release\): ([0-9]+\.[0-9]+\.[0-9]+).*", sys.argv[1]).group(1))' "$COMMIT_TITLE")
 
           # The format of the tag must match the pattern in pyproject.toml -> tool.semantic_release.tag_format
           TAG="v$NEXT_SEMVER"
@@ -62,6 +61,7 @@ jobs:
 
           git tag -a $TAG -m "Release $TAG"
 
+          echo "TAG=$TAG" >> $GITHUB_ENV
           echo "NEXT_SEMVER=$NEXT_SEMVER" >> $GITHUB_ENV
           {
             echo 'RELEASE_NOTES<<EOF'
@@ -72,12 +72,12 @@ jobs:
       # Tag must be made before building so the generated _version.py files have the correct version
       - name: Build
         run: |
+          pip install --upgrade hatch
           hatch build
 
       - name: PushRelease
         env:
           GH_TOKEN: ${{ secrets.CI_TOKEN }}
-          TAG: ${{ steps.prep-release.outputs.tag }}
         run: |
           git push origin $TAG
 

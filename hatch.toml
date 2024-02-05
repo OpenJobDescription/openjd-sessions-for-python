@@ -40,5 +40,5 @@ pre-install-commands = [
 ]
 
 [envs.release.scripts]
-bump = "semantic-release -v --strict version --no-push --no-commit --skip-build"
-version = "semantic-release -v --strict version --print"
+bump = "semantic-release -v --strict version --no-push --no-commit --no-tag --skip-build {args}"
+version = "semantic-release -v --strict version --print {args}"

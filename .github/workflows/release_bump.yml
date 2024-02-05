@@ -2,6 +2,16 @@ name: "Release: Bump"
 
 on:
   workflow_dispatch:
+    inputs:
+      force_version_bump:
+        required: false
+        default: ""
+        type: choice
+        options:
+        - ""
+        - patch
+        - minor
+        - major
 
 jobs:
   TestMainline:
@@ -42,9 +52,14 @@ jobs:
 
       - name: Bump
         run: |
+          BUMP_ARGS=""
+          if [[ "${{ inputs.force_version_bump }}" != "" ]]; then
+            BUMP_ARGS="$BUMP_ARGS --${{ inputs.force_version_bump }}"
+          fi
+
           pip install --upgrade hatch
           hatch env create release
-          NEXT_SEMVER=$(hatch run release:bump)
+          NEXT_SEMVER=$(hatch run release:bump $BUMP_ARGS)
 
           git checkout -b bump/$NEXT_SEMVER
           git add CHANGELOG.md
