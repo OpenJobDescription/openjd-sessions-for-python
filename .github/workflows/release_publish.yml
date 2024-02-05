@@ -33,8 +33,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    outputs:
-      tag: ${{ steps.prep-release.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -80,11 +78,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CI_TOKEN }}
         run: |
           git push origin $TAG
-
-          gh release create $TAG \
-            dist/openjd_sessions-$NEXT_SEMVER-py3-none-any.whl \
-            dist/openjd_sessions-$NEXT_SEMVER.tar.gz \
-            --notes "$RELEASE_NOTES"
+          gh release create $TAG dist/* --notes "$RELEASE_NOTES"
 
   MergeBack:
     needs: Release
