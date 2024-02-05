@@ -48,7 +48,7 @@ jobs:
 
           git checkout -b bump/$NEXT_SEMVER
           git add CHANGELOG.md
-          git commit -m "chore(release): $NEXT_SEMVER"
+          git commit -sm "chore(release): $NEXT_SEMVER"
 
           echo "NEXT_SEMVER=$NEXT_SEMVER" >> $GITHUB_ENV
           {
