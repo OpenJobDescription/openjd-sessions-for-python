@@ -402,7 +402,7 @@ class Session(object):
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
                         recursive_delete_cmd = [
-                            "powershell",
+                            "powershell.exe",
                             "-Command",
                             "Remove-Item",
                             "-Recurse",
@@ -415,6 +415,8 @@ class Session(object):
                         args=recursive_delete_cmd + files,
                         user=self._user,
                     )
+                    print("whoa", recursive_delete_cmd + files)
+                    print("whoami", self._user)
                     # Note: Blocking call until the process has exited
                     subprocess.run()
 

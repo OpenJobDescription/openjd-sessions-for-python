@@ -312,7 +312,7 @@ class TestLoggingSubprocessSameUser:
 
         args = [str(script_loc), sys.executable]
         if is_windows():
-            args.insert(0, "powershell.exe")
+            args.insert(0, "powershell")
         subproc = LoggingSubprocess(
             logger=logger,
             args=args,
