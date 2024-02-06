@@ -152,6 +152,7 @@ source = [
 [tool.coverage.report]
 show_missing = true
 <<<<<<< HEAD
+<<<<<<< HEAD
 fail_under = 82
 
 [tool.semantic_release]
