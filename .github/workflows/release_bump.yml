@@ -57,9 +57,18 @@ jobs:
             BUMP_ARGS="$BUMP_ARGS --${{ inputs.force_version_bump }}"
           fi
 
+          # Backup actual changelog to preserve its contents
+          cp CHANGELOG.md CHANGELOG.bak.md
+
+          # Run semantic-release to generate new changelog
           pip install --upgrade hatch
           hatch env create release
           NEXT_SEMVER=$(hatch run release:bump $BUMP_ARGS)
+
+          # Grab the new version's changelog and prepend it to the original changelog contents
+          python .github/scripts/get_latest_changelog.py > NEW_LOG.md
+          cat NEW_LOG.md CHANGELOG.bak.md > CHANGELOG.md
+          rm NEW_LOG.md
 
           git checkout -b bump/$NEXT_SEMVER
           git add CHANGELOG.md
