@@ -401,9 +401,8 @@ class Session(object):
                     if is_posix():
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
-                        """
                         recursive_delete_cmd = [
-                            "powershell.exe",
+                            "pwsh",
                             "-Command",
                             "Remove-Item",
                             "-Recurse",
@@ -413,6 +412,7 @@ class Session(object):
                         """
                         recursive_delete_cmd = ["dir"]
                         files = [files[0]]
+                        """
 
                     print("whoa", recursive_delete_cmd + files)
                     print("whoami", self._user)
