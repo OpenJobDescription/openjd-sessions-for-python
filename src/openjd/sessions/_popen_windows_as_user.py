@@ -115,27 +115,30 @@ class PopenWindowsAsUser(Popen):
         si.hStdError = int(errwrite)
         si.dwFlags |= win32process.STARTF_USESTDHANDLES
 
-        # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
-        result = advapi32.CreateProcessWithLogonW(
-            self.username,
-            self.domain,
-            self.password,
-            LOGON_WITH_PROFILE,
-            executable,
-            commandline,
-            creationflags,
-            env,
-            cwd,
-            ctypes.byref(si),
-            ctypes.byref(pi),
-        )
+        try:
+            # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
+            result = advapi32.CreateProcessWithLogonW(
+                self.username,
+                self.domain,
+                self.password,
+                LOGON_WITH_PROFILE,
+                executable,
+                commandline,
+                creationflags,
+                env,
+                cwd,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            )
 
-        if not result:
-            raise ctypes.WinError()
+        finally:
 
-        # Child is launched. Close the parent's copy of those pipe
-        # handles that only the child should have open.
-        self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
+            # Child is launched. Close the parent's copy of those pipe
+            # handles that only the child should have open.
+            self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
+
+            if not result:
+                raise ctypes.WinError()
 
         # Retain the process handle, but close the thread handle
         kernel32.CloseHandle(pi.hThread)
