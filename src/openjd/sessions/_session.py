@@ -401,6 +401,7 @@ class Session(object):
                     if is_posix():
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
+                        """
                         recursive_delete_cmd = [
                             "powershell.exe",
                             "-Command",
@@ -409,14 +410,18 @@ class Session(object):
                             "-Force",
                         ]
                         files = [", ".join(files)]
+                        """
+                        recursive_delete_cmd = ["dir"]
+                        files = [files[0]]
+
+                    print("whoa", recursive_delete_cmd + files)
+                    print("whoami", self._user)
 
                     subprocess = LoggingSubprocess(
                         logger=self._logger,
                         args=recursive_delete_cmd + files,
                         user=self._user,
                     )
-                    print("whoa", recursive_delete_cmd + files)
-                    print("whoami", self._user)
                     # Note: Blocking call until the process has exited
                     subprocess.run()
 
