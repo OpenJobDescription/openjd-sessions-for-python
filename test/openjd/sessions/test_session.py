@@ -353,11 +353,15 @@ class TestSessionInitialization:
         job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
         session = Session(session_id=session_id, job_parameter_values=job_params, user=windows_user)
         working_dir = session.working_directory
+        print("working_dir", working_dir)
 
         # Create a directory and file that are owned by the Windows test user,
         working_dir_file_path = str(working_dir / "file.test")
         subdir_path = str(working_dir / "subdir")
         subdir_file_path = str(working_dir / "subdir" / "file.test")
+
+        # newpath = Path("C:\\")
+        # os.chdir(newpath)
 
         os.mkdir(subdir_path)
         with open(subdir_file_path, "w") as f:
@@ -375,6 +379,7 @@ class TestSessionInitialization:
 
         # THEN
         assert not os.path.exists(working_dir)
+        assert "matta" == "ok"
 
     def test_contextmanager(self, session_id: str) -> None:
         # Test the context manager interface of the Session
