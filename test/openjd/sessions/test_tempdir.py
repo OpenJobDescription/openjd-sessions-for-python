@@ -1,20 +1,22 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+from tempfile import gettempdir
 import os
 import shutil
 import stat
-import tempfile
 from pathlib import Path
 from subprocess import DEVNULL, run
 
 from openjd.sessions._os_checker import is_posix, is_windows
+from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
+from utils.windows_acl_helper import (
+    principal_has_full_control_of_object,
+    principal_has_no_permissions_on_object,
+)
 
 if is_posix():
     import grp
     import pwd
-
-if is_windows():
-    import win32security
 
 import pytest
 from unittest.mock import patch
@@ -22,14 +24,19 @@ from unittest.mock import patch
 from openjd.sessions import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._tempdir import TempDir, custom_gettempdir
 
-from .conftest import has_posix_disjoint_user, has_posix_target_user
+from .conftest import (
+    has_posix_disjoint_user,
+    has_posix_target_user,
+    has_windows_user,
+    SET_ENV_VARS_MESSAGE,
+)
 
 
 @pytest.mark.skipif(not is_posix(), reason="Posix-specific tests")
 class TestTempDirPosix:
     def test_defaults(self) -> None:
         # GIVEN
-        tmpdir = Path(os.path.join(tempfile.gettempdir(), "OpenJD")).resolve()
+        tmpdir = Path(os.path.join(gettempdir(), "OpenJD")).resolve()
 
         # WHEN
         result = TempDir()
@@ -86,7 +93,7 @@ class TestTempDir:
         # within the given directory.
 
         # GIVEN
-        dir = Path(tempfile.gettempdir()) / "a" / "very" / "unlikely" / "dir" / "to" / "exist"
+        dir = Path(gettempdir()) / "a" / "very" / "unlikely" / "dir" / "to" / "exist"
 
         # WHEN
         with pytest.raises(RuntimeError):
@@ -94,9 +101,7 @@ class TestTempDir:
 
 
 @pytest.mark.xfail(not is_windows(), reason="Windows-specific tests")
-class TestTempDirWindowsUser:
-    FULL_CONTROL_MASK = 2032127
-
+class TestTempDirWindows:
     @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
     def test_windows_user_with_group_permits_group(self, mock_user_match):
         # GIVEN
@@ -107,7 +112,7 @@ class TestTempDirWindowsUser:
         tempdir = TempDir(user=windows_user)
 
         # THEN
-        assert self.principal_has_full_control_of_object(str(tempdir.path), windows_user.group)
+        assert principal_has_full_control_of_object(str(tempdir.path), windows_user.group)
 
     @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
     def test_wrong_group_not_permitted(self, mock_user_match):
@@ -119,7 +124,7 @@ class TestTempDirWindowsUser:
         tempdir = TempDir(user=windows_user)
 
         # THEN
-        assert self.principal_has_no_permissions_on_object(str(tempdir.path), "Guests")
+        assert principal_has_no_permissions_on_object(str(tempdir.path), "Guests")
 
     @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
     def test_windows_user_with_group_permits_group_permissions_inherited(self, mock_user_match):
@@ -135,17 +140,17 @@ class TestTempDirWindowsUser:
         open(tempdir.path / "child_dir" / "grandchild_file", "a").close()
 
         # THEN
-        assert self.principal_has_full_control_of_object(str(tempdir.path), windows_user.group)
-        assert self.principal_has_full_control_of_object(
+        assert principal_has_full_control_of_object(str(tempdir.path), windows_user.group)
+        assert principal_has_full_control_of_object(
             str(tempdir.path / "child_dir"), windows_user.group
         )
-        assert self.principal_has_full_control_of_object(
+        assert principal_has_full_control_of_object(
             str(tempdir.path / "child_file"), windows_user.group
         )
-        assert self.principal_has_full_control_of_object(
+        assert principal_has_full_control_of_object(
             str(tempdir.path / "child_dir" / "grandchild_dir"), windows_user.group
         )
-        assert self.principal_has_full_control_of_object(
+        assert principal_has_full_control_of_object(
             str(tempdir.path / "child_dir" / "grandchild_file"), windows_user.group
         )
 
@@ -158,7 +163,7 @@ class TestTempDirWindowsUser:
         tempdir = TempDir(user=windows_user)
 
         # THEN
-        assert self.principal_has_full_control_of_object(str(tempdir.path), "Guest")
+        assert principal_has_full_control_of_object(str(tempdir.path), "Guest")
 
     @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
     def test_invalid_windows_group_raises_exception(self, mock_user_match):
@@ -168,58 +173,6 @@ class TestTempDirWindowsUser:
         # THEN
         with pytest.raises(RuntimeError, match="Could not change permissions of directory"):
             TempDir(user=windows_user)
-
-    @staticmethod
-    def get_aces_for_principal_on_object(object_path: str, principal_name: str):
-        """
-        Returns a list of access allowed masks and a list of access denied masks for a principal's permissions on an object.
-        Access masks for principals other than that specified by principal_name will be excluded from both lists.
-
-        Arguments:
-            object_path (str): The path to the object for which the ACE masks will be retrieved.
-            principal_name (str): The name of the principal to filter for.
-
-        Returns:
-            access_allowed_masks (List[int]): All masks allowing principal_name access to the file.
-            access_denied_masks (List[int]): All masks denying principal_name access to the file.
-        """
-        sd = win32security.GetFileSecurity(object_path, win32security.DACL_SECURITY_INFORMATION)
-
-        dacl = sd.GetSecurityDescriptorDacl()
-
-        principal_to_check_sid, _, _ = win32security.LookupAccountName(None, principal_name)
-
-        access_allowed_masks = []
-        access_denied_masks = []
-
-        for i in range(dacl.GetAceCount()):
-            ace = dacl.GetAce(i)
-
-            ace_type = ace[0][0]
-            access_mask = ace[1]
-            ace_principal_sid = ace[2]
-
-            account_name, _, _ = win32security.LookupAccountSid(None, ace_principal_sid)
-
-            if ace_principal_sid == principal_to_check_sid:
-                if ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE:
-                    access_allowed_masks.append(access_mask)
-                elif ace_type == win32security.ACCESS_DENIED_ACE_TYPE:
-                    access_denied_masks.append(access_mask)
-
-        return access_allowed_masks, access_denied_masks
-
-    def principal_has_full_control_of_object(self, object_path, principal_name):
-        access_allowed_masks, access_denied_masks = self.get_aces_for_principal_on_object(
-            object_path, principal_name
-        )
-
-        return self.FULL_CONTROL_MASK in access_allowed_masks and len(access_denied_masks) == 0
-
-    def principal_has_no_permissions_on_object(self, object_path, principal_name):
-        access_allowed_masks, _ = self.get_aces_for_principal_on_object(object_path, principal_name)
-
-        return len(access_allowed_masks) == 0
 
     @pytest.fixture
     def clean_up_directory(self):
@@ -253,7 +206,7 @@ class TestTempDirPosixUser:
         # Ensure that we can create the temporary directory.
 
         # GIVEN
-        tmpdir = Path(tempfile.gettempdir())
+        tmpdir = Path(gettempdir())
         uid = pwd.getpwnam(posix_target_user.user).pw_uid  # type: ignore
         gid = grp.getgrnam(posix_target_user.group).gr_gid  # type: ignore
 
@@ -299,3 +252,48 @@ class TestTempDirPosixUser:
         # WHEN
         with pytest.raises(RuntimeError):
             TempDir(user=posix_disjoint_user)
+
+
+@pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
+@pytest.mark.usefixtures("windows_user")
+class TestTempDirWindowsUser:
+    """Tests of the TempDir when the resulting directory is to be owned by
+    a different user than the current process.
+    """
+
+    def test_windows_user_without_group_permits_user(
+        self, windows_user: WindowsSessionUser
+    ) -> None:
+        # Ensure that we can create the temporary directory.
+
+        # GIVEN
+        tmpdir = custom_gettempdir()
+
+        # WHEN
+        result = TempDir(user=windows_user)
+
+        # THEN
+        assert str(result.path.parent) == tmpdir
+        assert os.path.exists(result.path)
+
+        assert principal_has_full_control_of_object(str(result.path), windows_user.user)
+
+    def test_cleanup(self, windows_user: WindowsSessionUser) -> None:
+        # Ensure that we can delete the files in that directory that have been
+        # created by the other user.
+
+        # GIVEN
+        tmpdir = TempDir(user=windows_user)
+        testfilename = str(tmpdir.path / "testfile.txt")
+
+        # Create a file on which only windows_user has permissions
+        with open(testfilename, "w") as f:
+            f.write("File content")
+        WindowsPermissionHelper.set_permissions_full_control(testfilename, [windows_user.user])
+
+        # WHEN
+        tmpdir.cleanup()
+
+        # THEN
+        assert not os.path.exists(testfilename)
+        assert not os.path.exists(tmpdir.path)
