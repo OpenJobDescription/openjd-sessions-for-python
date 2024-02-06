@@ -322,7 +322,7 @@ class TestScriptRunnerBase:
             logger=logger, session_working_directory=tmpdir.path, user=windows_user
         ) as runner:
             # WHEN
-            runner._run(["powershell", "-Command", "whoami"])
+            runner._run(["pwsh", "-Command", "whoami"])
             # Wait until the process exits.
             while runner.exit_code is None:
                 time.sleep(0.1)
