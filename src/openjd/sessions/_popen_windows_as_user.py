@@ -193,5 +193,5 @@ class PopenWindowsAsUser(Popen):
         self.pid = pi.dwProcessId
         print("In Proc. pid", self.pid)
         print(type(pi.hProcess))
-        self._handle = Handle(int(pi.hProcess))
+        self._handle = Handle(pi.hProcess)
         # kself._handle = Handle(int.from_bytes(pi.hProcess))
