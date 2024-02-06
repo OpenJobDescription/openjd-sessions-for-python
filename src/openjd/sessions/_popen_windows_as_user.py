@@ -47,7 +47,6 @@ class STARTUPINFO(ctypes.Structure):
 
 
 class MYHANDLE(wintypes.HANDLE):
-
     def detach(self):
         handle, self.value = self.value, None
         return wintypes.HANDLE(handle)
@@ -58,6 +57,7 @@ class MYHANDLE(wintypes.HANDLE):
 
     def __del__(self):
         self.close()
+
 
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
 class PROCESS_INFORMATION(ctypes.Structure):
@@ -148,7 +148,6 @@ class PopenWindowsAsUser(Popen):
             )
 
         finally:
-
             # Child is launched. Close the parent's copy of those pipe
             # handles that only the child should have open.
             self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
