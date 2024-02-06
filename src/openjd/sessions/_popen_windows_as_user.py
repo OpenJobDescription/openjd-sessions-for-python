@@ -46,11 +46,26 @@ class STARTUPINFO(ctypes.Structure):
     ]
 
 
+class MYHANDLE(wintypes.HANDLE):
+
+    def detach(self):
+        handle, self.value = self.value, None
+        return wintypes.HANDLE(handle)
+
+    def close(self, CloseHandle=kernel32.CloseHandle):
+        if self:
+            CloseHandle(self.detach())
+
+    def __del__(self):
+        self.close()
+
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
 class PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [
-        ("hProcess", wintypes.HANDLE),
-        ("hThread", wintypes.HANDLE),
+        # ("hProcess", wintypes.HANDLE),
+        # ("hThread", wintypes.HANDLE),
+        ("hProcess", MYHANDLE),
+        ("hThread", MYHANDLE),
         ("dwProcessId", wintypes.DWORD),
         ("dwThreadId", wintypes.DWORD),
     ]
