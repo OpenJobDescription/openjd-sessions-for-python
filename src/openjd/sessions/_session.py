@@ -415,7 +415,7 @@ class Session(object):
                         """
 
                     print("whoa", recursive_delete_cmd + files)
-                    print("whoami", self._user)
+                    print("whoami", self._user, self._user.user, self._user.password)  # type: ignore
 
                     subprocess = LoggingSubprocess(
                         logger=self._logger,
