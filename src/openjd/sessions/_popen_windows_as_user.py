@@ -78,6 +78,7 @@ class PROCESS_INFORMATION(ctypes.Structure):
 LPPROCESS_INFORMATION = ctypes.POINTER(PROCESS_INFORMATION)
 LPSTARTUPINFO = ctypes.POINTER(STARTUPINFO)
 
+
 class PopenWindowsAsUser(Popen):
     """Class to run a process as another user on Windows.
     Derived from Popen, it defines the _execute_child() method to call CreateProcessWithLogonW.
@@ -147,17 +148,17 @@ class PopenWindowsAsUser(Popen):
 
         advapi32.CreateProcessWithLogonW.errcheck = _check_bool
         advapi32.CreateProcessWithLogonW.argtypes = (
-            wintypes.LPCWSTR,      # lpUsername
-            wintypes.LPCWSTR,      # lpDomain
-            wintypes.LPCWSTR,      # lpPassword
-            wintypes.DWORD,        # dwLogonFlags
-            wintypes.LPCWSTR,      # lpApplicationName
-            wintypes.LPWSTR,       # lpCommandLine (inout)
-            wintypes.DWORD,        # dwCreationFlags
-            wintypes.LPCWSTR,      # lpEnvironment  (force Unicode)
-            wintypes.LPCWSTR,      # lpCurrentDirectory
-            LPSTARTUPINFO,        # lpStartupInfo
-            LPPROCESS_INFORMATION # lpProcessInfo (out)
+            wintypes.LPCWSTR,  # lpUsername
+            wintypes.LPCWSTR,  # lpDomain
+            wintypes.LPCWSTR,  # lpPassword
+            wintypes.DWORD,  # dwLogonFlags
+            wintypes.LPCWSTR,  # lpApplicationName
+            wintypes.LPWSTR,  # lpCommandLine (inout)
+            wintypes.DWORD,  # dwCreationFlags
+            wintypes.LPCWSTR,  # lpEnvironment  (force Unicode)
+            wintypes.LPCWSTR,  # lpCurrentDirectory
+            LPSTARTUPINFO,  # lpStartupInfo
+            LPPROCESS_INFORMATION,  # lpProcessInfo (out)
         )
 
         try:
@@ -181,15 +182,16 @@ class PopenWindowsAsUser(Popen):
             # handles that only the child should have open.
             self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
 
-            # if not result:
-                # raise ctypes.WinError()
+            if not result:
+                print("not result")
+            # raise ctypes.WinError()
 
         # Retain the process handle, but close the thread handle
         kernel32.CloseHandle(pi.hThread)
 
         self._child_created = True
         self.pid = pi.dwProcessId
-        print("In Proc. pid",self.pid)
+        print("In Proc. pid", self.pid)
         print(type(pi.hProcess))
         self._handle = Handle(int(pi.hProcess))
         # kself._handle = Handle(int.from_bytes(pi.hProcess))
