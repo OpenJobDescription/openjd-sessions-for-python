@@ -56,13 +56,25 @@ class TestLoggingSubprocessSameUser:
     ) -> None:
         # Can we run a process, capture its output, and discover its return code?
 
+        myuser = None
+        if is_windows():
+            username = str(os.environ.get("OJD_SESSIONS_USER_NAME"))
+            mypass = str(os.environ.get("OJD_SESSIONS_USER_PASSWORD"))
+            if username and mypass:
+                myuser = WindowsSessionUser(username, password=mypass)
+
         # GIVEN
         logger = build_logger(queue_handler)
         message = "this is 'output'"
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            user=myuser,
+            # args=["powershell, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            # myscript_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
         )
+
+        print("run test as", myuser.user if myuser else "me")
 
         # WHEN
         subproc.run()
@@ -75,6 +87,9 @@ class TestLoggingSubprocessSameUser:
         assert message_queue.qsize() > 0
         messages = collect_queue_messages(message_queue)
         assert message in messages
+
+        if is_windows():
+            assert "matta" == "ok"
 
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation_with_sameuser(
