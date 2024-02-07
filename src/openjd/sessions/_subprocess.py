@@ -138,13 +138,16 @@ class LoggingSubprocess(object):
             raise RuntimeError("The process has already been run")
 
         self._process = self._start_subprocess()
-        self._has_started.set()
+        # self._has_started.set()
         if self._process is None:
             # We failed to start the subprocess
+            self._logger.info("Command failed to start")
             self._start_failed = True
             if self._callback:
                 self._callback()
             return
+        else:
+            self._has_started.set()
 
         self._logger.info(f"Command started as pid: {self._process.pid}")
         self._logger.info("Output:")
@@ -247,6 +250,7 @@ class LoggingSubprocess(object):
 
             if is_windows() and self._user and not user.is_process_user():
                 popen_args["creationflags"] += CREATE_NO_WINDOW
+                popen_obj = PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
                 return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
             else:
                 return Popen(**popen_args)
