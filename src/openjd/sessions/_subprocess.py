@@ -250,8 +250,10 @@ class LoggingSubprocess(object):
 
             if is_windows() and self._user and not user.is_process_user():
                 popen_args["creationflags"] += CREATE_NO_WINDOW
+                # return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
                 popen_obj = PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
-                return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
+                self._logger.info("popen type", type(popen_obj))
+                return popen_obj
             else:
                 return Popen(**popen_args)
 
