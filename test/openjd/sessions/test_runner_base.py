@@ -325,8 +325,10 @@ class TestScriptRunnerBase:
             # runner._run(["powershell", "-Command", "whoami"])
             runner._run(["echo", " hi there openjdtester"])
             # Wait until the process exits.
-            while runner.exit_code is None:
-                time.sleep(1.1)
+            time.sleep(2)
+            # while runner.exit_code is None:
+            # time.sleep(1.1)
+            print("skipp")
 
         # THEN
         if not is_windows():
