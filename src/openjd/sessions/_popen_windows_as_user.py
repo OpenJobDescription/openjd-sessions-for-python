@@ -183,12 +183,12 @@ class PopenWindowsAsUser(Popen):
             # handles that only the child should have open.
             self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
 
-            if not result:
-                print("not result")
+        if not result:
+            print("not result")
             # raise ctypes.WinError()
 
-            if not pi.hProcess:
-                raise ctypes.WinError()
+        # if not pi.hProcess:
+        # raise ctypes.WinError()
 
         # Retain the process handle, but close the thread handle
         kernel32.CloseHandle(pi.hThread)
@@ -199,6 +199,7 @@ class PopenWindowsAsUser(Popen):
         print(type(pi.hProcess))
 
         if not pi.hProcess:
+            print("no handle?", pi.hProcess)
             raise ctypes.WinError()
 
         self._handle = Handle(pi.hProcess)
