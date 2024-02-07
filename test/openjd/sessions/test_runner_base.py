@@ -336,7 +336,10 @@ class TestScriptRunnerBase:
         assert all([process_user not in message for message in messages])
         assert any(windows_user.user in message for message in messages)
 
-        tmpdir.cleanup()
+        if not is_windows():
+            tmpdir.cleanup()
+        else:
+            assert "matta" == "ok"
 
     @pytest.mark.xfail(
         not has_posix_target_user(),
