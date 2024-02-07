@@ -186,6 +186,9 @@ class PopenWindowsAsUser(Popen):
                 print("not result")
             # raise ctypes.WinError()
 
+            if not pi.hProcess:
+                raise ctypes.WinError()
+
         # Retain the process handle, but close the thread handle
         kernel32.CloseHandle(pi.hThread)
 
@@ -193,5 +196,9 @@ class PopenWindowsAsUser(Popen):
         self.pid = pi.dwProcessId
         print("In Proc. pid", self.pid)
         print(type(pi.hProcess))
+
+        if not pi.hProcess:
+            raise ctypes.WinError()
+
         self._handle = Handle(pi.hProcess)
         # kself._handle = Handle(int.from_bytes(pi.hProcess))
