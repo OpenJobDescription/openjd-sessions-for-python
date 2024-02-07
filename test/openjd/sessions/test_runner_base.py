@@ -326,17 +326,17 @@ class TestScriptRunnerBase:
             runner._run(["echo", " hi there openjdtester"])
             # Wait until the process exits.
             while runner.exit_code is None:
-                time.sleep(0.1)
+                time.sleep(1.1)
 
         # THEN
-        assert runner.state == ScriptRunnerState.SUCCESS
-        assert runner.exit_code == 0
-        messages = collect_queue_messages(message_queue)
-        process_user = WindowsSessionUser.get_process_user()
-        assert all([process_user not in message for message in messages])
-        assert any(windows_user.user in message for message in messages)
-
         if not is_windows():
+            assert runner.state == ScriptRunnerState.SUCCESS
+            assert runner.exit_code == 0
+            messages = collect_queue_messages(message_queue)
+            process_user = WindowsSessionUser.get_process_user()
+            assert all([process_user not in message for message in messages])
+            assert any(windows_user.user in message for message in messages)
+
             tmpdir.cleanup()
         else:
             assert "matta" == "ok"
