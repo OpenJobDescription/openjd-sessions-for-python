@@ -68,10 +68,9 @@ class TestLoggingSubprocessSameUser:
         message = "this is 'output'"
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            # args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            args=["echo", "hello there"],
             user=myuser,
-            # args=["powershell, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
-            # myscript_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
         )
 
         print("run test as", myuser.user if myuser else "me")

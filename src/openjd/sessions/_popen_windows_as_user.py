@@ -141,9 +141,9 @@ class PopenWindowsAsUser(Popen):
 
         def _check_bool(result, func, args):
             if not result:
-                # raise ctypes.WinError(ctypes.get_last_error())
-                print("matta err check")
-                raise ctypes.WinError()
+                print("matta err check", result)
+                raise ctypes.WinError(ctypes.get_last_error())
+                # raise ctypes.WinError()
             return args
 
         advapi32.CreateProcessWithLogonW.errcheck = _check_bool
