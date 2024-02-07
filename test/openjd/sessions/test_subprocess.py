@@ -69,7 +69,8 @@ class TestLoggingSubprocessSameUser:
         subproc = LoggingSubprocess(
             logger=logger,
             # args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
-            args=["echo", "hello there"],
+            # args=["echo", "hello there"],
+            args=["powershell.exe", "Write-Output", "'PS hello there'"],
             user=myuser,
         )
 
