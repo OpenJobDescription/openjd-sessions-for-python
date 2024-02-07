@@ -162,6 +162,7 @@ class PopenWindowsAsUser(Popen):
         )
 
         try:
+            result = None
             # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
             result = advapi32.CreateProcessWithLogonW(
                 self.username,
