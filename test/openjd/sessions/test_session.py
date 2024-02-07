@@ -360,9 +360,6 @@ class TestSessionInitialization:
         subdir_path = str(working_dir / "subdir")
         subdir_file_path = str(working_dir / "subdir" / "file.test")
 
-        # newpath = Path("C:\\")
-        # os.chdir(newpath)
-
         os.mkdir(subdir_path)
         with open(subdir_file_path, "w") as f:
             f.write("File content")
@@ -375,7 +372,7 @@ class TestSessionInitialization:
             working_dir_file_path, [windows_user.user]
         )
 
-        session.cleanup()
+        # session.cleanup()
 
         # THEN
         assert not os.path.exists(working_dir)
