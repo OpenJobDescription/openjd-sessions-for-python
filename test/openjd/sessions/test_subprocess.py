@@ -14,13 +14,24 @@ from queue import SimpleQueue
 from typing import Union
 from unittest.mock import MagicMock
 
+from openjd.sessions._os_checker import is_windows
+
+if is_windows():
+    import win32api
+
 import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._subprocess import LoggingSubprocess
 
-from .conftest import build_logger, collect_queue_messages, has_posix_target_user
+from .conftest import (
+    build_logger,
+    collect_queue_messages,
+    has_posix_target_user,
+    has_windows_user,
+    SET_ENV_VARS_MESSAGE,
+)
 
 
 @pytest.mark.usefixtures("message_queue", "queue_handler")
@@ -88,7 +99,7 @@ class TestLoggingSubprocessSameUser:
             current_user = getpass.getuser()
             user = PosixSessionUser(user=current_user)
         else:
-            current_user = WindowsSessionUser.get_process_user()
+            current_user = win32api.GetUserNameEx(win32api.NameSamCompatible)
             user = WindowsSessionUser(user=current_user)
 
         logger = build_logger(queue_handler)
@@ -433,7 +444,7 @@ def list_has_items_in_order(expected: list, actual: list) -> bool:
     reason="Must be running inside of the sudo_environment testing container.",
 )
 @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
-class TestLoggingSubprocessPosix(object):
+class TestLoggingSubprocessPosixCrossUser(object):
     """Tests for LoggingSubprocess's ability to run the subprocess as a separate user
     on POSIX systems using sudo."""
 
@@ -607,6 +618,225 @@ class TestLoggingSubprocessPosix(object):
         assert "Log from test 9" not in messages
         assert subproc.exit_code != 0
         assert len(children) == 2  # .sh & .py scripts parented under 'sudo'
+        num_children_running = 0
+        for _ in range(0, 50):
+            time.sleep(0.25)  # Give the child processes some time to end.
+            num_children_running = 0
+            for child in children:
+                try:
+                    # Raises NoSuchProcess if the process is gone
+                    child.status()
+                    num_children_running += 1
+                except NoSuchProcess:
+                    # Expected. This is a success
+                    pass
+            if num_children_running == 0:
+                break
+        assert num_children_running == 0
+
+
+@pytest.mark.skipif(not is_windows(), reason="Windows-specific tests")
+@pytest.mark.xfail(
+    not has_windows_user(),
+    reason=SET_ENV_VARS_MESSAGE,
+)
+class TestLoggingSubprocessWindowsCrossUser(object):
+    """Tests for LoggingSubprocess's ability to run the subprocess as a separate user on Windows."""
+
+    def test_basic_operation_success(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        windows_user: WindowsSessionUser,
+    ) -> None:
+        # Test that we run the subprocess as a desired user that differs from the current user.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        exitcode = 0
+
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=["Powershell", "-Command", "whoami"],
+            user=windows_user,
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert not subproc.is_running
+        assert subproc.pid is not None
+        assert subproc.exit_code == exitcode
+        assert message_queue.qsize() > 0
+        messages = collect_queue_messages(message_queue)
+        print(messages)
+        assert any(windows_user.user in message for message in messages)
+
+    def test_basic_operation_failure(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        windows_user: WindowsSessionUser,
+    ) -> None:
+        # Test that we run the subprocess as a desired user that differs from the current user.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[
+                "powershell",
+                "-Command",
+                "whoami; exit 1",
+            ],
+            user=windows_user,
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert not subproc.is_running
+        assert subproc.pid is not None
+        assert subproc.exit_code == 1
+        assert message_queue.qsize() > 0
+        messages = collect_queue_messages(message_queue)
+        print(messages)
+        assert any(windows_user.user in message for message in messages)
+
+    # TODO: fix this test once subprocess impersonation is switched to use win apis
+    @pytest.mark.skipif(
+        os.getenv("GITHUB_ACTIONS") == "true", reason="Test failing in GH Actions. Passes locally."
+    )
+    def test_notify_ends_process(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        windows_user: WindowsSessionUser,
+    ) -> None:
+        # Make sure that process is sent a notification signal
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=["python", str(python_app_loc)],
+            user=windows_user,
+        )
+
+        def end_proc():
+            subproc.wait_until_started()
+            # Then give the Python subprocess some time to finish loading and start running.
+            time.sleep(3)
+            subproc.notify()
+
+        # WHEN
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future1 = pool.submit(subproc.run)
+            future2 = pool.submit(end_proc)
+            wait((future1, future2), return_when="ALL_COMPLETED")
+
+        # THEN
+        assert not subproc.is_running
+        messages = collect_queue_messages(message_queue)
+        assert "Trapped" in messages
+        # Check for the first message that would print
+        assert "Log from test 0" in messages
+        # If there's no 19, then we ended before the app naturally finished.
+        assert "Log from test 19" not in messages
+        assert subproc.exit_code != 0
+
+    def test_terminate_ends_process(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        windows_user: WindowsSessionUser,
+    ) -> None:
+        # Make sure that the subprocess is forcefully killed when terminated
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
+
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=["python", str(python_app_loc)],
+            user=windows_user,
+        )
+
+        def end_proc():
+            subproc.wait_until_started()
+            # Then give the Python subprocess some time to finish loading and start running.
+            time.sleep(3)
+            subproc.terminate()
+
+        # WHEN
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future1 = pool.submit(subproc.run)
+            future2 = pool.submit(end_proc)
+            wait((future1, future2), return_when="ALL_COMPLETED")
+
+        # THEN
+        assert not subproc.is_running
+        messages = collect_queue_messages(message_queue)
+        # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
+        assert "Trapped" not in messages
+        # Check for the first message that would print
+        assert "Log from test 0" in messages
+        # If there's no 19, then we ended before the app naturally finished.
+        assert "Log from test 19" not in messages
+        assert subproc.exit_code != 0
+
+    @pytest.mark.skipif(
+        os.getenv("GITHUB_ACTIONS") == "true",
+        reason="Test failing on github.",
+    )
+    def test_terminate_ends_process_tree(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        windows_user: WindowsSessionUser,
+    ) -> None:
+        # Make sure that the subprocess and all of its children are forcefully killed when terminated
+        from psutil import Process, NoSuchProcess
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        script_loc = (Path(__file__).parent / "support_files" / "app_20s_run.ps1").resolve()
+        subproc = LoggingSubprocess(
+            logger=logger, args=["powershell", str(script_loc), "python"], user=windows_user
+        )
+
+        def end_proc():
+            time.sleep(3)
+            subproc.terminate()
+
+        # WHEN
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future1 = pool.submit(subproc.run)
+            subproc.wait_until_started()
+            children = list[Process]()
+            attempt = 0
+            while len(children) != 2 and attempt < 5:
+                time.sleep(1)
+                children = Process(subproc.pid).children(recursive=True)
+                attempt += 1
+            future2 = pool.submit(end_proc)
+            wait((future1, future2), return_when="ALL_COMPLETED")
+
+        # THEN
+        messages = collect_queue_messages(message_queue)
+        # If we printed "Trapped" then we hit our signal handler, and that shouldn't happen.
+        assert "Trapped" not in messages
+        # Check for the first message that would print
+        assert "Log from test 0" in messages
+        # If there's no 9, then we ended before the app naturally finished.
+        assert "Log from test 9" not in messages
+        assert subproc.exit_code != 0
+        assert len(children) == 2
         num_children_running = 0
         for _ in range(0, 50):
             time.sleep(0.25)  # Give the child processes some time to end.
