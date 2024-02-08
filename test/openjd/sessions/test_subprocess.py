@@ -74,7 +74,7 @@ class TestLoggingSubprocessSameUser:
             # args=["powershell.exe", "-Command", "whoami"],
             # args=[sys.executable, "--version"],
             # args=["powershell.exe", "ls", sys.executable],
-            args=["powershell.exe", "ls", "C:/ProgramData"],
+            args=["powershell.exe", "ls", "C:/ProgramData/Amazon"],
             user=myuser,
         )
 
