@@ -72,6 +72,12 @@ class TestActionMonitoringFilter:
                 id="env, allowable characters",
             ),
             pytest.param(
+                "openjd_env: foo=",
+                ActionMessageKind.ENV,
+                {"name": "foo", "value": ""},
+                id="env, assign empty",
+            ),
+            pytest.param(
                 "openjd_env: foo= ",
                 ActionMessageKind.ENV,
                 {"name": "foo", "value": " "},
@@ -281,10 +287,6 @@ class TestActionMonitoringFilter:
             pytest.param(
                 "openjd_env: foo",
                 id="env, missing assignment",
-            ),
-            pytest.param(
-                "openjd_env: foo=",
-                id="env, missing value",
             ),
             pytest.param(
                 "openjd_env: foo =value",

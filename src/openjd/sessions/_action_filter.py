@@ -33,7 +33,7 @@ filter_regex = (
 filter_matcher = re.compile(filter_regex)
 
 # A regex for matching the assignment of a value to an environment variable
-envvar_set_regex = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".+$"  # Variable name
+envvar_set_regex = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*$"  # Variable name
 envvar_set_matcher = re.compile(envvar_set_regex)
 envvar_unset_regex = "^[A-Za-z_][A-Za-z0-9_]*$"
 envvar_unset_matcher = re.compile(envvar_unset_regex)
@@ -214,7 +214,7 @@ class ActionMonitoringFilter(logging.Filter):
         # where:
         #   <varname> consists of latin alphanumeric characters and the underscore,
         #             and starts with a non-digit
-        #   <value> can be any characters.
+        #   <value> can be any characters including empty.
         if not envvar_set_matcher.match(message):
             raise ValueError("Failed to parse environment variable assignment.")
         name, _, value = message.partition("=")
