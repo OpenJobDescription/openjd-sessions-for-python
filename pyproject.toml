@@ -26,7 +26,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries"
 ]
 dependencies = [
-  "openjd-model == 0.2.*",
+  "openjd-model == 0.3.*",
   "pywin32 == 306; platform_system == 'Windows'",
   "psutil == 5.9.*; platform_system == 'Windows'",
 ]

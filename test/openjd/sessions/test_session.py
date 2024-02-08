@@ -15,7 +15,7 @@ from subprocess import DEVNULL, run
 
 import pytest
 
-from openjd.model import ParameterValue, ParameterValueType, SchemaVersion, SymbolTable
+from openjd.model import ParameterValue, ParameterValueType, SpecificationRevision, SymbolTable
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import (
     EmbeddedFileText as EmbeddedFileText_2023_09,
@@ -1743,7 +1743,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             session_id=session_id, job_parameter_values=job_params, path_mapping_rules=rules
         ) as session:
             # WHEN
-            session._materialize_path_mapping(SchemaVersion.v2023_09, env_vars, symtab)
+            session._materialize_path_mapping(SpecificationRevision.v2023_09, env_vars, symtab)
 
             # THEN
             assert symtab["Session.HasPathMappingRules"] == ("true" if rules else "false")
@@ -1985,7 +1985,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
         ) as session:
             # WHEN
             with patch(f"{path_mapping_impl_mod.__name__}.os_name", "posix"):
-                symtab = session._symbol_table(SchemaVersion.v2023_09, params)
+                symtab = session._symbol_table(SpecificationRevision.v2023_09, params)
 
         # THEN
         assert symtab["RawParam.Path"] == given

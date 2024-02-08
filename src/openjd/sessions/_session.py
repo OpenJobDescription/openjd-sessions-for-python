@@ -20,7 +20,7 @@ from openjd.model import (
     JobParameterValues,
     ParameterValue,
     ParameterValueType,
-    SchemaVersion,
+    SpecificationRevision,
     SymbolTable,
     TaskParameterSet,
 )
@@ -558,7 +558,7 @@ class Session(object):
         self._environments_entered.append(identifier)
         self._running_environment_identifier = identifier
 
-        symtab = self._symbol_table(environment.version)
+        symtab = self._symbol_table(environment.revision)
 
         if environment.variables is not None:
             # We must process the current environment's variables
@@ -584,7 +584,7 @@ class Session(object):
         # Must be called _after_ we append to _environments_entered
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
 
-        self._materialize_path_mapping(environment.version, action_env_vars, symtab)
+        self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
 
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
@@ -660,8 +660,8 @@ class Session(object):
 
         self._running_environment_identifier = identifier
 
-        symtab = self._symbol_table(environment.version)
-        self._materialize_path_mapping(environment.version, action_env_vars, symtab)
+        symtab = self._symbol_table(environment.revision)
+        self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
         self._action_state = ActionState.RUNNING
@@ -716,9 +716,9 @@ class Session(object):
                 self._logger.info(f"{name}({str(value.type.value)}) = {value.value}")
 
         self._reset_action_state()
-        symtab = self._symbol_table(step_script.version, task_parameter_values)
+        symtab = self._symbol_table(step_script.revision, task_parameter_values)
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
-        self._materialize_path_mapping(step_script.version, action_env_vars, symtab)
+        self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
         self._runner = StepScriptRunner(
             logger=self._logger,
             user=self._user,
@@ -757,7 +757,9 @@ class Session(object):
             self._runner = None
 
     def _symbol_table(
-        self, version: SchemaVersion, task_parameter_values: Optional[TaskParameterSet] = None
+        self,
+        version: SpecificationRevision,
+        task_parameter_values: Optional[TaskParameterSet] = None,
     ) -> SymbolTable:
         """Construct a SymbolTable, with fully qualified value names, suitable for running a Script."""
 
@@ -770,7 +772,7 @@ class Session(object):
                         return result
             return param.value
 
-        if version == SchemaVersion.v2023_09:
+        if version == SpecificationRevision.v2023_09:
             symtab = SymbolTable()
             symtab[ValueReferenceConstants_2023_09.WORKING_DIRECTORY.value] = str(
                 self.working_directory
@@ -853,7 +855,7 @@ class Session(object):
         )
 
     def _materialize_path_mapping(
-        self, version: SchemaVersion, os_env: dict[str, Optional[str]], symtab: SymbolTable
+        self, version: SpecificationRevision, os_env: dict[str, Optional[str]], symtab: SymbolTable
     ) -> None:
         """Materialize path mapping rules to disk and the os environment variables."""
         if self._path_mapping_rules:
