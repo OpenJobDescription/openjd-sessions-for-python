@@ -303,6 +303,13 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
+    """
+    @pytest.mark.xfail(
+        is_windows(),
+        reason="Matta says so",
+    )
+    """
+
     @pytest.mark.xfail(
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
@@ -323,12 +330,13 @@ class TestScriptRunnerBase:
         ) as runner:
             # WHEN
             # runner._run(["powershell", "-Command", "whoami"])
-            runner._run(["echo", " hi there openjdtester"])
+            # runner._run(["echo", " hi there openjdtester"])
+            runner._run(["powershell", "Start-Sleep 10; Get-Date"])
             # Wait until the process exits.
-            time.sleep(2)
-            # while runner.exit_code is None:
-            # time.sleep(1.1)
-            print("skipp")
+            # time.sleep(2)
+            while runner.exit_code is None:
+                time.sleep(1.1)
+            # print("skipp")
 
         if is_windows():
             assert "matta" == "exit"
