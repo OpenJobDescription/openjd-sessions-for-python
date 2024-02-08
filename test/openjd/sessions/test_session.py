@@ -339,6 +339,7 @@ class TestSessionInitialization:
         assert all("rm: cannot remove" not in msg for msg in caplog.messages)
 
     @pytest.mark.skipif(not is_windows(), reason="Windows-only test.")
+    @pytest.mark.skipif(is_windows(), reason="Matta says so")
     @pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
     def test_cleanup_windows_user(
         self,

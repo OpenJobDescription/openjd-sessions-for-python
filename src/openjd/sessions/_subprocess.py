@@ -128,6 +128,7 @@ class LoggingSubprocess(object):
            timeout - Cease waiting after the given number of seconds has elapsed.
         """
         self._has_started.wait(timeout.total_seconds() if timeout is not None else None)
+        # self._has_started.wait(3)
 
     def run(self) -> None:
         """Run the subprocess. The subprocess cannot be run if it has already been run, or is
@@ -138,7 +139,7 @@ class LoggingSubprocess(object):
             raise RuntimeError("The process has already been run")
 
         self._process = self._start_subprocess()
-        # self._has_started.set()
+        self._has_started.set()
         if self._process is None:
             # We failed to start the subprocess
             self._logger.info("Command failed to start")
@@ -146,8 +147,6 @@ class LoggingSubprocess(object):
             if self._callback:
                 self._callback()
             return
-        else:
-            self._has_started.set()
 
         self._logger.info(f"Command started as pid: {self._process.pid}")
         self._logger.info("Output:")
@@ -252,7 +251,7 @@ class LoggingSubprocess(object):
                 popen_args["creationflags"] += CREATE_NO_WINDOW
                 # return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
                 popen_obj = PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
-                self._logger.info("popen type", type(popen_obj))
+                self._logger.info(f"popen type {type(popen_obj)}")
                 return popen_obj
             else:
                 return Popen(**popen_args)

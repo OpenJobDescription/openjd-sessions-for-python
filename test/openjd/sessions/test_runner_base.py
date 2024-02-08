@@ -330,6 +330,9 @@ class TestScriptRunnerBase:
             # time.sleep(1.1)
             print("skipp")
 
+        if is_windows():
+            assert "matta" == "exit"
+
         # THEN
         if not is_windows():
             assert runner.state == ScriptRunnerState.SUCCESS

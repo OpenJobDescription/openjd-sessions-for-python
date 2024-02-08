@@ -141,7 +141,7 @@ class PopenWindowsAsUser(Popen):
 
         def _check_bool(result, func, args):
             if not result:
-                print("matta err check", result)
+                print("matta err check", result, func, args)
                 raise ctypes.WinError(ctypes.get_last_error())
                 # raise ctypes.WinError()
             return args
@@ -177,7 +177,6 @@ class PopenWindowsAsUser(Popen):
                 ctypes.byref(si),
                 ctypes.byref(pi),
             )
-
         finally:
             # Child is launched. Close the parent's copy of those pipe
             # handles that only the child should have open.
@@ -203,4 +202,4 @@ class PopenWindowsAsUser(Popen):
             raise ctypes.WinError()
 
         self._handle = Handle(pi.hProcess)
-        # kself._handle = Handle(int.from_bytes(pi.hProcess))
+        # self._handle = Handle(int.from_bytes(pi.hProcess))
