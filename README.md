@@ -22,11 +22,13 @@ This library requires:
 
 ## Versioning
 
-This package's version follows [Semantic Versioning 2.0](https://semver.org/).
+This package's version follows [Semantic Versioning 2.0](https://semver.org/), but is still considered to be in its 
+initial development, thus backwards incompatible versions are denoted by minor version bumps. To help illustrate how
+versions will increment during this initial development stage, they are described below:
 
-1. The MAJOR version is currently 0.
-2. The MINOR version is incremented when backwards incompatible changes are introduced to the public API.
-3. The PATCH version is incremented when bug fixes or backwards compatible changes are introduced to the public API.
+1. The MAJOR version is currently 0, indicating initial development. 
+2. The MINOR version is currently incremented when backwards incompatible changes are introduced to the public API. 
+3. The PATCH version is currently incremented when bug fixes or backwards compatible changes are introduced to the public API.
 
 ## Example Usage
 
@@ -53,7 +55,7 @@ from threading import Event
 
 #   Setup
 # ========
-job_template_path = Path("/absolute/path/to/job/template.json")
+job_template_path = Path("/absolute/path/to/job")
 job_template = decode_job_template(
     template={
         "name": "DemoJob",
@@ -113,8 +115,7 @@ job = create_job(
     job_parameter_values=job_parameters
 )
 
-# stdout/stderr from the Session's running processes are sent
-# to LOG
+# stdout/stderr from the Session's running processes are sent to LOG
 LOG.addHandler(logging.StreamHandler(stream=sys.stdout))
 
 #   Run the Session
@@ -172,8 +173,8 @@ with Session(
     finally:
         # Exit all environments in the reverse order that they were entered.
         environment_ids.reverse()
-        for id in environment_ids:
-            session.exit_environment(identifier=id)
+        for _id in environment_ids:
+            session.exit_environment(identifier=_id)
             action_event.clear()
             action_event.wait()
 ```

@@ -29,8 +29,8 @@ running Session context, in the terms of the Open Job Description's Job Running 
 
 The interface to a `Session` follows an asychronous computing model backed, internally,
 by threads. The `Session` has a state that gates what is able to be performed, and when.
-A user can begin running a new Action -- whether that be the enter/exit of an Environment,
-or the run-action of a Task -- when the `Session` is in `READY` state. Running the action starts
+A user can begin running a new Action, whether that be the enter/exit of an Environment or 
+the run-action of a Task, when the `Session` is in `READY` state. Running the action starts
 background threads that will monitor the running subprocess, and forward its stdout/stderr to
 a given Logger.
 
@@ -47,7 +47,7 @@ The internal mechanics of running an action in a `Session` looks like:
         1. The callback of the `*Runner` instance will, in turn, invoke a callback in the `Session` instance
            to tell the `Session` that the process has exited.
         2. Once called, the callback in the `Session` instance will call a callback that is provided to the
-           `Session` when it is constructed -- this is to asychronously inform the creator of the `Session`
+           `Session` when it is constructed, this asychronously informs the creator of the `Session`
            that the subprocess has exited.
     3. Runs the `LoggingSubprocess` within a Future and then returns while that runs.
         1. The thread/future that runs the `LoggingSubprocess`:
@@ -94,7 +94,7 @@ We use this convention in this package in two ways:
 1. In filenames.
     1. Any file whose name is not prefixed with an underscore **is** a part of the public
     interface of this package. The name may not change and public symbols (classes, modules,
-    functions, etc) defined in the file may not be moved to other files or renamed without a
+    functions, etc.) defined in the file may not be moved to other files or renamed without a
     major version number change.
     2. Any file whose name is prefixed with an underscore is an internal module of the package
     and is not part of the public interface. These files can be renamed, refactored, have symbols
