@@ -303,10 +303,13 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
+    """
     @pytest.mark.xfail(
         is_windows(),
         reason="Matta says so",
     )
+    """
+
     @pytest.mark.xfail(
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
@@ -321,7 +324,9 @@ class TestScriptRunnerBase:
 
         # GIVEN
         tmpdir = TempDir(user=windows_user)
-        # tmpdir = TempDir(dir=Path("C:/ProgramData/Amazon/OpenJD"), user=windows_user)
+
+        assert "matta" == "getout"
+
         logger = build_logger(queue_handler)
         with TerminatingRunner(
             logger=logger, session_working_directory=tmpdir.path, user=windows_user
