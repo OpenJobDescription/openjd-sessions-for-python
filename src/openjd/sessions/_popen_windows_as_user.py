@@ -13,8 +13,8 @@ if is_windows():
 # Tell type checker to ignore on non-windows platforms
 assert sys.platform == "win32"
 
-advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+advapi32 = ctypes.WinDLL("advapi32")
+kernel32 = ctypes.WinDLL("kernel32")
 
 # Constants
 LOGON_WITH_PROFILE = 0x00000001
@@ -38,29 +38,11 @@ class STARTUPINFO(ctypes.Structure):
         ("dwFlags", wintypes.DWORD),
         ("wShowWindow", wintypes.WORD),
         ("cbReserved2", wintypes.WORD),
-        # ("lpReserved2", ctypes.POINTER(wintypes.BYTE)),
-        ("lpReserved2", wintypes.LPBYTE),
+        ("lpReserved2", ctypes.POINTER(wintypes.BYTE)),
         ("hStdInput", wintypes.HANDLE),
         ("hStdOutput", wintypes.HANDLE),
         ("hStdError", wintypes.HANDLE),
     ]
-
-    def __init__(self, *args, **kwds):
-        self.cb = ctypes.sizeof(self)
-        super(STARTUPINFO, self).__init__(*args, **kwds)
-
-
-class MYHANDLE(wintypes.HANDLE):
-    def detach(self):
-        handle, self.value = self.value, None
-        return wintypes.HANDLE(handle)
-
-    def close(self, CloseHandle=kernel32.CloseHandle):
-        if self:
-            CloseHandle(self.detach())
-
-    def __del__(self):
-        self.close()
 
 
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
@@ -68,15 +50,9 @@ class PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [
         ("hProcess", wintypes.HANDLE),
         ("hThread", wintypes.HANDLE),
-        # ("hProcess", MYHANDLE),
-        # ("hThread", MYHANDLE),
         ("dwProcessId", wintypes.DWORD),
         ("dwThreadId", wintypes.DWORD),
     ]
-
-
-LPPROCESS_INFORMATION = ctypes.POINTER(PROCESS_INFORMATION)
-LPSTARTUPINFO = ctypes.POINTER(STARTUPINFO)
 
 
 class PopenWindowsAsUser(Popen):
@@ -131,7 +107,7 @@ class PopenWindowsAsUser(Popen):
 
         # Initialize structures
         si = STARTUPINFO()
-        # si.cb = ctypes.sizeof(STARTUPINFO)
+        si.cb = ctypes.sizeof(STARTUPINFO)
         pi = PROCESS_INFORMATION()
 
         si.hStdInput = int(p2cread)
@@ -139,67 +115,31 @@ class PopenWindowsAsUser(Popen):
         si.hStdError = int(errwrite)
         si.dwFlags |= win32process.STARTF_USESTDHANDLES
 
-        def _check_bool(result, func, args):
-            if not result:
-                print("matta err check", result, func, args)
-                raise ctypes.WinError(ctypes.get_last_error())
-                # raise ctypes.WinError()
-            return args
-
-        advapi32.CreateProcessWithLogonW.errcheck = _check_bool
-        advapi32.CreateProcessWithLogonW.argtypes = (
-            wintypes.LPCWSTR,  # lpUsername
-            wintypes.LPCWSTR,  # lpDomain
-            wintypes.LPCWSTR,  # lpPassword
-            wintypes.DWORD,  # dwLogonFlags
-            wintypes.LPCWSTR,  # lpApplicationName
-            wintypes.LPWSTR,  # lpCommandLine (inout)
-            wintypes.DWORD,  # dwCreationFlags
-            wintypes.LPCWSTR,  # lpEnvironment  (force Unicode)
-            wintypes.LPCWSTR,  # lpCurrentDirectory
-            LPSTARTUPINFO,  # lpStartupInfo
-            LPPROCESS_INFORMATION,  # lpProcessInfo (out)
+        # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
+        result = advapi32.CreateProcessWithLogonW(
+            self.username,
+            self.domain,
+            self.password,
+            LOGON_WITH_PROFILE,
+            executable,
+            commandline,
+            creationflags,
+            env,
+            cwd,
+            ctypes.byref(si),
+            ctypes.byref(pi),
         )
 
-        try:
-            result = None
-            # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
-            result = advapi32.CreateProcessWithLogonW(
-                self.username,
-                self.domain,
-                self.password,
-                LOGON_WITH_PROFILE,
-                executable,
-                commandline,
-                creationflags,
-                env,
-                cwd,
-                ctypes.byref(si),
-                ctypes.byref(pi),
-            )
-        finally:
-            # Child is launched. Close the parent's copy of those pipe
-            # handles that only the child should have open.
-            self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
-
         if not result:
-            print("not result")
-            # raise ctypes.WinError()
+            raise ctypes.WinError()
 
-        # if not pi.hProcess:
-        # raise ctypes.WinError()
+        # Child is launched. Close the parent's copy of those pipe
+        # handles that only the child should have open.
+        self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
 
         # Retain the process handle, but close the thread handle
         kernel32.CloseHandle(pi.hThread)
 
         self._child_created = True
         self.pid = pi.dwProcessId
-        print("In Proc. pid", self.pid)
-        print(type(pi.hProcess))
-
-        if not pi.hProcess:
-            print("no handle?", pi.hProcess)
-            raise ctypes.WinError()
-
         self._handle = Handle(pi.hProcess)
-        # self._handle = Handle(int.from_bytes(pi.hProcess))

@@ -402,20 +402,13 @@ class Session(object):
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
                         recursive_delete_cmd = [
-                            "pwsh",
+                            "powershell",
                             "-Command",
                             "Remove-Item",
                             "-Recurse",
                             "-Force",
                         ]
                         files = [", ".join(files)]
-                        """
-                        recursive_delete_cmd = ["dir"]
-                        files = [files[0]]
-                        """
-
-                    print("whoa", recursive_delete_cmd + files)
-                    print("whoami", self._user, self._user.user, self._user.password)  # type: ignore
 
                     subprocess = LoggingSubprocess(
                         logger=self._logger,

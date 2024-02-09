@@ -339,7 +339,6 @@ class TestSessionInitialization:
         assert all("rm: cannot remove" not in msg for msg in caplog.messages)
 
     @pytest.mark.skipif(not is_windows(), reason="Windows-only test.")
-    @pytest.mark.skipif(is_windows(), reason="Matta says so")
     @pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
     def test_cleanup_windows_user(
         self,
@@ -354,7 +353,6 @@ class TestSessionInitialization:
         job_params = {"foo": ParameterValue(type=ParameterValueType.STRING, value="bar")}
         session = Session(session_id=session_id, job_parameter_values=job_params, user=windows_user)
         working_dir = session.working_directory
-        print("working_dir", working_dir)
 
         # Create a directory and file that are owned by the Windows test user,
         working_dir_file_path = str(working_dir / "file.test")
@@ -373,11 +371,10 @@ class TestSessionInitialization:
             working_dir_file_path, [windows_user.user]
         )
 
-        # session.cleanup()
+        session.cleanup()
 
         # THEN
         assert not os.path.exists(working_dir)
-        assert "matta" == "ok"
 
     def test_contextmanager(self, session_id: str) -> None:
         # Test the context manager interface of the Session

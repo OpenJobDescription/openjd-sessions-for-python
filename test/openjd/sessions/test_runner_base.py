@@ -303,18 +303,10 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
-    """
-    @pytest.mark.xfail(
-        is_windows(),
-        reason="Matta says so",
-    )
-    """
-
     @pytest.mark.xfail(
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
     )
-    @pytest.mark.timeout(60)
     def test_run_as_windows_user(
         self,
         windows_user: WindowsSessionUser,
@@ -325,38 +317,25 @@ class TestScriptRunnerBase:
 
         # GIVEN
         tmpdir = TempDir(user=windows_user)
-
-        # assert "matta" == "getout"
-
         logger = build_logger(queue_handler)
         with TerminatingRunner(
             logger=logger, session_working_directory=tmpdir.path, user=windows_user
         ) as runner:
             # WHEN
             runner._run(["powershell", "-Command", "whoami"])
-            # runner._run(["echo", " hi there openjdtester"])
-            # runner._run(["powershell", "Start-Sleep 10; Get-Date"])
             # Wait until the process exits.
-            # time.sleep(2)
             while runner.exit_code is None:
-                time.sleep(1.1)
-            # print("skipp")
-
-        # if is_windows():
-        # assert "matta" == "exit"
+                time.sleep(0.1)
 
         # THEN
-        if not is_windows():
-            assert runner.state == ScriptRunnerState.SUCCESS
-            assert runner.exit_code == 0
-            messages = collect_queue_messages(message_queue)
-            process_user = WindowsSessionUser.get_process_user()
-            assert all([process_user not in message for message in messages])
-            assert any(windows_user.user in message for message in messages)
+        assert runner.state == ScriptRunnerState.SUCCESS
+        assert runner.exit_code == 0
+        messages = collect_queue_messages(message_queue)
+        process_user = WindowsSessionUser.get_process_user()
+        assert all([process_user not in message for message in messages])
+        assert any(windows_user.user in message for message in messages)
 
-            tmpdir.cleanup()
-        else:
-            assert "matta" == "ok"
+        tmpdir.cleanup()
 
     @pytest.mark.xfail(
         not has_posix_target_user(),

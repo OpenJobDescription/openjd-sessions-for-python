@@ -50,37 +50,19 @@ class TestLoggingSubprocessSameUser:
         assert subproc.exit_code is None
         assert not subproc.is_running
 
-    # @pytest.mark.parametrize("exitcode", [0, 1])
-    @pytest.mark.parametrize("exitcode", [0])
+    @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation(
         self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
     ) -> None:
         # Can we run a process, capture its output, and discover its return code?
-
-        myuser = None
-        if is_windows():
-            username = str(os.environ.get("OJD_SESSIONS_USER_NAME"))
-            mypass = str(os.environ.get("OJD_SESSIONS_USER_PASSWORD"))
-            if username and mypass:
-                myuser = WindowsSessionUser(username, password=mypass)
 
         # GIVEN
         logger = build_logger(queue_handler)
         message = "this is 'output'"
         subproc = LoggingSubprocess(
             logger=logger,
-            # args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
-            # args=["echo", "hello there"],
-            # args=["powershell.exe", "Write-Output", "'PS hello there'"],
-            # args=["powershell.exe", "-Command", "whoami"],
-            # args=[sys.executable, "--version"],
-            # args=["powershell.exe", "ls", sys.executable],
-            # args=["powershell.exe", "ls", "C:/ProgramData/Amazon/OpenJD"],
-            args=["dir", "C:/ProgramData/Amazon/OpenJD"],
-            user=myuser,
+            args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
         )
-
-        print("run test as", myuser.user if myuser else "me")
 
         # WHEN
         subproc.run()
@@ -93,9 +75,6 @@ class TestLoggingSubprocessSameUser:
         assert message_queue.qsize() > 0
         messages = collect_queue_messages(message_queue)
         assert message in messages
-
-        if is_windows():
-            assert "matta" == "ok"
 
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation_with_sameuser(
@@ -333,7 +312,7 @@ class TestLoggingSubprocessSameUser:
 
         args = [str(script_loc), sys.executable]
         if is_windows():
-            args.insert(0, "powershell")
+            args.insert(0, "powershell.exe")
         subproc = LoggingSubprocess(
             logger=logger,
             args=args,
