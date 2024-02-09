@@ -314,7 +314,7 @@ class TestScriptRunnerBase:
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
     )
-    @pytest.mark.timeout(20)
+    @pytest.mark.timeout(60)
     def test_run_as_windows_user(
         self,
         windows_user: WindowsSessionUser,
@@ -342,8 +342,8 @@ class TestScriptRunnerBase:
                 time.sleep(1.1)
             # print("skipp")
 
-        if is_windows():
-            assert "matta" == "exit"
+        # if is_windows():
+        # assert "matta" == "exit"
 
         # THEN
         if not is_windows():

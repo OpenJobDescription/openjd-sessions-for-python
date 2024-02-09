@@ -75,7 +75,8 @@ class TestLoggingSubprocessSameUser:
             # args=["powershell.exe", "-Command", "whoami"],
             # args=[sys.executable, "--version"],
             # args=["powershell.exe", "ls", sys.executable],
-            args=["powershell.exe", "ls", "C:/ProgramData/Amazon/OpenJD"],
+            # args=["powershell.exe", "ls", "C:/ProgramData/Amazon/OpenJD"],
+            args=["dir", "C:/ProgramData/Amazon/OpenJD"],
             user=myuser,
         )
 
