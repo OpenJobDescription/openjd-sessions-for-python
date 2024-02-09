@@ -314,6 +314,7 @@ class TestScriptRunnerBase:
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
     )
+    @pytest.mark.timeout(20)
     def test_run_as_windows_user(
         self,
         windows_user: WindowsSessionUser,
@@ -325,16 +326,16 @@ class TestScriptRunnerBase:
         # GIVEN
         tmpdir = TempDir(user=windows_user)
 
-        assert "matta" == "getout"
+        # assert "matta" == "getout"
 
         logger = build_logger(queue_handler)
         with TerminatingRunner(
             logger=logger, session_working_directory=tmpdir.path, user=windows_user
         ) as runner:
             # WHEN
-            # runner._run(["powershell", "-Command", "whoami"])
+            runner._run(["powershell", "-Command", "whoami"])
             # runner._run(["echo", " hi there openjdtester"])
-            runner._run(["powershell", "Start-Sleep 10; Get-Date"])
+            # runner._run(["powershell", "Start-Sleep 10; Get-Date"])
             # Wait until the process exits.
             # time.sleep(2)
             while runner.exit_code is None:

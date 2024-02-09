@@ -335,7 +335,8 @@ class ScriptRunnerBase(ABC):
         # and then is erroneously told that the Action is done because the future
         # for _process.run hasn't actually gotten far enough to start the subprocess
         # before we check self.state
-        self._process.wait_until_started(timedelta(seconds=3))
+        self._process.wait_until_started()
+        # self._process.wait_until_started(timedelta(seconds=3))
 
         if self.state == ScriptRunnerState.RUNNING and self._callback is not None:
             # Let the caller know that the process is running.
