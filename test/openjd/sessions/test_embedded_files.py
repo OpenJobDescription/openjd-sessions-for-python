@@ -6,8 +6,10 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock
-from openjd.sessions._os_checker import is_posix
+from openjd.sessions._os_checker import is_posix, is_windows
 import pytest
+
+from utils.windows_acl_helper import principal_has_full_control_of_object
 
 from openjd.model import SymbolTable
 from openjd.model.v2023_09 import DataString as DataString_2023_09
@@ -18,9 +20,9 @@ from openjd.model.v2023_09 import (
     EmbeddedFileTypes as EmbeddedFileTypes_2023_09,
 )
 from openjd.sessions._embedded_files import EmbeddedFiles, EmbeddedFilesScope
-from openjd.sessions._session_user import PosixSessionUser
+from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 
-from .conftest import has_posix_target_user
+from .conftest import has_posix_target_user, has_windows_user, SET_ENV_VARS_MESSAGE
 
 
 # tmp_path - builtin temporary directory
@@ -322,6 +324,42 @@ class TestEmbeddedFiles:
                 result_contents = file.read()
             assert result_contents == testdata, "File contents are as expected"
 
+    @pytest.mark.skipif(not is_windows(), reason="Windows-specific tests")
+    class TestMaterializeFileWindows:
+
+        @pytest.mark.xfail(
+            not has_windows_user(),
+            reason=SET_ENV_VARS_MESSAGE,
+        )
+        def test_changes_owner(self, tmp_path: Path, windows_user: WindowsSessionUser) -> None:
+            # GIVEN
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(),
+                scope=EmbeddedFilesScope.STEP,
+                session_files_directory=tmp_path,
+                user=windows_user,
+            )
+            testdata = "some text data"
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                data=DataString_2023_09(testdata),
+            )
+            filename = tmp_path / uuid.uuid4().hex
+            symtab = SymbolTable()
+
+            # WHEN
+            test_obj._materialize_file(filename, test_file, symtab)
+
+            # THEN
+            assert os.path.exists(filename)
+            assert principal_has_full_control_of_object(
+                str(filename), windows_user.user
+            ), "Windows user has full control"
+            with open(filename, "r") as file:
+                result_contents = file.read()
+            assert result_contents == testdata, "File contents are as expected"
+
     class TestMaterialize:
         """Tests for EmbeddedFiles.materialize()"""
 
@@ -399,7 +437,9 @@ class TestEmbeddedFiles:
             reason="Must be running inside of the sudo_environment testing container.",
         )
         @pytest.mark.usefixtures("posix_target_user")
-        def test_basic_as_user(self, tmp_path: Path, posix_target_user: PosixSessionUser) -> None:
+        def test_basic_as_user_posix(
+            self, tmp_path: Path, posix_target_user: PosixSessionUser
+        ) -> None:
             # Basic test - we can write several files and they show up in the filesystem
             # where reported.
 
@@ -475,6 +515,75 @@ class TestEmbeddedFiles:
                         stat.S_IRGRP | stat.S_IWGRP
                     ), "Group has r/w"
                 assert statinfo.st_mode & stat.S_IRWXO == 0, "Others have no permissions"
+
+        @pytest.mark.xfail(
+            not has_windows_user(),
+            reason=SET_ENV_VARS_MESSAGE,
+        )
+        def test_basic_as_user_windows(
+            self, tmp_path: Path, windows_user: WindowsSessionUser
+        ) -> None:
+            # Basic test - we can write several files and they show up in the filesystem
+            # where reported.
+
+            # GIVEN
+            @dataclass(frozen=True)
+            class Datum:
+                name: str
+                data: str
+                symbol: str
+                runnable: bool = False
+
+            symtab = SymbolTable()  # empty
+            test_data: list[Datum] = [
+                Datum(
+                    data="foo's data",
+                    symbol="Env.File.Foo",
+                    name="Foo",
+                ),
+                Datum(
+                    data="bar's data",
+                    symbol="Env.File.Bar",
+                    name="Bar",
+                    runnable=True,
+                ),
+                Datum(
+                    data="baz's data",
+                    symbol="Env.File.Baz",
+                    name="Baz",
+                ),
+            ]
+            given_files = [
+                EmbeddedFileText_2023_09(
+                    name=f.name,
+                    type=EmbeddedFileTypes_2023_09.TEXT,
+                    data=DataString_2023_09(f.data),
+                    runnable=f.runnable,
+                )
+                for f in test_data
+            ]
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(),
+                scope=EmbeddedFilesScope.ENV,
+                session_files_directory=tmp_path,
+                user=windows_user,
+            )
+
+            # WHEN
+            test_obj.materialize(given_files, symtab)
+
+            # THEN
+            for data in test_data:
+                assert data.symbol in symtab, f"Symbol for {data.name} is in the symtab"
+                filename = symtab[data.symbol]
+                assert os.path.exists(filename), f"File exists for {data.name}"
+                with open(filename, "r") as file:
+                    result_contents = file.read()
+                assert result_contents == data.data, "File contents are as expected"
+                # Check file permissions
+                assert principal_has_full_control_of_object(
+                    filename, windows_user.user
+                ), "Windows user has full control"
 
         def test_resolves_symbols(self, tmp_path: Path) -> None:
             # Tests that the set of files can reference themselves and each other
