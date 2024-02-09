@@ -340,6 +340,7 @@ class TestSessionInitialization:
 
     @pytest.mark.skipif(not is_windows(), reason="Windows-only test.")
     @pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
+    @pytest.mark.timeout(90)
     def test_cleanup_windows_user(
         self,
         windows_user: WindowsSessionUser,

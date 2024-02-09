@@ -307,6 +307,7 @@ class TestScriptRunnerBase:
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
     )
+    @pytest.mark.timeout(90)
     def test_run_as_windows_user(
         self,
         windows_user: WindowsSessionUser,
@@ -342,6 +343,7 @@ class TestScriptRunnerBase:
         reason="Must be running inside of the sudo_environment testing container.",
     )
     @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
+    @pytest.mark.timeout(40)
     def test_does_not_inherit_env_vars_posix(
         self,
         posix_target_user: PosixSessionUser,
