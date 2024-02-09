@@ -18,6 +18,8 @@ def send_ctrl_break_event(pgid: int):
     AttachConsole(pgid)
 
     # Send the signal
+    # We send CTRL-BREAK as handler for it cannnot be disabled.
+    # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
     process.send_signal(CTRL_BREAK_EVENT)
 
 

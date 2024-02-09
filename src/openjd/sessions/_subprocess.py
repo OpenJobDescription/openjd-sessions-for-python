@@ -206,9 +206,6 @@ class LoggingSubprocess(object):
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""
         try:
-            # Note for the windows-future:
-            #  https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
-
             command: list[str] = []
             if self._user is not None:
                 if is_posix():
@@ -236,6 +233,8 @@ class LoggingSubprocess(object):
             )
 
             if is_windows():
+                # We need a process group in order to send notify signals
+                # https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
 
             cmd_line_for_logger: str
@@ -315,6 +314,11 @@ class LoggingSubprocess(object):
         # Convince the type checker that accessing _process is okay
         assert self._process is not None
 
+        # CTRL-C handler is disabled by default when CREATE_NEW_PROCESS_GROUP is passed.
+        # We send CTRL-BREAK as handler for it cannnot be disabled.
+        # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
+        # https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent
+        # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#remarks
         self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
 
         if self._user is None:
