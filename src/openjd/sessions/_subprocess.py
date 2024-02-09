@@ -319,11 +319,14 @@ class LoggingSubprocess(object):
         # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
         # https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent
         # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#remarks
+        # https://stackoverflow.com/questions/35772001/how-to-handle-a-signal-sigint-on-a-windows-os-machine/35792192#35792192
         self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
 
         if self._user is None:
+            # _process runs in current console if current user, we can signal it directly
             self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore
         else:
+            # _process will be running in new console, we run another process to attach to it and send signal
             cmd = [
                 sys.executable,
                 str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
