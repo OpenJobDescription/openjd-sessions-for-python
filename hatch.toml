@@ -35,8 +35,9 @@ PIP_INDEX_URL=""
 [envs.container.env-vars]
 
 [envs.release]
-pre-install-commands = [
-  "pip install -r requirements-release.txt"
+detached = true
+dependencies = [
+  "python-semantic-release == 8.7.*"
 ]
 
 [envs.release.scripts]
