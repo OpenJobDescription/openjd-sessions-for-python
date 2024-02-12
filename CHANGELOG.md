@@ -13,3 +13,68 @@
 * Change default windows working directory to the &#34;C:\ProgramData\Amazon\OpenJD&#34; (#63) ([`36263d3`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/36263d3de64846755788dcd1fac9135c9d28d009))
 * add logging for setting environment variables (#57) ([`4dd764b`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/4dd764bb51c73d0a9ae4c4b3e309f13a07d8141c))
 
+## 0.3.0 (2024-01-18)
+
+### BREAKING CHANGES
+* **deps**: update to 0.2.0 of openjd-model (#51) ([`df09b9f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df09b9f7352ec383415fe2ad6b370a6cc9c661af))
+* reuse ParameterValueType from model package (#49) ([`14fb1f3`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/14fb1f33c25ea63cb020b10bcd0e946a223e4ba1))
+
+### Features
+* Validate username and password in Windows. (#48) ([`ed23e54`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/ed23e542586a6e8b36f62429b73e551077f272a0))
+* modify logging to be easier to understand (#43) ([`8aa7747`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/8aa77471478065ca0ca4cd67e0c68dcc642d16b6))
+* allow adding env vars when running an action (#42) ([`c381877`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/c38187756129e1896cfb7d8b8e3202c8525dc422))
+* Support notify feature on Windows. (#28) ([`8e816c8`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/8e816c88729aee2acef327ec013e60a6777059b0))
+
+### Bug Fixes
+* parameter name for signal_win_process (#40) ([`f54ad11`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/f54ad1131596286662b0be16abf9c10d5b932eea))
+* properly delete working dir with Windows impersonation (#35) ([`5aae7ba`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/5aae7ba2ceab0631e66b857d690af25c7f42f4c3))
+* make psutil a runtime dependency on Windows (#36) ([`a73fa39`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/a73fa3929e154bc12a227a582f0e53deef5746e7))
+
+## 0.2.3 (2023-11-07)
+
+
+### Features
+* export package version (#31) ([`a8b7f30`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/a8b7f30c7255eb4ab98244a41a8c1ae1af27d996))
+* Support session.cleanup() on Windows (#26) ([`7eaeecb`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/7eaeecb8245a8678bb1fe72ea9bc66ae2dc975e1))
+* Support impersonation in tempdir permissions (#21) ([`02205f3`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/02205f3d7d46a60e1870b183325da0f897cef27b))
+
+### Bug Fixes
+* Remove embedded_files.write_file_for_user Windows exception (#32) ([`dc3ffbe`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/dc3ffbec0be4efd0a38b4cf90bfe2441e6a0152b))
+* Make tempdir permissions inherited by descendants on Windows (#29) ([`5a06c8f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/5a06c8fb914796528956bc9ae7246f3517beacd6))
+
+## 0.2.2 (2023-10-27)
+
+
+
+
+## 0.2.1 (2023-10-25)
+
+
+### Features
+* Change the Start-Process to Start-Job to support impersonation. (#17) ([`330cbde`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/330cbdebc26cf108ff80640a29998665038c6e71))
+* Add Windows session user (#16) ([`4e954e6`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/4e954e6366b21ce6864ef0a83bc3220d96c43451))
+* Import Windows implementation from internal repository (#12) ([`7b22f33`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/7b22f337ac6d5c6654243784e58ae7a6a70f13ba))
+
+### Bug Fixes
+* package missing signal subprocess shell script (#24) ([`57f68a9`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/57f68a908365fc0c8769b98d61a790e233e58030))
+* exporting WindowsSessionUser class (#22) ([`63b2685`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/63b2685d9b1b1154727c7bb6b6fa1e48b6e882ce))
+* Use psutil to kill the process instead of using taskkill. (#18) ([`4bba2ae`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/4bba2aeef9ebb5a5605ac7a3f09089a864808000))
+* properly cleanup working dir with posix cross-user (#13) ([`6eb7aa3`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/6eb7aa3b2b5c78597b9da959a97a1572b80f1ef3))
+
+## 0.2.0 (2023-09-15)
+
+### BREAKING CHANGES
+* updates to path mapping ([`2321af9`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/2321af9fd3190deebec4fa0530583c0865c28f54))
+
+
+### Bug Fixes
+* allow subprocess user to be the current user (#6) ([`8907765`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/89077656f45c0e68ba8108775cbe6b8349d20315))
+* remove misleading &#39;rm&#39; error message (#10) ([`e25a41e`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/e25a41ea52d18a6d458d994b1b45c0277adde386))
+
+## 0.1.0 (2023-09-12)
+
+### BREAKING CHANGES
+* Import from internal repository (#1) ([`abec10e`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/abec10e2a8b1af8d81438b1c0ebf69bbc1a6ee52))
+
+
+
