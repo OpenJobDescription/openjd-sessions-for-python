@@ -184,8 +184,7 @@ class TestScriptRunnerBase:
         if is_windows():
             assert any(
                 item.startswith(
-                    "Command not found: The term 'test_failed_command'"
-                    " is not recognized as a name of a cmdlet"
+                    "Command not found: The term 'test_failed_command' is not recognized"
                 )
                 for item in messages
             ), "Error message in Windows is not correct."
@@ -308,6 +307,7 @@ class TestScriptRunnerBase:
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
     )
+    @pytest.mark.timeout(90)
     def test_run_as_windows_user(
         self,
         windows_user: WindowsSessionUser,
@@ -343,6 +343,7 @@ class TestScriptRunnerBase:
         reason="Must be running inside of the sudo_environment testing container.",
     )
     @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
+    @pytest.mark.timeout(40)
     def test_does_not_inherit_env_vars_posix(
         self,
         posix_target_user: PosixSessionUser,
@@ -464,7 +465,7 @@ class TestScriptRunnerBase:
         action = Action_2023_09(
             command="{{Task.PythonInterpreter}}",
             args=["{{Task.ScriptFile}}"],
-            timeout=(5 if is_posix() else 15),
+            timeout=(5),
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
@@ -488,7 +489,7 @@ class TestScriptRunnerBase:
         # If it ended early, then we printed the first but not the last.
         print(messages)
         assert "Log from test 0" in messages
-        assert "Log from test 14" not in messages
+        assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(

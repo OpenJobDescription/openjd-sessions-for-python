@@ -5,7 +5,8 @@ import shlex
 from ._os_checker import is_posix, is_windows
 
 if is_windows():
-    from subprocess import CREATE_NEW_PROCESS_GROUP  # type: ignore
+    from subprocess import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW  # type: ignore
+    from ._popen_windows_as_user import PopenWindowsAsUser  # type: ignore
     from ._windows_process_killer import kill_windows_process_tree
 from typing import Any
 from threading import Event
@@ -15,12 +16,10 @@ from typing import Callable, Optional, Sequence, cast
 from pathlib import Path
 from datetime import timedelta
 import signal
+import sys
 
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
-from ._powershell_generator import (
-    encode_to_base64,
-    generate_process_wrapper,
-)
+
 
 __all__ = ("LoggingSubprocess",)
 
@@ -39,7 +38,7 @@ POSIX_SIGNAL_SUBPROC_SCRIPT_PATH = (
 )
 
 WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH = (
-    Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.ps1"
+    Path(__file__).parent / "_scripts" / "_windows" / "_signal_win_subprocess.py"
 )
 
 LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
@@ -207,9 +206,6 @@ class LoggingSubprocess(object):
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""
         try:
-            # Note for the windows-future:
-            #  https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
-
             command: list[str] = []
             if self._user is not None:
                 if is_posix():
@@ -221,37 +217,25 @@ class LoggingSubprocess(object):
                         # we're stuck: 1/ Our user cannot kill processes by the self._user; and
                         # 2/ The self._user cannot kill the root-owned sudo process group.
                         command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
+                elif is_windows():
+                    user = cast(WindowsSessionUser, self._user)  # type: ignore
+
+            command.extend(self._args)
 
             # Append the given environment to the current one.
             popen_args: dict[str, Any] = dict(
+                args=command,
                 stdin=DEVNULL,
                 stdout=PIPE,
                 stderr=STDOUT,
                 encoding=self._encoding,
                 start_new_session=True,
             )
-            if is_posix():
-                command.extend(self._args)
-            else:
-                encoded_start_service_command = encode_to_base64(
-                    generate_process_wrapper(
-                        self._args,
-                        WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH,
-                        cast(WindowsSessionUser, self._user),
-                    )
-                )
-                command = [
-                    "pwsh.exe",
-                    "-NonInteractive",
-                    "-ExecutionPolicy",
-                    "Unrestricted",
-                    "-EncodedCommand",
-                    encoded_start_service_command,
-                ]
 
+            if is_windows():
+                # We need a process group in order to send notify signals
+                # https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
-
-            popen_args["args"] = command
 
             cmd_line_for_logger: str
             if is_posix():
@@ -259,7 +243,12 @@ class LoggingSubprocess(object):
             else:
                 cmd_line_for_logger = list2cmdline(self._args)
             self._logger.info("Running command %s", cmd_line_for_logger)
-            return Popen(**popen_args)
+
+            if is_windows() and self._user and not user.is_process_user():
+                popen_args["creationflags"] += CREATE_NO_WINDOW
+                return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
+            else:
+                return Popen(**popen_args)
 
         except OSError as e:
             self._logger.info(f"Process failed to start: {str(e)}")
@@ -325,5 +314,32 @@ class LoggingSubprocess(object):
         # Convince the type checker that accessing _process is okay
         assert self._process is not None
 
+        # CTRL-C handler is disabled by default when CREATE_NEW_PROCESS_GROUP is passed.
+        # We send CTRL-BREAK as handler for it cannnot be disabled.
+        # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
+        # https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent
+        # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#remarks
+        # https://stackoverflow.com/questions/35772001/how-to-handle-a-signal-sigint-on-a-windows-os-machine/35792192#35792192
         self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
-        self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore
+
+        if self._user is None:
+            # _process runs in current console if current user, we can signal it directly
+            self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore
+        else:
+            # _process will be running in new console, we run another process to attach to it and send signal
+            cmd = [
+                sys.executable,
+                str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
+                str(self._process.pid),
+            ]
+            result = run(
+                cmd,
+                stdout=PIPE,
+                stderr=STDOUT,
+                stdin=DEVNULL,
+            )
+            if result.returncode != 0:
+                self._logger.warning(
+                    f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}: %s",
+                    result.stdout.decode("utf-8"),
+                )

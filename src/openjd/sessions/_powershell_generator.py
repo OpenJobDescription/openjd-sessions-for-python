@@ -2,10 +2,7 @@
 
 from typing import Sequence, Optional
 import base64
-import os
 import re
-
-from ._session_user import WindowsSessionUser
 
 
 def replace_escapes(args: str) -> str:
@@ -21,11 +18,14 @@ def replace_escapes(args: str) -> str:
         # Apply the backslash characters rules from CommandLineToArgvW
         # https://learn.microsoft.com/en-us/archive/blogs/twistylittlepassagesallalike/everyone-quotes-command-line-arguments-the-wrong-way
         "\\": "\\\\",
+        # This is a known issue in PowerShell 5 without installing additional `Native` module
+        # https://github.com/MicrosoftDocs/PowerShell-Docs/issues/2361
+        '"': '\\"',
         # To include a single quotation mark in a single-quoted string, use a second consecutive single quote.
         # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
         "'": "''",
     }
-    return re.sub(r"['\\]", lambda m: replacements[m.group(0)], args)
+    return re.sub(r'[\'\\"]', lambda m: replacements[m.group(0)], args)
 
 
 def generate_exit_code_powershell(cmd_line: str) -> str:
@@ -97,118 +97,3 @@ def encode_to_base64(command: str) -> str:
     command_bytes = command.encode("utf-16le")
     encoded_command = base64.b64encode(command_bytes)
     return encoded_command.decode("utf-8")
-
-
-def generate_process_wrapper(
-    args: Sequence[str],
-    signal_script: os.PathLike,
-    user: Optional[WindowsSessionUser] = None,
-) -> str:
-    """Generate a wrapper outside the command used for executing as a process.
-
-    Args:
-        args: Command arguments passed by users.
-        user: User used for impersonation. If it is None, the script will run under current user.
-
-    Returns:
-        A PowerShell Script contains the user's commands with the Process code wrapper.
-    """
-
-    escaped_args = [f"{replace_escapes(arg)}" for arg in args]
-    cmd = escaped_args[0]
-    quoted_arg_list = ""
-    for arg in escaped_args[1:]:
-        quoted_arg_list += f"$pInfo.ArgumentList.Add('{arg}')\r\n"
-
-    credential_info = ""
-    if user and not user.is_process_user():
-        # To include a single quotation mark in a single-quoted string, need to use a second consecutive single quote.
-        # https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_quoting_rules
-        username = user.user.replace("'", "''")
-        if user.password:
-            password = user.password.replace("'", "''")
-        else:
-            password = ""
-        # TODO:  Verify security of passing password within a command-line argument
-        credential_info = f"""
-$pInfo.UserName = '{username}'
-$pInfo.Password = ('{password}' | ConvertTo-SecureString -AsPlainText -Force)
-$pInfo.CreateNoWindow = $true
-"""
-
-    # When passed user credentials, process.start() will create a new window and
-    # process group. To relay the ctrl-break signal there, we call our signal_script.
-    # When not given user credentials, the new process will be in the current
-    # process group and will receive the ctrl-break signal. We do not need to
-    # call the signal_script.
-    if not credential_info:
-        process_end_block = """
-    while (-Not $p.HasExited) {
-        Start-Sleep 0.5
-        [Console]::Out.Flush()
-        [Console]::Error.Flush()
-    }"""
-    else:
-        process_end_block = f"""
-    if (-Not $p.HasExited) {{
-        # If we got here before process is done, generate a ctrl-break event to the process
-        $j = Start-Job -ScriptBlock {{ {signal_script} $args[0] }} -ArgumentList $p.id
-
-        while (-Not $p.HasExited) {{
-            Start-Sleep 0.5
-            Receive-Job -Job $j | Write-Host
-            [Console]::Out.Flush()
-            [Console]::Error.Flush()
-        }}
-
-        Receive-Job -Job $j -Wait -AutoRemove | Write-Host
-    }}"""
-
-    # Generate the ps script
-    return f"""
-$pInfo = New-Object System.Diagnostics.ProcessStartInfo
-
-$pInfo.FileName = '{cmd}'
-{quoted_arg_list}
-$pInfo.RedirectStandardOutput = $true
-$pInfo.RedirectStandardError = $true
-$pInfo.UseShellExecute = $false
-{credential_info}
-
-$p = New-Object System.Diagnostics.Process
-$p.StartInfo = $pInfo
-
-$WriteOutputAction = {{ [Console]::WriteLine($Event.SourceEventArgs.Data) }}
-$WriteErrorAction = {{ [Console]::WriteLine("Error: " + $Event.SourceEventArgs.Data) }}
-Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $WriteOutputAction | Out-Null
-Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived -Action $WriteErrorAction | Out-Null
-
-$ExitCode = $null
-
-try {{
-    $p.Start() | Out-Null
-
-    $p.BeginOutputReadLine()
-    $p.BeginErrorReadLine()
-
-    while (-Not $p.HasExited) {{
-        Start-Sleep 0.5
-        [Console]::Out.Flush()
-        [Console]::Error.Flush()
-    }}
-}}
-catch {{
-    Write-Output "Error: $_"
-    $ExitCode = 1
-}}
-finally {{
-    if (-Not $p.Id) {{
-        exit $ExitCode
-    }}
-    {process_end_block}
-
-    $ExitCode = $p.ExitCode
-    $p.Close()
-    exit $ExitCode
- }}
-"""
