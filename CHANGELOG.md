@@ -1,3 +1,10 @@
+## 0.5.0 (2024-02-13)
+
+### BREAKING CHANGES
+* public release (#80) ([`86ef7a7`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/86ef7a757f5c42755a455cae1b26143cbc337e39))
+
+
+
 ## 0.4.0 (2024-02-12)
 
 ### BREAKING CHANGES
