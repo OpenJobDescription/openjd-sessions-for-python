@@ -43,6 +43,41 @@ jobs:
         echo "::add-mask::$plaintext_password"
         echo OJD_SESSIONS_USER_PASSWORD=$plaintext_password >> $env:GITHUB_ENV
 
+    - name: Create Linux Test User
+      if: ${{ matrix.os == 'ubuntu-latest' }}
+      run: |
+        set -eou pipefail
+
+        TARGET_USER=targetuser
+        SHARED_GROUP=sharedgroup
+        DISJOINT_USER=disjointuser
+        DISJOINT_GROUP=disjointgroup
+
+        echo HOSTUSER=$(whoami)
+
+        sudo addgroup $SHARED_GROUP
+        sudo useradd -ms /bin/bash -G $SHARED_GROUP $TARGET_USER
+        sudo usermod -a -G $SHARED_GROUP $(whoami)
+        # sudo usermod -g $SHARED_GROUP $(whoami)
+        echo "$(whoami) ALL=($TARGET_USER,$(whoami)) NOPASSWD: ALL" | sudo tee -a /etc/sudoers.d/$(whoami)
+
+        sudo addgroup $DISJOINT_GROUP
+        sudo useradd -ms /bin/bash -G $DISJOINT_GROUP $DISJOINT_USER
+
+        for user in $TARGET_USER $DISJOINT_USER $(whoami)
+        do
+          echo "$user is UID: $(id -u $user)"
+          groups $user
+        done
+
+        echo OPENJD_TEST_SUDO_TARGET_USER=$TARGET_USER >> $GITHUB_ENV
+        echo OPENJD_TEST_SUDO_SHARED_GROUP=$SHARED_GROUP >> $GITHUB_ENV
+        echo OPENJD_TEST_SUDO_DISJOINT_USER=$DISJOINT_USER >> $GITHUB_ENV
+        echo OPENJD_TEST_SUDO_DISJOINT_GROUP=$DISJOINT_GROUP >> $GITHUB_ENV
+
+        umask
+        cat /etc/group
+
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
       with:

@@ -55,6 +55,12 @@ def write_file_for_user(
 
     if os.name == "posix":
         if user is not None:
+            # DEBUGGING - Print permissions of the whole file path
+            print("For file:", filename)
+            for i in range(1, len(filename.parts) + 1):
+                subpath = Path().joinpath(*filename.parts[0:i])
+                print(subpath, subpath.stat())
+            # END DEBUGGING
             user = cast(PosixSessionUser, user)
             # Set the group of the file
             chown(filename, group=user.group)
