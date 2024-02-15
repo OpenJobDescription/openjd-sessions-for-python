@@ -37,11 +37,13 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
                     f'"PROGRAMDATA" is not set. Set the root directory to the {program_data_path}'
                 )
 
-        temp_dir = os.path.join(program_data_path, "Amazon")
-        os.makedirs(temp_dir, exist_ok=True)
+        temp_dir_parent = os.path.join(program_data_path, "Amazon")
     else:
-        temp_dir = gettempdir()
-    return os.path.join(temp_dir, "OpenJD")
+        temp_dir_parent = gettempdir()
+
+    temp_dir = os.path.join(temp_dir_parent, "OpenJD")
+    os.makedirs(temp_dir, exist_ok=True)
+    return temp_dir
 
 
 class TempDir:
