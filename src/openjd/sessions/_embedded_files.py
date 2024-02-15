@@ -16,8 +16,10 @@ from openjd.model.v2023_09 import EmbeddedFileText as EmbeddedFileText_2023_09
 from openjd.model.v2023_09 import (
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
 )
-from ._session_user import PosixSessionUser, SessionUser
+from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._types import EmbeddedFilesListType, EmbeddedFileType
+
+from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
 
 __all__ = ("EmbeddedFilesScope", "EmbeddedFiles")
 
@@ -66,6 +68,14 @@ def write_file_for_user(
         # The file may have already existed before calling this function (e.g. created by mkstemp)
         # so unconditionally set the file permissions to ensure that additional_permissions are set.
         os.chmod(filename, mode=mode)
+
+    elif os.name == "nt":
+        if user is not None:
+            user = cast(WindowsSessionUser, user)
+            process_user = WindowsSessionUser.get_process_user()
+            WindowsPermissionHelper.set_permissions_full_control(
+                str(filename), [process_user, user.user]
+            )
 
 
 class EmbeddedFilesScope(Enum):
