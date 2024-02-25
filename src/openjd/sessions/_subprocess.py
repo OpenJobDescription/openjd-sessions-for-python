@@ -245,8 +245,9 @@ class LoggingSubprocess(object):
             self._logger.info("Running command %s", cmd_line_for_logger)
 
             if is_windows() and self._user and not user.is_process_user():
-                popen_args["creationflags"] += CREATE_NO_WINDOW
-                return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
+                assert isinstance(user, WindowsSessionUser)
+                popen_args["creationflags"] |= CREATE_NO_WINDOW
+                return PopenWindowsAsUser(user=user, **popen_args)  # type: ignore
             else:
                 return Popen(**popen_args)
 

@@ -2,6 +2,9 @@
 
 import os
 import re
+from abc import ABC, abstractmethod
+from ctypes.wintypes import HANDLE
+from typing import Optional, Tuple, Union
 
 from ._os_checker import is_posix, is_windows
 
@@ -20,9 +23,6 @@ if is_windows():
     import winerror
     from win32con import LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT
 
-from typing import Optional, Tuple, Union
-
-from abc import ABC, abstractmethod
 
 __all__ = (
     "PosixSessionUser",
@@ -132,25 +132,47 @@ class WindowsSessionUser(SessionUser):
     Password of the identity to run the Session's subprocess under.
     """
 
+    logon_token: Optional[HANDLE]
+    """
+    The Windows logon token as returned by LogonUser* family of win32 APIs.
+    """
+
     def __init__(
-        self, user: str, *, password: Optional[str] = None, group: Optional[str] = None
+        self,
+        user: str,
+        *,
+        password: Optional[str] = None,
+        group: Optional[str] = None,
+        logon_token: Optional[HANDLE] = None,
     ) -> None:
         """
         Arguments:
-            user (str): User name of the identity to run the Session's subprocesses under.
-                        This can be either a plain username for a local user, a domain username in down-level logon form,
-                        or a domain's UPN.
-                        ex: localUser, domain\\domainUser, domainUser@domain.com
-            group (Optional[str]): Group name of the identity to run the Session's subprocesses under.
-                         This can be just a group name for a local group, or a domain group in down-level format.
-                         ex: localGroup, domain\\domainGroup
-            password (Optional[str]): Password of the identity to run the Session's subprocess under.
+            user (str):
+                User name of the identity to run the Session's subprocesses under. This can be either a plain
+                username for a local user, a domain username in down-level logon form, or a domain's UPN.
+
+                ex: localUser, domain\\domainUser, domainUser@domain.com
+            group (Optional[str]):
+                Group name of the identity to run the Session's subprocesses under. This can be just a group
+                name for a local group, or a domain group in down-level format.
+
+                ex: localGroup, domain\\domainGroup
+            logon_token (Optional[ctypes.wintypesHANDLE]):
+                Windows logon handle for the target user. This argument is mutually-exclusive with the
+                "password" argument.
+            password (Optional[str]):
+                Password of the identity to run the Session's subprocess under. This argument is
+                mutually-exclusive with the "logon_token" argument.
         """
         if not is_windows():
             raise RuntimeError("Only available on Windows systems.")
 
+        if password and logon_token:
+            raise ValueError('The "password" and "logon_token" arguments are mutually exclusive')
+
         self.group = group
         self.password = password
+        self.logon_token = logon_token
 
         if "@" in user and self.is_domain_joined():
             user = win32security.TranslateName(
@@ -165,7 +187,7 @@ class WindowsSessionUser(SessionUser):
         if domain:
             self.is_valid_domain(domain)
 
-        if password is None and not self.is_process_user():
+        if password is None and not self.is_process_user() and not self.logon_token:
             raise RuntimeError(
                 "Without passing a password, WindowsSessionUser's user must match the user running Open Job Description."
             )

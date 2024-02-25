@@ -1,14 +1,23 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+import os
 import sys
-from ._os_checker import is_windows
+from enum import Enum
 from typing import Any
+
+from ._os_checker import is_windows
 
 if is_windows():
     import ctypes
     import win32process
     from ctypes import wintypes
     from subprocess import Handle, list2cmdline, Popen  # type: ignore
+    from ._session_user import WindowsSessionUser
+    from ._win32api_helpers import (
+        environment_block_for_user,
+        environment_dict_from_block,
+        environment_dict_to_block,
+    )
 
 # Tell type checker to ignore on non-windows platforms
 assert sys.platform == "win32"
@@ -17,6 +26,7 @@ advapi32 = ctypes.WinDLL("advapi32")
 kernel32 = ctypes.WinDLL("kernel32")
 
 # Constants
+CREATE_UNICODE_ENVIRONMENT = 0x400
 LOGON_WITH_PROFILE = 0x00000001
 
 
@@ -55,12 +65,30 @@ class PROCESS_INFORMATION(ctypes.Structure):
     ]
 
 
+class BaseEnvironment(Enum):
+    TARGET_USER = 0
+    """Supplied environment variables supercede target user default environment"""
+    NONE = 2
+    """Supplied environment variables are the only environment variables."""
+    INHERIT = 1
+    """Supplied environment variables supercede inherited environment variables of current process"""
+
+
 class PopenWindowsAsUser(Popen):
     """Class to run a process as another user on Windows.
     Derived from Popen, it defines the _execute_child() method to call CreateProcessWithLogonW.
     """
 
-    def __init__(self, username: str, password: str, *args: Any, **kwargs: Any):
+    _base_environment: BaseEnvironment = BaseEnvironment.TARGET_USER
+    _user: WindowsSessionUser
+
+    def __init__(
+        self,
+        *args: Any,
+        base_environment: BaseEnvironment = BaseEnvironment.TARGET_USER,
+        user: WindowsSessionUser,
+        **kwargs: Any,
+    ):
         """
         Arguments:
             username (str):  Name of user to run subprocess as
@@ -69,9 +97,8 @@ class PopenWindowsAsUser(Popen):
             kwargs (Any):  Popen constructor kwargs
             https://docs.python.org/3/library/subprocess.html#popen-constructor
         """
-        self.username = username
-        self.password = password
-        self.domain = None
+        self._base_environment = base_environment
+        self._user = user
         super(PopenWindowsAsUser, self).__init__(*args, **kwargs)
 
     def _execute_child(
@@ -115,27 +142,61 @@ class PopenWindowsAsUser(Popen):
         si.hStdError = int(errwrite)
         si.dwFlags |= win32process.STARTF_USESTDHANDLES
 
-        # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
-        result = advapi32.CreateProcessWithLogonW(
-            self.username,
-            self.domain,
-            self.password,
-            LOGON_WITH_PROFILE,
-            executable,
-            commandline,
-            creationflags,
-            env,
-            cwd,
-            ctypes.byref(si),
-            ctypes.byref(pi),
-        )
+        base_env = {}
+        if self._base_environment == BaseEnvironment.TARGET_USER:
+            env_ptr = environment_block_for_user(self._user.logon_token)
+            base_env = environment_dict_from_block(env_ptr)
+        elif self._base_environment == BaseEnvironment.INHERIT:
+            base_env = dict(os.environ)
+        elif self._base_environment == BaseEnvironment.NONE:
+            base_env = {}
+        else:
+            raise NotImplementedError(
+                f"base_environment of {self._base_environment.value} not implemented"
+            )
 
-        if not result:
-            raise ctypes.WinError()
+        merged_env = base_env.copy()
+        if env:
+            merged_env.update(env)
+        # Sort env vars by keys
+        merged_env = {key: merged_env[key] for key in sorted(merged_env.keys())}
+        env_ptr = environment_dict_to_block(merged_env)
 
-        # Child is launched. Close the parent's copy of those pipe
-        # handles that only the child should have open.
-        self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
+        try:
+            if not self._user.logon_token:
+                # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
+                if not advapi32.CreateProcessWithLogonW(
+                    self._user.user,
+                    None, # domain
+                    self._user.password,
+                    LOGON_WITH_PROFILE,
+                    executable,
+                    commandline,
+                    creationflags,
+                    env,
+                    cwd,
+                    ctypes.byref(si),
+                    ctypes.byref(pi),
+                ):
+                    raise ctypes.WinError()
+            elif not advapi32.CreateProcessAsUserW(
+                self._user.logon_token,
+                executable,
+                commandline,
+                None,
+                None,
+                True,
+                creationflags | CREATE_UNICODE_ENVIRONMENT,
+                env_ptr,
+                cwd,
+                ctypes.byref(si),
+                ctypes.byref(pi),
+            ):
+                raise ctypes.WinError()
+        finally:
+            # Child is launched. Close the parent's copy of those pipe
+            # handles that only the child should have open.
+            self._close_pipe_fds(p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite)
 
         # Retain the process handle, but close the thread handle
         kernel32.CloseHandle(pi.hThread)
