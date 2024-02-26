@@ -8,7 +8,6 @@ from ._session_user import (
     SessionUser,
     WindowsSessionUser,
     BadCredentialsException,
-    BadUserNameException,
 )
 from ._types import (
     ActionState,
@@ -36,6 +35,5 @@ __all__ = (
     "StepScriptModel",
     "WindowsSessionUser",
     "BadCredentialsException",
-    "BadUserNameException",
     "version",
 )

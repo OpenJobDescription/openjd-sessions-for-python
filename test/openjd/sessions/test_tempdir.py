@@ -154,6 +154,8 @@ class TestTempDirWindows:
             str(tempdir.path / "child_dir" / "grandchild_file"), windows_user.group
         )
 
+    # Mock is_process_user to get around the password requirement, since we're just testing
+    # file permissions
     @patch("openjd.sessions.WindowsSessionUser.is_process_user", return_value=True)
     def test_windows_user_without_group_permits_user(self, mock_user_match):
         # GIVEN
@@ -254,6 +256,7 @@ class TestTempDirPosixUser:
             TempDir(user=posix_disjoint_user)
 
 
+@pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
 @pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
 @pytest.mark.usefixtures("windows_user")
 class TestTempDirWindowsUser:
