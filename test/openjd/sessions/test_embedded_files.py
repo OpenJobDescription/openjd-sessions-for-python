@@ -112,7 +112,7 @@ class TestEmbeddedFiles:
             assert os.path.exists(result_filename)
             assert result_filename.parent == tmp_path
 
-    @pytest.mark.skipif(os.name != "posix", reason="Posix-specific tests")
+    @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
     class TestMaterializeFilePosix:
         """Tests for EmbeddedFiles._materialize_file() on posix systems.
         Note: Also tests EmbeddedFiles._find_value_prefix() indirectly.
@@ -237,6 +237,7 @@ class TestEmbeddedFiles:
                 result_contents = file.read()
             assert result_contents == testdataresult, "File contents are as expected"
 
+        @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
         @pytest.mark.xfail(
             not has_posix_target_user(),
             reason="Must be running inside of the sudo_environment testing container.",
@@ -279,6 +280,7 @@ class TestEmbeddedFiles:
                 result_contents = file.read()
             assert result_contents == testdata, "File contents are as expected"
 
+        @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
         @pytest.mark.xfail(
             not has_posix_target_user(),
             reason="Must be running inside of the sudo_environment testing container.",
@@ -432,6 +434,7 @@ class TestEmbeddedFiles:
                     assert statinfo.st_mode & stat.S_IRWXG == 0, "Group has no permissions"
                     assert statinfo.st_mode & stat.S_IRWXO == 0, "Others have no permissions"
 
+        @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
         @pytest.mark.xfail(
             not has_posix_target_user(),
             reason="Must be running inside of the sudo_environment testing container.",
@@ -516,6 +519,7 @@ class TestEmbeddedFiles:
                     ), "Group has r/w"
                 assert statinfo.st_mode & stat.S_IRWXO == 0, "Others have no permissions"
 
+        @pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
         @pytest.mark.xfail(
             not has_windows_user(),
             reason=SET_ENV_VARS_MESSAGE,

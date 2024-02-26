@@ -12,6 +12,9 @@ from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._windows_permission_helper import WindowsPermissionHelper
 from ._os_checker import is_posix, is_windows
 
+if is_windows():
+    from ._win32._helpers import get_process_user
+
 
 def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
     """
@@ -119,12 +122,9 @@ class TempDir:
             elif is_windows():
                 user = cast(WindowsSessionUser, user)
                 try:
-                    if user.group:
-                        principal_to_permit = user.group
-                    else:
-                        principal_to_permit = user.user
+                    principal_to_permit = user.group
 
-                    process_user = WindowsSessionUser.get_process_user()
+                    process_user = get_process_user()
 
                     WindowsPermissionHelper.set_permissions_full_control(
                         str(self.path), [principal_to_permit, process_user]
