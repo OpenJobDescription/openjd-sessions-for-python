@@ -19,7 +19,11 @@ from openjd.model.v2023_09 import (
 from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._types import EmbeddedFilesListType, EmbeddedFileType
 
-from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
+from ._windows_permission_helper import WindowsPermissionHelper
+from ._os_checker import is_windows
+
+if is_windows():
+    from ._win32._helpers import get_process_user
 
 __all__ = ("EmbeddedFilesScope", "EmbeddedFiles")
 
@@ -72,7 +76,7 @@ def write_file_for_user(
     elif os.name == "nt":
         if user is not None:
             user = cast(WindowsSessionUser, user)
-            process_user = WindowsSessionUser.get_process_user()
+            process_user = get_process_user()
             WindowsPermissionHelper.set_permissions_full_control(
                 str(filename), [process_user, user.user]
             )

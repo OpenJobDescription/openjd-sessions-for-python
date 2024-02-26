@@ -11,14 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from logging.handlers import QueueHandler
 from pathlib import Path
 from queue import SimpleQueue
-from typing import Union
 from unittest.mock import MagicMock
-
-from openjd.sessions._os_checker import is_windows
-
-if is_windows():
-    import win32api
-
 import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
@@ -87,20 +80,17 @@ class TestLoggingSubprocessSameUser:
         messages = collect_queue_messages(message_queue)
         assert message in messages
 
+    @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation_with_sameuser(
         self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
     ) -> None:
-        # Can we run a process, capture its output, and discover its return code?
+        # If the SessionUser is the process owner, then do we still run correctly.
+        # Note: PosixSessionUser autopopulates the group if it's not given.
 
         # GIVEN
-        user: Union[PosixSessionUser, WindowsSessionUser]
-        if is_posix():
-            current_user = getpass.getuser()
-            user = PosixSessionUser(user=current_user)
-        else:
-            current_user = win32api.GetUserNameEx(win32api.NameSamCompatible)
-            user = WindowsSessionUser(user=current_user)
+        current_user = getpass.getuser()
+        user = PosixSessionUser(user=current_user)
 
         logger = build_logger(queue_handler)
         message = "this is output"

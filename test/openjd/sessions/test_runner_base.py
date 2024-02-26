@@ -256,6 +256,7 @@ class TestScriptRunnerBase:
         for key, value in os_env_vars.items():
             assert f"{key} = {value}" in messages
 
+    @pytest.mark.skipif(not is_posix(), reason="posix-only test")
     @pytest.mark.xfail(
         not has_posix_target_user(),
         reason="Must be running inside of the sudo_environment testing container.",
@@ -303,6 +304,7 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only test")
     @pytest.mark.xfail(
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
@@ -317,6 +319,8 @@ class TestScriptRunnerBase:
         # Test that we run the process as a specific desired user
 
         # GIVEN
+        from openjd.sessions._win32._helpers import get_process_user
+
         tmpdir = TempDir(user=windows_user)
         logger = build_logger(queue_handler)
         with TerminatingRunner(
@@ -332,12 +336,13 @@ class TestScriptRunnerBase:
         assert runner.state == ScriptRunnerState.SUCCESS
         assert runner.exit_code == 0
         messages = collect_queue_messages(message_queue)
-        process_user = WindowsSessionUser.get_process_user()
+        process_user = get_process_user()
         assert all([process_user not in message for message in messages])
         assert any(windows_user.user in message for message in messages)
 
         tmpdir.cleanup()
 
+    @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
     @pytest.mark.xfail(
         not has_posix_target_user(),
         reason="Must be running inside of the sudo_environment testing container.",
@@ -392,6 +397,7 @@ class TestScriptRunnerBase:
         assert os.environ[var_name] not in messages
         assert "NOT_PRESENT" in messages
 
+    @pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
     @pytest.mark.xfail(
         not has_windows_user(),
         reason=SET_ENV_VARS_MESSAGE,
