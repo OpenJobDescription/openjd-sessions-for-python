@@ -1,10 +1,3 @@
-## 0.5.1 (2024-02-26)
-
-
-
-### Bug Fixes
-* Make tempdir create parent dir if nonexistent (#86) ([`243f4b7`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/243f4b7693c19f3397f8598d8728c2eaf0881957))
-
 ## 0.5.0 (2024-02-13)
 
 ### BREAKING CHANGES
