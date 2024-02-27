@@ -39,7 +39,8 @@ from .conftest import (
     collect_queue_messages,
     has_posix_target_user,
     has_windows_user,
-    SET_ENV_VARS_MESSAGE,
+    WIN_SET_TEST_ENV_VARS_MESSAGE,
+    POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
 )
 
 
@@ -64,6 +65,40 @@ class NotifyingRunner(ScriptRunnerBase):
 # tmp_path - builtin temporary directory
 @pytest.mark.usefixtures("tmp_path")
 class TestScriptRunnerBase:
+    test_env_vars: dict[str, Optional[str]] = {
+        "FOO": "BAR",
+        "dollar_sign": "This costs $100",
+        "single_quote": "They're smart",
+        "double_quote": 'They said, "Hello!"',
+        "back_slash": "C:\\Windows\\System32",
+        "caret_symbol": "Up^Down",
+        "pipe_symbol": "Left|Right",
+        "ampersand_symbol": "Fish&Chips",
+        "less_than": "1 < 2",
+        "greater_than": "3 > 2",
+        "asterisk_star": "Twinkle*twinkle",
+        "question_mark": "Who? What? Where?",
+        "colon_symbol": "Time: 12:00 PM",
+        "semicolon_symbol": "Item1; Item2; Item3",
+        "equal_sign": "1 + 1 = 2",
+        "at_symbol": "user@example.com",
+        "hash_symbol": "#1 Winner",
+        "tilde_symbol": "Approximately~100",
+        "percent_symbol": "50% off",
+        "exclamation_mark": "Surprise!",
+        "square_brackets": "Array[5]",
+        "win_injection1": "& Get-Process",
+        "win_injection2": "; Get-Process",
+        "win_injection3": "| Get-Process",
+        "win_injection4": "& Get-Process",
+        "win_injection5": "nGet-ChildItem C:\\",
+        "win_injection6": "rnStart-Process notepad.exe",
+        "win_injection7": "$(Get-Process)",
+        "posix_injection1": "$(whoami)",
+        "posix_injection2": "; whoami",
+        "posix_injection3": "| whoami",
+    }
+
     def test_initialized(self, tmp_path: Path) -> None:
         # Test the property getters for a runner that is only initialized.
 
@@ -110,12 +145,12 @@ class TestScriptRunnerBase:
             logger=MagicMock(), session_working_directory=tmp_path, callback=callback
         ) as runner:
             # WHEN
-            runner._run(["echo", ""])
+            runner._run(["whoami"])
 
             # THEN
             # Nothing to check. We just want to run it fast. The test will deadlock if
             # we have a problem. Just wait for the application to exit
-            while runner.exit_code is None:
+            while runner.state == ScriptRunnerState.RUNNING:
                 time.sleep(0.0001)
 
     def test_working_dir_is_cwd(
@@ -132,8 +167,8 @@ class TestScriptRunnerBase:
             # WHEN
             runner._run([sys.executable, "-c", "import os; print(os.getcwd())"])
             # Wait until the process exits.
-            while runner.exit_code is None:
-                time.sleep(0.2)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.1)
 
         # THEN
         messages = collect_queue_messages(message_queue)
@@ -173,7 +208,11 @@ class TestScriptRunnerBase:
 
         # This process should finish within 25s
         for _ in range(125):
-            if runner.exit_code is not None:
+            if runner.state in (
+                ScriptRunnerState.FAILED,
+                ScriptRunnerState.SUCCESS,
+                ScriptRunnerState.TIMEOUT,
+            ):
                 break
             # Give the command time to fail out.
             time.sleep(0.2)
@@ -182,12 +221,11 @@ class TestScriptRunnerBase:
 
         # THEN
         if is_windows():
+            # Note: On posix, we embed the command in a shell script. That shell script
+            # starts running just fine, but then will return non-0.
             assert any(
-                item.startswith(
-                    "Command not found: The term 'test_failed_command' is not recognized"
-                )
-                for item in messages
-            ), "Error message in Windows is not correct."
+                item.startswith("Process failed to start") for item in messages
+            ), "Logged error message is not correct."
         assert runner.state == ScriptRunnerState.FAILED
         assert runner.exit_code != 0
 
@@ -203,63 +241,35 @@ class TestScriptRunnerBase:
 
         # GIVEN
         logger = build_logger(queue_handler)
-        os_env_vars: dict[str, Optional[str]] = {
-            "FOO": "BAR",
-            "dollar_sign": "This costs $100",
-            "single_quote": "They're smart",
-            "double_quote": 'They said, "Hello!"',
-            "back_slash": "C:\\Windows\\System32",
-            "caret_symbol": "Up^Down",
-            "pipe_symbol": "Left|Right",
-            "ampersand_symbol": "Fish&Chips",
-            "less_than": "1 < 2",
-            "greater_than": "3 > 2",
-            "asterisk_star": "Twinkle*twinkle",
-            "question_mark": "Who? What? Where?",
-            "colon_symbol": "Time: 12:00 PM",
-            "semicolon_symbol": "Item1; Item2; Item3",
-            "equal_sign": "1 + 1 = 2",
-            "at_symbol": "user@example.com",
-            "hash_symbol": "#1 Winner",
-            "tilde_symbol": "Approximately~100",
-            "percent_symbol": "50% off",
-            "exclamation_mark": "Surprise!",
-            "square_brackets": "Array[5]",
-            "injection1": "& Get-Process",
-            "injection2": "; Get-Process",
-            "injection3": "| Get-Process",
-            "injection4": "& Get-Process",
-            "injection5": "nGet-ChildItem C:\\",
-            "injection6": "rnStart-Process notepad.exe",
-            "injection7": "$(Get-Process)",
-        }
 
         with TerminatingRunner(
-            logger=logger, session_working_directory=tmp_path, os_env_vars=os_env_vars
+            logger=logger, session_working_directory=tmp_path, os_env_vars=self.test_env_vars
         ) as runner:
             # WHEN
-            # Generate the Python code string
-            code_lines = ["import os"]
-            for key, value in os_env_vars.items():
-                code_lines.append(f"print('{key} =', os.environ.get('{key}'))")
-
-            code_str = "; ".join(code_lines)
-
-            runner._run([sys.executable, "-c", code_str])
+            runner._run(
+                [
+                    sys.executable,
+                    "-c",
+                    r"import os;print(*(f'{k} = {v}' for k,v in os.environ.items()), sep='\n')",
+                ]
+            )
 
             # Wait until the process exits.
-            while runner.exit_code is None:
-                time.sleep(0.2)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.1)
 
         # THEN
         messages = collect_queue_messages(message_queue)
-        for key, value in os_env_vars.items():
-            assert f"{key} = {value}" in messages
+        for key, value in self.test_env_vars.items():
+            if is_windows():
+                assert f"{key.upper()} = {value}" in messages
+            else:
+                assert f"{key} = {value}" in messages
 
     @pytest.mark.skipif(not is_posix(), reason="posix-only test")
     @pytest.mark.xfail(
         not has_posix_target_user(),
-        reason="Must be running inside of the sudo_environment testing container.",
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
     )
     @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
     def test_run_as_posix_user(
@@ -289,7 +299,7 @@ class TestScriptRunnerBase:
                 ]
             )
             # Wait until the process exits.
-            while runner.exit_code is None:
+            while runner.state == ScriptRunnerState.RUNNING:
                 time.sleep(0.1)
 
         # THEN
@@ -304,10 +314,56 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
+    @pytest.mark.skipif(not is_posix(), reason="posix-only test")
+    @pytest.mark.xfail(
+        not has_posix_target_user(),
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+    )
+    @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
+    def test_run_as_posix_user_with_env_vars(
+        self,
+        posix_target_user: PosixSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Test that we run the process as a specific desired user with env vars defined as expected
+
+        # GIVEN
+        tmpdir = TempDir(user=posix_target_user)
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(
+            logger=logger,
+            session_working_directory=tmpdir.path,
+            user=posix_target_user,
+            os_env_vars=self.test_env_vars,
+        ) as runner:
+            # WHEN
+            runner._run(
+                [
+                    # Note: Intentionally not `sys.executable`. Reasons:
+                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    #  2) This test is, generally, intended to be run in a docker container where the system
+                    #     python is the correct version that we want to run under.
+                    "python",
+                    "-c",
+                    r"import os;print(*(f'{k} = {v}' for k,v in os.environ.items()), sep='\n')",
+                ]
+            )
+            # Wait until the process exits.
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.1)
+
+        # THEN
+        messages = collect_queue_messages(message_queue)
+        for key, value in self.test_env_vars.items():
+            assert f"{key} = {value}" in messages
+
+        tmpdir.cleanup()
+
     @pytest.mark.skipif(not is_windows(), reason="Windows-only test")
     @pytest.mark.xfail(
         not has_windows_user(),
-        reason=SET_ENV_VARS_MESSAGE,
+        reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
     )
     @pytest.mark.timeout(90)
     def test_run_as_windows_user(
@@ -319,7 +375,7 @@ class TestScriptRunnerBase:
         # Test that we run the process as a specific desired user
 
         # GIVEN
-        from openjd.sessions._win32._helpers import get_process_user
+        from openjd.sessions._win32._helpers import get_process_user  # type: ignore
 
         tmpdir = TempDir(user=windows_user)
         logger = build_logger(queue_handler)
@@ -327,9 +383,9 @@ class TestScriptRunnerBase:
             logger=logger, session_working_directory=tmpdir.path, user=windows_user
         ) as runner:
             # WHEN
-            runner._run(["powershell", "-Command", "whoami"])
+            runner._run(["whoami"])
             # Wait until the process exits.
-            while runner.exit_code is None:
+            while runner.state == ScriptRunnerState.RUNNING:
                 time.sleep(0.1)
 
         # THEN
@@ -342,10 +398,57 @@ class TestScriptRunnerBase:
 
         tmpdir.cleanup()
 
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only test")
+    @pytest.mark.xfail(
+        not has_windows_user(),
+        reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
+    )
+    @pytest.mark.timeout(30)
+    @pytest.mark.usefixtures("message_queue", "queue_handler", "windows_user")
+    def test_run_as_windows_user_with_env_vars(
+        self,
+        windows_user: WindowsSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Test that we run the process as a specific desired user with env vars defined as expected
+
+        # GIVEN
+        tmpdir = TempDir(user=windows_user)
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(
+            logger=logger,
+            session_working_directory=tmpdir.path,
+            user=windows_user,
+            os_env_vars=self.test_env_vars,
+        ) as runner:
+            # WHEN
+            runner._run(
+                [
+                    # Note: Intentionally not `sys.executable`. Reasons:
+                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    #  2) This test is, generally, intended to be run in a docker container where the system
+                    #     python is the correct version that we want to run under.
+                    "python",
+                    "-c",
+                    r"import os;print(*(f'{k} = {v}' for k,v in os.environ.items()), sep='\n')",
+                ]
+            )
+            # Wait until the process exits.
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.1)
+
+        # THEN
+        messages = collect_queue_messages(message_queue)
+        for key, value in self.test_env_vars.items():
+            assert f"{key.upper()} = {value}" in messages
+
+        tmpdir.cleanup()
+
     @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
     @pytest.mark.xfail(
         not has_posix_target_user(),
-        reason="Must be running inside of the sudo_environment testing container.",
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
     )
     @pytest.mark.usefixtures("message_queue", "queue_handler", "posix_target_user")
     @pytest.mark.timeout(40)
@@ -400,7 +503,7 @@ class TestScriptRunnerBase:
     @pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
     @pytest.mark.xfail(
         not has_windows_user(),
-        reason=SET_ENV_VARS_MESSAGE,
+        reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
     )
     def test_does_not_inherit_env_vars_windows(
         self,
@@ -424,8 +527,10 @@ class TestScriptRunnerBase:
             logger=logger, session_working_directory=tmpdir.path, user=windows_user
         ) as runner:
             # WHEN
-            command = f"$var = if ($env:{var_name}) {{ $env:{var_name} }} else {{ 'NOT_PRESENT' }}; Write-Host $var"
-            runner._run(["powershell", "-NoProfile", "-Command", command])
+            py_script = f"import os; v=os.environ.get('{var_name}'); print('NOT_PRESENT' if v is None else v)"
+            # Use the default 'python' rather than 'sys.executable' since we typically do not have access to
+            # sys.executable when running with impersonation since it's in a hatch environment for the local user.
+            runner._run(["python", "-c", py_script])
 
             # THEN
             assert runner.state == ScriptRunnerState.RUNNING
@@ -547,7 +652,7 @@ class TestScriptRunnerBase:
 
             # THEN
             # Wait for the app to exit
-            while runner.exit_code is None:
+            while runner.state == ScriptRunnerState.CANCELING:
                 time.sleep(0.2)
             assert runner.state == ScriptRunnerState.CANCELED
             assert runner.exit_code != 0
@@ -577,9 +682,10 @@ class TestScriptRunnerBase:
             runner._run([sys.executable, str(python_app_loc)], time_limit=timedelta(seconds=1))
 
             # THEN
-            # Wait until the process exits.
-            while runner.exit_code is None:
-                time.sleep(0.2)
+            # Wait until the process exits. We'll be in CANCELING state between when the timeout is reached
+            # and the process finally exits.
+            while runner.state in (ScriptRunnerState.RUNNING, ScriptRunnerState.CANCELING):
+                time.sleep(0.1)
             assert runner.state == ScriptRunnerState.TIMEOUT
             assert runner.exit_code != 0
             assert cast(TerminatingRunner, runner)._cancel_called
@@ -613,11 +719,13 @@ class TestScriptRunnerBase:
             # THEN
             assert runner.state == ScriptRunnerState.CANCELING
             # Wait until the process exits.
-            while runner.exit_code is None:
-                time.sleep(0.2)
+            while runner.state == ScriptRunnerState.CANCELING:
+                time.sleep(0.1)
             # This should be CANCELED rather than TIMEOUT because this test is manually calling
             # the cancel() method rather than letting the action reach its runtime limit.
-            assert runner.state == ScriptRunnerState.CANCELED
+            assert (
+                runner.state == ScriptRunnerState.CANCELED
+            )  # TODO - This test is flaky. Sometimes, this is 'RUNNING'
             assert runner.exit_code != 0
         messages = collect_queue_messages(message_queue)
         assert "Trapped" in messages
@@ -668,8 +776,8 @@ class TestScriptRunnerBase:
             # THEN
             assert runner.state == ScriptRunnerState.CANCELING
             # Wait until the process exits.
-            while runner.exit_code is None:
-                time.sleep(0.2)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.1)
         # This should be CANCELED rather than TIMEOUT because this test is manually calling
         # the cancel() method rather than letting the action reach its runtime limit.
         assert runner.state == ScriptRunnerState.CANCELED

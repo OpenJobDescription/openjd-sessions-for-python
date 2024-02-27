@@ -53,7 +53,12 @@ from openjd.sessions._session import (
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
 
-from .conftest import has_posix_target_user, has_windows_user, SET_ENV_VARS_MESSAGE
+from .conftest import (
+    has_posix_target_user,
+    has_windows_user,
+    WIN_SET_TEST_ENV_VARS_MESSAGE,
+    POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+)
 
 
 def _environment_from_script(script: EnvironmentScript_2023_09) -> Environment_2023_09:
@@ -177,7 +182,7 @@ class TestSessionInitialization:
     @pytest.mark.skipif(os.name != "posix", reason="Posix-only test.")
     @pytest.mark.xfail(
         not has_posix_target_user(),
-        reason="Must be running inside of the sudo_environment testing container.",
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
     )
     @pytest.mark.usefixtures("posix_target_user")
     @pytest.mark.usefixtures("caplog")  # built-in fixture
@@ -339,7 +344,7 @@ class TestSessionInitialization:
         assert all("rm: cannot remove" not in msg for msg in caplog.messages)
 
     @pytest.mark.skipif(not is_windows(), reason="Windows-only test.")
-    @pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
+    @pytest.mark.xfail(not has_windows_user(), reason=WIN_SET_TEST_ENV_VARS_MESSAGE)
     @pytest.mark.timeout(90)
     def test_cleanup_windows_user(
         self,
@@ -843,7 +848,7 @@ class TestSessionCancel:
                 EmbeddedFileText_2023_09(
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="import time; time.sleep(10)",
+                    data="import time; print('Starting'); time.sleep(10); print('End')",
                 )
             ],
         )

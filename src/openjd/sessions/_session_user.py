@@ -3,6 +3,7 @@
 import os
 from typing import Optional, Tuple, Union
 from abc import ABC, abstractmethod
+from ctypes.wintypes import HANDLE
 
 from ._os_checker import is_posix, is_windows
 
@@ -19,7 +20,7 @@ if is_windows():
     import winerror
     from win32con import LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT
 
-    from ._win32._helpers import get_process_user
+    from ._win32._helpers import get_process_user, get_current_process_session_id  # type: ignore
 
 __all__ = (
     "PosixSessionUser",
@@ -27,6 +28,12 @@ __all__ = (
     "WindowsSessionUser",
     "BadCredentialsException",
 )
+
+CURRENT_PROCESS_RUNNING_IN_WINDOWS_SESSION_0: bool
+if is_windows():
+    CURRENT_PROCESS_RUNNING_IN_WINDOWS_SESSION_0 = 0 == get_current_process_session_id()
+else:
+    CURRENT_PROCESS_RUNNING_IN_WINDOWS_SESSION_0 = False
 
 
 class BadCredentialsException(Exception):
@@ -94,8 +101,20 @@ class PosixSessionUser(SessionUser):
 
 
 class WindowsSessionUser(SessionUser):
-    __slots__ = ("user", "group", "password")
-    """Specific os-user identity to run a Session as under Windows."""
+    """Specific os-user identity to run a Session as under Windows.
+
+    Note that you must check whether you are running in Windows Session 0 prior to
+    creating an instance of this class.
+    1. If you're not in Session 0 (i.e. you're in a typical interactive logon via the desktop)
+       then you must instantiate this class with a username + password; providing a logon token
+       is not allowed at this time.
+    2. If you are in Session 0 (i.e. you're running within the context of a Windows Service; this
+       includes a logon session obtained by ssh-ing into the host), then you must instantiate this
+       class with a username + logon_token; providing a password is not allowed in Session 0. To
+       create a logon_token, you will want to look in to the LogonUser family of Win32 system APIs.
+    """
+
+    __slots__ = ("user", "group", "password", "logon_token")
 
     user: str
     """
@@ -113,28 +132,51 @@ class WindowsSessionUser(SessionUser):
 
     password: Optional[str]
     """
-    Password of the identity to run the Session's subprocess under.
+    Password of the identity to run the Session's subprocess(es) under.
+    Mutually exclusive with: logon_token
+    """
+
+    logon_token: Optional[HANDLE]
+    """
+    A logon token to use to run the Session's subprocess(es) under.
+    Mutually exclusive with: password
     """
 
     def __init__(
-        self, user: str, *, password: Optional[str] = None, group: Optional[str] = None
+        self,
+        user: str,
+        *,
+        group: Optional[str] = None,
+        password: Optional[str] = None,
+        logon_token: Optional[HANDLE] = None,
     ) -> None:
         """
         Arguments:
-            user (str): User name of the identity to run the Session's subprocesses under.
-                        This can be either a plain username for a local user, a domain username in down-level logon form,
-                        or a domain's UPN.
-                        ex: localUser, domain\\domainUser, domainUser@domain.com
-            group (Optional[str]): Group name of the identity to run the Session's subprocesses under.
-                         This can be just a group name for a local group, or a domain group in down-level format.
-                         ex: localGroup, domain\\domainGroup
-                         Defaults to the username if not provided.
-            password (Optional[str]): Password of the identity to run the Session's subprocess under.
+            user (str):
+                User name of the identity to run the Session's subprocesses under.
+                This can be either a plain username for a local user, a domain username in down-level logon form,
+                or a domain's UPN.
+                ex: localUser, domain\\domainUser, domainUser@domain.com
+
+            group (Optional[str]):
+                Group name of the identity to run the Session's subprocesses under.
+                This can be just a group name for a local group, or a domain group in down-level format.
+                ex: localGroup, domain\\domainGroup
+                Defaults to the username if not provided.
+
+            password (Optional[str]):
+                Password of the identity to run the Session's subprocess under. This argument is mutually-exclusive with the
+                "logon_token" argument.
+
+            logon_token (Optional[ctypes.wintypes.HANDLE]):
+                Windows logon handle for the target user. This argument is mutually-exclusive with the
+                "password" argument.
         """
         if not is_windows():
             raise RuntimeError("Only available on Windows systems.")
 
-        self.password = password
+        if password and logon_token:
+            raise ValueError('The "password" and "logon_token" arguments are mutually exclusive')
 
         if "@" in user and self._is_domain_joined():
             user = win32security.TranslateName(
@@ -151,11 +193,28 @@ class WindowsSessionUser(SessionUser):
         if self.is_process_user():
             if password is not None:
                 raise RuntimeError("User is the process owner. Do not provide a password.")
+            if logon_token is not None:
+                raise RuntimeError("User is the process owner. Do not provide a logon token.")
         else:
             # Note: "" is allowed as that may actually be the password for the user.
-            if password is None:
-                raise RuntimeError("Must supply a password. User is not the process owner.")
-            self._validate_username_password(user, domain, password)
+            if password is None and logon_token is None:
+                raise RuntimeError(
+                    "Must supply a password or logon token. User is not the process owner."
+                )
+            if password is not None:
+                if CURRENT_PROCESS_RUNNING_IN_WINDOWS_SESSION_0:
+                    raise RuntimeError(
+                        (
+                            "Must supply a logon_token rather than a password. "
+                            "Passwords are not supported when running in Windows Session 0."
+                        )
+                    )
+                self._validate_username_password(user, domain, password)
+                self.password = password
+                self.logon_token = None
+            else:
+                self.password = None
+                self.logon_token = logon_token
 
     @staticmethod
     def _is_domain_joined() -> bool:

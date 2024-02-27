@@ -13,7 +13,7 @@ from ._windows_permission_helper import WindowsPermissionHelper
 from ._os_checker import is_posix, is_windows
 
 if is_windows():
-    from ._win32._helpers import get_process_user
+    from ._win32._helpers import get_process_user  # type: ignore
 
 
 def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:

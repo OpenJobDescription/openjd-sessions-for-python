@@ -22,7 +22,12 @@ from openjd.model.v2023_09 import (
 from openjd.sessions._embedded_files import EmbeddedFiles, EmbeddedFilesScope
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 
-from .conftest import has_posix_target_user, has_windows_user, SET_ENV_VARS_MESSAGE
+from .conftest import (
+    has_posix_target_user,
+    has_windows_user,
+    WIN_SET_TEST_ENV_VARS_MESSAGE,
+    POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+)
 
 
 # tmp_path - builtin temporary directory
@@ -239,7 +244,7 @@ class TestEmbeddedFiles:
 
         @pytest.mark.xfail(
             not has_posix_target_user(),
-            reason="Must be running inside of the sudo_environment testing container.",
+            reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
         )
         @pytest.mark.usefixtures("posix_target_user")
         def test_changes_owner(self, tmp_path: Path, posix_target_user: PosixSessionUser) -> None:
@@ -281,7 +286,7 @@ class TestEmbeddedFiles:
 
         @pytest.mark.xfail(
             not has_posix_target_user(),
-            reason="Must be running inside of the sudo_environment testing container.",
+            reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
         )
         @pytest.mark.usefixtures("posix_target_user")
         def test_changes_owner_runnable(
@@ -329,7 +334,7 @@ class TestEmbeddedFiles:
 
         @pytest.mark.xfail(
             not has_windows_user(),
-            reason=SET_ENV_VARS_MESSAGE,
+            reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
         )
         def test_changes_owner(self, tmp_path: Path, windows_user: WindowsSessionUser) -> None:
             # GIVEN
@@ -435,7 +440,7 @@ class TestEmbeddedFiles:
         @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
         @pytest.mark.xfail(
             not has_posix_target_user(),
-            reason="Must be running inside of the sudo_environment testing container.",
+            reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
         )
         @pytest.mark.usefixtures("posix_target_user")
         def test_basic_as_user_posix(
@@ -520,7 +525,7 @@ class TestEmbeddedFiles:
         @pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
         @pytest.mark.xfail(
             not has_windows_user(),
-            reason=SET_ENV_VARS_MESSAGE,
+            reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
         )
         def test_basic_as_user_windows(
             self, tmp_path: Path, windows_user: WindowsSessionUser

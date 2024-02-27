@@ -6,7 +6,7 @@ from ._os_checker import is_posix, is_windows
 
 if is_windows():
     from subprocess import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW  # type: ignore
-    from ._popen_windows_as_user import PopenWindowsAsUser  # type: ignore
+    from ._win32._popen_as_user import PopenWindowsAsUser  # type: ignore
     from ._windows_process_killer import kill_windows_process_tree
 from typing import Any
 from threading import Event
@@ -15,7 +15,6 @@ from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
 from typing import Callable, Optional, Sequence, cast
 from pathlib import Path
 from datetime import timedelta
-import signal
 import sys
 
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
@@ -55,6 +54,11 @@ class LoggingSubprocess(object):
     _callback: Optional[Callable[[], None]]
     _start_failed: bool
     _has_started: Event
+    _os_env_vars: Optional[dict[str, Optional[str]]]
+    _working_dir: Optional[str]
+
+    _pid: Optional[int]
+    _returncode: Optional[int]
 
     def __init__(
         self,
@@ -64,6 +68,8 @@ class LoggingSubprocess(object):
         encoding: str = "utf-8",
         user: Optional[SessionUser] = None,  # OS-user to run as
         callback: Optional[Callable[[], None]] = None,
+        os_env_vars: Optional[dict[str, Optional[str]]] = None,
+        working_dir: Optional[str] = None,
     ):
         if len(args) < 1:
             raise ValueError("'args' kwarg must be a sequence of at least one element")
@@ -78,13 +84,17 @@ class LoggingSubprocess(object):
         self._user = user
         self._callback = callback
         self._process = None
+        self._os_env_vars = os_env_vars
+        self._working_dir = working_dir
         self._start_failed = False
         self._has_started = Event()
+        self._pid = None
+        self._returncode = None
 
     @property
     def pid(self) -> Optional[int]:
-        if self._process is not None:
-            return self._process.pid
+        if self._pid is not None:
+            return self._pid
         return None
 
     @property
@@ -99,7 +109,7 @@ class LoggingSubprocess(object):
         # completed its work.
         if self._process is not None:
             return self._process.returncode
-        return None
+        return self._returncode
 
     @property
     def is_running(self) -> bool:
@@ -107,9 +117,10 @@ class LoggingSubprocess(object):
         Determine whether the subprocess is running.
         :return: True if it is running; False otherwise
         """
-        if self._process is not None:
-            return self._process.returncode is None
-        return False
+        # Note: _process is None when either:
+        #  a) The process failed to start; or
+        #  b) The process has completed, and we've deleted the Popen instance
+        return self._has_started.is_set() and self._process is not None
 
     @property
     def has_started(self) -> bool:
@@ -134,10 +145,13 @@ class LoggingSubprocess(object):
         running.
         This is a blocking call.
         """
-        if self._process is not None:
+        if self._has_started.is_set():
             raise RuntimeError("The process has already been run")
 
         self._process = self._start_subprocess()
+        # Set _has_started regardless of whether we started the process successfully or
+        # not. That will wake up anyone waiting on wait_until_started() to know whether
+        # we've gotten this far.
         self._has_started.set()
         if self._process is None:
             # We failed to start the subprocess
@@ -145,6 +159,8 @@ class LoggingSubprocess(object):
             if self._callback:
                 self._callback()
             return
+
+        self._pid = self._process.pid
 
         self._logger.info(f"Command started as pid: {self._process.pid}")
         self._logger.info("Output:")
@@ -159,14 +175,22 @@ class LoggingSubprocess(object):
             # Enforce a max line length for readline to ensure we don't infinitely grow the buffer
             return stream.readline(LOG_LINE_MAX_LENGTH)  # type: ignore
 
-        for line in iter(_stream_readline_max_length, ""):
-            line = line.rstrip("\n\r")
-            self._logger.info(line)
+        try:
+            for line in iter(_stream_readline_max_length, ""):
+                line = line.rstrip("\n\r")
+                self._logger.info(line)
 
-        self._process.wait()
+            self._process.wait()
+            self._returncode = self._process.returncode
 
-        if self._callback:
-            self._callback()
+            if self._callback:
+                self._callback()
+        finally:
+            # Explicitly delete the Popen in case it's a PopenWindowsAsUser and there's stuff to
+            # deallocate
+            proc = self._process
+            self._process = None
+            del proc
 
     def notify(self) -> None:
         """The 'Notify' part of Open Job Description's subprocess cancelation method.
@@ -182,7 +206,7 @@ class LoggingSubprocess(object):
             if is_posix():
                 self._posix_signal_subprocess(signal="term", signal_subprocesses=False)
             else:
-                self._windows_sigbreak_subprocess()
+                self._windows_notify_subprocess()
 
     def terminate(self) -> None:
         """The 'Terminate' part of Open Job Description's subprocess cancelation method.
@@ -230,6 +254,7 @@ class LoggingSubprocess(object):
                 stderr=STDOUT,
                 encoding=self._encoding,
                 start_new_session=True,
+                cwd=self._working_dir,
             )
 
             if is_windows():
@@ -244,13 +269,24 @@ class LoggingSubprocess(object):
                 cmd_line_for_logger = list2cmdline(self._args)
             self._logger.info("Running command %s", cmd_line_for_logger)
 
+            process: Popen
             if is_windows() and self._user and not user.is_process_user():
-                popen_args["creationflags"] += CREATE_NO_WINDOW
-                return PopenWindowsAsUser(user.user, user.password, **popen_args)  # type: ignore
+                popen_args["env"] = self._os_env_vars
+                process = PopenWindowsAsUser(user, **popen_args)  # type: ignore
             else:
-                return Popen(**popen_args)
+                if self._os_env_vars:
+                    # Our env vars may have 'None' as the value for some keys.
+                    # Semantically, that means that we want to delete that environment
+                    # variable's value from the environment. However, Popen doesn't do that;
+                    # it will instead choose to blow-up if any env var value is None
+                    env: dict[str, Optional[str]] = dict(os.environ)
+                    env.update(**self._os_env_vars)
+                    popen_env: dict[str, str] = {k: v for k, v in env.items() if v is not None}
+                    popen_args["env"] = popen_env
+                process = Popen(**popen_args)
+            return process
 
-        except OSError as e:
+        except Exception as e:
             self._logger.info(f"Process failed to start: {str(e)}")
             return None
 
@@ -309,7 +345,7 @@ class LoggingSubprocess(object):
                 result.stdout.decode("utf-8"),
             )
 
-    def _windows_sigbreak_subprocess(self) -> None:
+    def _windows_notify_subprocess(self) -> None:
         """Sends a CTRL_BREAK_EVENT signal to the subprocess"""
         # Convince the type checker that accessing _process is okay
         assert self._process is not None
@@ -322,24 +358,21 @@ class LoggingSubprocess(object):
         # https://stackoverflow.com/questions/35772001/how-to-handle-a-signal-sigint-on-a-windows-os-machine/35792192#35792192
         self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
 
-        if self._user is None:
-            # _process runs in current console if current user, we can signal it directly
-            self._process.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore
-        else:
-            # _process will be running in new console, we run another process to attach to it and send signal
-            cmd = [
-                sys.executable,
-                str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
-                str(self._process.pid),
-            ]
-            result = run(
-                cmd,
-                stdout=PIPE,
-                stderr=STDOUT,
-                stdin=DEVNULL,
+        # _process will be running in new console, we run another process to attach to it and send signal
+        cmd = [
+            sys.executable,
+            str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
+            str(self._process.pid),
+        ]
+        result = run(
+            cmd,
+            stdout=PIPE,
+            stderr=STDOUT,
+            stdin=DEVNULL,
+            creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+        )
+        if result.returncode != 0:
+            self._logger.warning(
+                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}: %s",
+                result.stdout.decode("utf-8"),
             )
-            if result.returncode != 0:
-                self._logger.warning(
-                    f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}: %s",
-                    result.stdout.decode("utf-8"),
-                )
