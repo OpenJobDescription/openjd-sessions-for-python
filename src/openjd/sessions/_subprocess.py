@@ -8,6 +8,8 @@ if is_windows():
     from subprocess import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW  # type: ignore
     from ._popen_windows_as_user import PopenWindowsAsUser  # type: ignore
     from ._windows_process_killer import kill_windows_process_tree
+    import win32profile
+    import win32security
 from typing import Any
 from threading import Event
 from logging import LoggerAdapter
@@ -64,6 +66,7 @@ class LoggingSubprocess(object):
         encoding: str = "utf-8",
         user: Optional[SessionUser] = None,  # OS-user to run as
         callback: Optional[Callable[[], None]] = None,
+        os_env_vars: Optional[dict[str, Optional[str]]] = None,
     ):
         if len(args) < 1:
             raise ValueError("'args' kwarg must be a sequence of at least one element")
@@ -77,6 +80,7 @@ class LoggingSubprocess(object):
         self._encoding = encoding
         self._user = user
         self._callback = callback
+        self._os_env_vars = os_env_vars
         self._process = None
         self._start_failed = False
         self._has_started = Event()
@@ -236,6 +240,21 @@ class LoggingSubprocess(object):
                 # We need a process group in order to send notify signals
                 # https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
+
+                if self._os_env_vars:
+                    if self._user and not user.is_process_user():
+                        logon_token = win32security.LogonUser(
+                            user.user,
+                            ".",
+                            user.password,  # type:  ignore
+                            win32security.LOGON32_LOGON_INTERACTIVE,
+                            win32security.LOGON32_PROVIDER_DEFAULT,
+                        )
+                        env_block = win32profile.CreateEnvironmentBlock(logon_token, False)
+                        logon_token.Close()
+                    else:
+                        env_block = os.environ
+                    popen_args["env"] = env_block.update(self._os_env_vars)
 
             cmd_line_for_logger: str
             if is_posix():

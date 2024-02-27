@@ -21,8 +21,7 @@ from openjd.model import FormatStringError
 from openjd.model.v2023_09 import Action as Action_2023_09
 from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, write_file_for_user
 from ._logging import log_subsection_banner
-from ._os_checker import is_posix, is_windows
-from ._powershell_generator import generate_exit_code_wrapper
+from ._os_checker import is_posix
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
 from ._types import ActionModel, ActionState, EmbeddedFilesListType
@@ -291,31 +290,23 @@ class ScriptRunnerBase(ABC):
                 filehandle, filename = mkstemp(
                     dir=self._session_working_directory, suffix=".sh", text=True
                 )
-            else:
-                script = self._generate_power_shell_script(args)
-                filehandle, filename = mkstemp(
-                    dir=self._session_working_directory, suffix=".ps1", text=True
+                os.close(filehandle)
+                # Create the shell script, and make it runnable by the owner.
+                # If user is defined, then this will make it owned by that user's group.
+                write_file_for_user(
+                    Path(filename),
+                    script,
+                    user=self._user,
+                    additional_permissions=stat.S_IXUSR | stat.S_IXGRP,
                 )
-            os.close(filehandle)
-            # Create the shell script, and make it runnable by the owner.
-            # If user is defined, then this will make it owned by that user's group.
-            write_file_for_user(
-                Path(filename),
-                script,
-                user=self._user,
-                additional_permissions=stat.S_IXUSR | stat.S_IXGRP,
-            )
-            self._logger.debug(f"Wrote the following script to {filename}:\n{script}")
+                self._logger.debug(f"Wrote the following script to {filename}:\n{script}")
 
-            subprocess_args = (
-                [filename]
-                if not is_windows()
-                else ["powershell.exe", "-NonInteractive", "-File", filename]
-            )
+            subprocess_args = [filename] if is_posix() else args
             self._process = LoggingSubprocess(
                 logger=self._logger,
                 args=subprocess_args,
                 user=self._user,
+                os_env_vars=self._os_env_vars,
             )
 
             if time_limit:
@@ -340,24 +331,6 @@ class ScriptRunnerBase(ABC):
         if self.state == ScriptRunnerState.RUNNING and self._callback is not None:
             # Let the caller know that the process is running.
             self._callback(ActionState.RUNNING)
-
-    def _generate_power_shell_script(self, args: Sequence[str]) -> str:
-        """Generate a shell script for running a command given by the args."""
-        script = list[str]()
-        if self._startup_directory is not None:
-            script.append(f"Set-Location '{self._startup_directory}'")
-        if self._os_env_vars:
-            for name, value in self._os_env_vars.items():
-                if value is None:
-                    script.append(f"$env:{name} = $null")
-                else:
-                    # TODO: Need to check if we need to handle other characters
-                    value = value.replace("'", "''")
-                    script.append(f"$env:{name} = '{value}'")
-
-        exit_code_ps_script = generate_exit_code_wrapper(args)
-        script.append(exit_code_ps_script)
-        return "\n".join(script)
 
     def _generate_command_shell_script(self, args: Sequence[str]) -> str:
         """Generate a shell script for running a command given by the args."""

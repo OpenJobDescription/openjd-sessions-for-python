@@ -115,6 +115,19 @@ class PopenWindowsAsUser(Popen):
         si.hStdError = int(errwrite)
         si.dwFlags |= win32process.STARTF_USESTDHANDLES
 
+        def environment_dict_to_block(env: dict[str, str]) -> ctypes.c_wchar_p:
+            """Converts a Python dictionary representation of an environment into a character beffer as expected by the
+            lpEnvironment argument to the CreateProcess* family of win32 functions.
+            """
+            # Create a string with null-character delimiters between each "key=value" string
+            null_delimited = "\0".join(f"{key}={value}" for key, value in env.items())
+            # Add a final null-terminator character
+            env_block_str = null_delimited + "\0"
+
+            return ctypes.c_wchar_p(env_block_str)
+
+        env_block_ptr = environment_dict_to_block(env) if env else None
+
         # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
         result = advapi32.CreateProcessWithLogonW(
             self.username,
@@ -124,7 +137,7 @@ class PopenWindowsAsUser(Popen):
             executable,
             commandline,
             creationflags,
-            env,
+            env_block_ptr,
             cwd,
             ctypes.byref(si),
             ctypes.byref(pi),
