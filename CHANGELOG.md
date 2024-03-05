@@ -1,3 +1,12 @@
+## 0.6.0 (2024-03-05)
+
+### BREAKING CHANGES
+* remove methods from public interface of WindowsSessionUser (#91) ([`788a503`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/788a50356b293dd496669c4fc71ef752fb90e333))
+
+### Features
+* Sessions can now be run in a Windows Service context (#97) ([`72ff65b`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/72ff65b385bee48236014268993b83e2fd7c87a3))
+
+
 ## 0.5.1 (2024-02-26)
 
 
