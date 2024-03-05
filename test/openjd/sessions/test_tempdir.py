@@ -28,7 +28,9 @@ from .conftest import (
     has_posix_disjoint_user,
     has_posix_target_user,
     has_windows_user,
-    SET_ENV_VARS_MESSAGE,
+    WIN_SET_TEST_ENV_VARS_MESSAGE,
+    POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+    POSIX_SET_DISJOINT_USER_ENV_VARS_MESSAGE,
 )
 
 
@@ -194,16 +196,16 @@ class TestTempDirWindows:
         ), r"Directory C:\ProgramDataForOpenJDTest\Amazon should be created."
 
 
-@pytest.mark.xfail(
-    not has_posix_target_user() or not has_posix_disjoint_user(),
-    reason="Must be running inside of the sudo_environment testing container.",
-)
 @pytest.mark.usefixtures("posix_target_user", "posix_disjoint_user")
 class TestTempDirPosixUser:
     """Tests of the TempDir when the resulting directory is to be owned by
     a different user than the current process.
     """
 
+    @pytest.mark.xfail(
+        not has_posix_target_user(),
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+    )
     def test_defaults(self, posix_target_user: PosixSessionUser) -> None:
         # Ensure that we can create the temporary directory.
 
@@ -216,7 +218,7 @@ class TestTempDirPosixUser:
         result = TempDir(user=posix_target_user)
 
         # THEN
-        assert result.path.parent == tmpdir
+        assert result.path.parent == tmpdir / "OpenJD"
         assert os.path.exists(result.path)
         statinfo = os.stat(result.path)
         assert statinfo.st_uid != uid, "Test: Not owned by target user"
@@ -224,6 +226,10 @@ class TestTempDirPosixUser:
         assert statinfo.st_gid == gid, "Test: gid is changed"
         assert statinfo.st_mode & stat.S_IWGRP, "Test: Directory is group-writable"
 
+    @pytest.mark.xfail(
+        not has_posix_target_user(),
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+    )
     def test_cleanup(self, posix_target_user: PosixSessionUser) -> None:
         # Ensure that we can delete the files in that directory that have been
         # created by the other user.
@@ -247,6 +253,10 @@ class TestTempDirPosixUser:
         assert not os.path.exists(testfilename)
         assert not os.path.exists(tmpdir.path)
 
+    @pytest.mark.xfail(
+        not has_posix_disjoint_user(),
+        reason=POSIX_SET_DISJOINT_USER_ENV_VARS_MESSAGE,
+    )
     def test_cannot_change_to_group(self, posix_disjoint_user: PosixSessionUser) -> None:
         # Test that we raise an exception when we try to give the created directory to
         # a group that this process isn't a member of.
@@ -257,7 +267,7 @@ class TestTempDirPosixUser:
 
 
 @pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
-@pytest.mark.xfail(not has_windows_user(), reason=SET_ENV_VARS_MESSAGE)
+@pytest.mark.xfail(not has_windows_user(), reason=WIN_SET_TEST_ENV_VARS_MESSAGE)
 @pytest.mark.usefixtures("windows_user")
 class TestTempDirWindowsUser:
     """Tests of the TempDir when the resulting directory is to be owned by

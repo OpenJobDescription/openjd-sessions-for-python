@@ -70,16 +70,56 @@ within the `Session`.
 
 ## Testing
 
+This package strives for very high test coverage of its functionality. You are asked to help us maintain our
+high bar by adding thorough test coverage for any changes you make and any testing gaps that you discover.
+
+To run our tests simply run: `hatch run test`
+
+If you have multiple version of Python installed (e.g. Python 3.9, 3.10, 3.11, etc) then you can run the tests
+against all of your installed versions of python with: `hatch run all:test`
+
+### User Impersonation
+
 This library contains functionality to run subprocesses as a user other than the one that is
-running the main process. Scripting has been added to this repository to test this functionality
-on Linux, and we have some unit tests that require being run in a specific docker container
-that is set up for testing running subprocesses as different users.
+running the main process. You will need to take special steps to ensure that your changes
+keep this functionality running in tip-top shape.
+
+#### User Impersonation: POSIX-Based Systems
+
+To run the impersonation tests you must create additional users and groups for the impersonation
+tests on your local system and then set environment variables before running the tests.
+
+Scripting has been added to this repository to test this functionality on Linux using
+docker containers that we have set up for this purpose.
 
 To run these tests:
 1. With users configured locally in /etc/passwd & /etc/groups: `scripts/run_sudo_tests.sh --build`
 2. With users via an LDAP client: `scripts/run_sudo_tests.sh --build --ldap`
 
-Please ensure that you run these tests if making modifications that may affect cross-user functionality.
+If you are unable to use the provided docker container then you need to set up the `OPENJD_TEST_SUDO_*`
+environment variables and their referenced users and groups as in the Dockerfile under
+`testing_containers/localuser_sudo_environment/Dockerfile` in this repository.
+
+#### User Impersonation: Windows-Based Systems
+
+This library performs impersonation differently based on whether it is being run as part
+of an OS Service (with Windows Session ID 0) or an interactive logon session (which has
+Windows Session ID > 0). Thus, changes to the impersonation logic may need to be tested in
+both of these environments.
+
+To run the impersonation tests you will require a separate user on your workstation, and its
+password, that you are able to logon as. Then:
+
+1. Set the environment variable `OPENJD_TEST_WIN_USER_NAME` to the username of that user;
+2. Set the environment variable `OPENJD_TEST_WIN_USER_PASSWORD` to that user's password; and
+3. Then run the tests with `hatch run test` as normal.
+    * If done correctly, then you should not see any xfail tests related to impersonation.
+
+Run these tests in both:
+1. A terminal in your interactive logon session to test the impersonation logic when 
+   Windows Session ID > 0; and
+2. An `ssh` terminal into your workstation to test the impersonation logic when Windows
+   Session ID is 0.
 
 ## The Package's Public Interface
 

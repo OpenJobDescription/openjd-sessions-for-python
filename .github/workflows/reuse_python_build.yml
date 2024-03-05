@@ -39,9 +39,9 @@ jobs:
         $plaintext_password = -join([char[]](48..122) | Get-Random -Count 16)
         $password = ConvertTo-SecureString $plaintext_password -AsPlainText -Force
         New-LocalUser -Name $username -Password $password
-        echo OJD_SESSIONS_USER_NAME=$username >> $env:GITHUB_ENV
+        echo OPENJD_TEST_WIN_USER_NAME=$username >> $env:GITHUB_ENV
         echo "::add-mask::$plaintext_password"
-        echo OJD_SESSIONS_USER_PASSWORD=$plaintext_password >> $env:GITHUB_ENV
+        echo OPENJD_TEST_WIN_USER_PASSWORD=$plaintext_password >> $env:GITHUB_ENV
 
     - name: Set up Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5

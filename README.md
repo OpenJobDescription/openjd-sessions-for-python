@@ -20,6 +20,7 @@ This library requires:
 3. On Linux/MacOS:
     * `sudo`
 4. On Windows:
+    * CPython implementation of Python
     * PowerShell 5.x
 
 **EXPERIMENTAL** Note that compatibility with the Windows operating system is currently in active development
@@ -192,6 +193,82 @@ with Session(
             action_event.clear()
             action_event.wait()
 ```
+
+### Impersonating a User
+
+This library supports running its Session Actions as a different operating system
+user than the user that is running the library. In the following, we refer to the
+operating system user that is running this library as the `host` user and the
+user that is being impersonated to run actions as the `actions` user.
+
+This feature exists to:
+1. Provide a means to securely isolate the environment and files of the `host` user
+   from the environment in which the Session Actions are run. Configure your filesystem
+   permissions, and user groups for the `host` and `actions` users such that the `actions`
+   user cannot read, write, or execute any of the `host` user files that it should not be
+   able to.
+2. Provide a way for you to permit access, on a per-Session basis, to specific local and
+   shared filesystem assets to the running Actions running in the Session.
+
+#### Impersonating a User: POSIX Systems
+
+To run an impersonated Session on POSIX Systems modify the "Running a Session" example
+as follows:
+
+```
+...
+from openjd.sessions import PosixSessionUser
+...
+user = PosixSessionUser($USERNAME$, password=$PASSWORD_OF_USERNAME$)
+...
+with Session(
+    session_id="demo",
+    job_parameter_values=job_parameters,
+    callback=action_complete_callback,
+    user=user
+) as session:
+    ...
+```
+
+You must ensure that the `host` user is able to run commands as the `actions` user 
+with passwordless `sudo` by, for example, adding a rule like follows to your
+`sudoers` file or making the equivalent change in your user permissions directory:
+
+```
+host ALL=(actions) NOPASSWD: ALL
+```
+
+#### Impersonating a User: Windows Systems
+
+To run an impersonated Session on Windows Systems modify the "Running a Session" example
+as follows:
+
+```
+...
+from openjd.sessions import WindowsSessionUser
+...
+# If you're running in an interactive logon session (e.g. cmd or powershell on your desktop)
+user = WindowsSessionUser($USERNAME$, password=$PASSWORD_OF_USERNAME$)
+# If you're running in a Windows Service
+user = WindowsSessionUser($USERNAME$, logon_token=user_logon_token)
+# Where `user_logon_token` is a token that you have created that is compatible
+# with the Win32 API: CreateProcessAsUser
+...
+with Session(
+    session_id="demo",
+    job_parameter_values=job_parameters,
+    callback=action_complete_callback,
+    user=user
+) as session:
+    ...
+```
+
+If running in a Windows Service, then you must ensure that:
+1. The `host` user is an Administrator, LocalSystem, or LocalService user as your
+   security posture requires; and
+2. The `host` user has the [Replace a process level token](https://learn.microsoft.com/en-us/windows/security/threat-protection/security-policy-settings/replace-a-process-level-token)
+   privilege.
+
 
 ## Downloading
 
