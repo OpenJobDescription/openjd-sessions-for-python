@@ -28,11 +28,7 @@ class TestWindowsSessionUser:
         return_value=False,
     )
     def test_user_not_converted(self, mock_is_process_user, mock_validate_username, user):
-        windows_session_user = WindowsSessionUser(
-            user,
-            password="password",
-            group="test_group",
-        )
+        windows_session_user = WindowsSessionUser(user, password="password")
 
         assert windows_session_user.user == user
 
@@ -41,7 +37,7 @@ class TestWindowsSessionUser:
             RuntimeError,
             match="Must supply a password or logon token. User is not the process owner.",
         ):
-            WindowsSessionUser("nonexistent_user", group="test_group")
+            WindowsSessionUser("nonexistent_user")
 
     @pytest.mark.skipif(
         tests_are_in_windows_session_0(),

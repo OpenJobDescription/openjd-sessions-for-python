@@ -13,14 +13,20 @@ class WindowsPermissionHelper:
     """
 
     @staticmethod
-    def set_permissions_full_control(file_path, principals_to_permit):
+    def set_permissions(
+        file_path: str,
+        *,
+        principals_full_control: list[str] = [],
+        principals_modify_access: list[str] = [],
+    ):
         """
-        Grants full control over the object at file_path to all principals in principals_to_permit.
+        Grants access control over the object at file_path.
         Sets flags so both child files and directories inherit these permissions.
 
         Arguments:
             file_path (str): The path to the file or directory.
-            principals_to_permit (List[str]): The names of the principals to permit.
+            principals_full_control (List[str]): The names of the principals to permit Full Control access.
+            principals_modify_access (List[str]): The names of the principals to permit Modify access
 
         Raises:
             RuntimeError if there is a problem modifying the security attributes.
@@ -28,14 +34,31 @@ class WindowsPermissionHelper:
         try:
             # We don't want to propagate existing permissions, so create a new DACL
             dacl = win32security.ACL()
-            for principal in principals_to_permit:
+            for principal in principals_full_control:
                 user_or_group_sid, _, _ = win32security.LookupAccountName(None, principal)
 
                 # Add an ACE to the DACL giving the principal full control and enabling inheritance of the ACE
                 dacl.AddAccessAllowedAceEx(
                     win32security.ACL_REVISION,
                     ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE,
-                    ntsecuritycon.FILE_ALL_ACCESS,
+                    ntsecuritycon.FILE_ALL_ACCESS,  # = 0x1F01FF
+                    user_or_group_sid,
+                )
+            for principal in principals_modify_access:
+                user_or_group_sid, _, _ = win32security.LookupAccountName(None, principal)
+
+                # Add an ACE to the DACL giving the principal full control and enabling inheritance of the ACE
+                dacl.AddAccessAllowedAceEx(
+                    win32security.ACL_REVISION,
+                    ntsecuritycon.OBJECT_INHERIT_ACE | ntsecuritycon.CONTAINER_INHERIT_ACE,
+                    # Values of these constants defined in winnt.h
+                    # Constant value after ORs: 0x1301FF
+                    # Delta from FILE_ALL_ACCESS is 0xC0000 = WRITE_DAC(0x40000) | WRITE_OWNER(0x80000)
+                    ntsecuritycon.FILE_GENERIC_READ  # = 0x120089
+                    | ntsecuritycon.FILE_GENERIC_WRITE  # = 0x120116
+                    | ntsecuritycon.FILE_GENERIC_EXECUTE  # = 0x1200A0
+                    | ntsecuritycon.DELETE  # = 0x10000
+                    | ntsecuritycon.FILE_DELETE_CHILD,  # = 0x0040
                     user_or_group_sid,
                 )
 
@@ -54,6 +77,8 @@ class WindowsPermissionHelper:
             sd.SetSecurityDescriptorDacl(1, dacl, 0)
 
             # Set the security descriptor to the tempdir
+            # Note: This completely overwrites the DACL; so, if we don't provide a permission above then
+            # the DACL doesn't have it.
             win32security.SetFileSecurity(
                 str(file_path), win32security.DACL_SECURITY_INFORMATION, sd
             )

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 from openjd.sessions._os_checker import is_posix, is_windows
 import pytest
 
-from utils.windows_acl_helper import principal_has_full_control_of_object
+from utils.windows_acl_helper import MODIFY_READ_WRITE_MASK, principal_has_access_to_object
 
 from openjd.model import SymbolTable
 from openjd.model.v2023_09 import DataString as DataString_2023_09
@@ -358,9 +358,9 @@ class TestEmbeddedFiles:
 
             # THEN
             assert os.path.exists(filename)
-            assert principal_has_full_control_of_object(
-                str(filename), windows_user.user
-            ), "Windows user has full control"
+            assert principal_has_access_to_object(
+                str(filename), windows_user.user, MODIFY_READ_WRITE_MASK
+            ), "Windows user has access"
             with open(filename, "r") as file:
                 result_contents = file.read()
             assert result_contents == testdata, "File contents are as expected"
@@ -588,9 +588,9 @@ class TestEmbeddedFiles:
                     result_contents = file.read()
                 assert result_contents == data.data, "File contents are as expected"
                 # Check file permissions
-                assert principal_has_full_control_of_object(
-                    filename, windows_user.user
-                ), "Windows user has full control"
+                assert principal_has_access_to_object(
+                    filename, windows_user.user, MODIFY_READ_WRITE_MASK
+                ), "Windows user has access"
 
         def test_resolves_symbols(self, tmp_path: Path) -> None:
             # Tests that the set of files can reference themselves and each other

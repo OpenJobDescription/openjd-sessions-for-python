@@ -371,10 +371,14 @@ class TestSessionInitialization:
         with open(working_dir_file_path, "w") as f:
             f.write("File content")
 
-        WindowsPermissionHelper.set_permissions_full_control(subdir_path, [windows_user.user])
-        WindowsPermissionHelper.set_permissions_full_control(subdir_file_path, [windows_user.user])
-        WindowsPermissionHelper.set_permissions_full_control(
-            working_dir_file_path, [windows_user.user]
+        WindowsPermissionHelper.set_permissions(
+            subdir_path, principals_full_control=[windows_user.user]
+        )
+        WindowsPermissionHelper.set_permissions(
+            subdir_file_path, principals_full_control=[windows_user.user]
+        )
+        WindowsPermissionHelper.set_permissions(
+            working_dir_file_path, principals_full_control=[windows_user.user]
         )
 
         session.cleanup()
