@@ -1,3 +1,9 @@
+## 0.6.1 (2024-03-05)
+
+This release does not contain any functional changes. It is functionally identical to 0.6.0.
+This release was only made to fix an issue with the tests in our internal systems.
+
+
 ## 0.6.0 (2024-03-05)
 
 ### BREAKING CHANGES
