@@ -112,22 +112,22 @@ class WindowsSessionUser(SessionUser):
        includes a logon session obtained by ssh-ing into the host), then you must instantiate this
        class with a username + logon_token; providing a password is not allowed in Session 0. To
        create a logon_token, you will want to look in to the LogonUser family of Win32 system APIs.
+
+    The user provided in this class directly influences the Directory ACL of the Session Working
+    Directory that is created. The created directory:
+    1. Has Full Control by the owner of the calling process; and
+    2. Has Modify access by the provided user.
+    The Session working directory will also be set so that all child directories and files
+    inherit these permissions.
     """
 
-    __slots__ = ("user", "group", "password", "logon_token")
+    __slots__ = ("user", "password", "logon_token")
 
     user: str
     """
     User name of the identity to run the Session's subprocesses under.
     This can be either a plain username for a local user or a domain username in down-level logon form
     ex: localUser, domain\\domainUser
-    """
-
-    group: str
-    """
-    Group name of the identity to run the Session's subprocesses under.
-    This can be just a group name for a local group, or a domain group in down-level logon form.
-    ex: localGroup, domain\\domainGroup
     """
 
     password: Optional[str]
@@ -146,7 +146,6 @@ class WindowsSessionUser(SessionUser):
         self,
         user: str,
         *,
-        group: Optional[str] = None,
         password: Optional[str] = None,
         logon_token: Optional[HANDLE] = None,
     ) -> None:
@@ -157,12 +156,6 @@ class WindowsSessionUser(SessionUser):
                 This can be either a plain username for a local user, a domain username in down-level logon form,
                 or a domain's UPN.
                 ex: localUser, domain\\domainUser, domainUser@domain.com
-
-            group (Optional[str]):
-                Group name of the identity to run the Session's subprocesses under.
-                This can be just a group name for a local group, or a domain group in down-level format.
-                ex: localGroup, domain\\domainGroup
-                Defaults to the username if not provided.
 
             password (Optional[str]):
                 Password of the identity to run the Session's subprocess under. This argument is mutually-exclusive with the
@@ -184,7 +177,6 @@ class WindowsSessionUser(SessionUser):
             )
 
         self.user = user
-        self.group = group if group else user
 
         domain, username_without_domain = self._split_domain_and_username(user)
 

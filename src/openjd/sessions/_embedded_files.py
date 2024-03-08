@@ -77,8 +77,10 @@ def write_file_for_user(
         if user is not None:
             user = cast(WindowsSessionUser, user)
             process_user = get_process_user()
-            WindowsPermissionHelper.set_permissions_full_control(
-                str(filename), [process_user, user.user]
+            WindowsPermissionHelper.set_permissions(
+                str(filename),
+                principals_full_control=[process_user],
+                principals_modify_access=[user.user],
             )
 
 

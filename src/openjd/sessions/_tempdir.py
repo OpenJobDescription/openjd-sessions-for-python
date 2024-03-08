@@ -122,12 +122,10 @@ class TempDir:
             elif is_windows():
                 user = cast(WindowsSessionUser, user)
                 try:
-                    principal_to_permit = user.group
-
-                    process_user = get_process_user()
-
-                    WindowsPermissionHelper.set_permissions_full_control(
-                        str(self.path), [principal_to_permit, process_user]
+                    WindowsPermissionHelper.set_permissions(
+                        str(self.path),
+                        principals_full_control=[get_process_user()],
+                        principals_modify_access=[user.user],
                     )
                 except Exception as err:
                     raise RuntimeError(

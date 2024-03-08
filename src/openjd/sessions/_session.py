@@ -162,6 +162,23 @@ class Session(object):
     module's LOG Logger at log level INFO. The LogRecords sent to the log have an
     extra attribute named "session_id" whose value is the session_id that was passed
     to the constructor of the Session.
+
+    Each Session has its own temporary working directory, referred to as the Session
+    Working Directory. Instantiating this class creates this directory for the duration
+    of the Session, and you are expected to call the cleanup() method on your Session
+    to delete that directory when done (this is done automatically if using the Session
+    as a context manager).
+    On POSIX:
+    - The Session Working Directory's owner is the process owner.
+    - If a PosixSessionUser is provided, then the group of that user is the group owner
+      of the the directory.
+    On Windows:
+    - All files and directories within the Session Working Directory inherit the
+      directory's ACL.
+    - The Session Working Directory's ACL is set so that the process owner has full
+      control
+    - If a WindowsSessionUser is provided then the user within that SessionUser
+      is also given Modify access.
     """
 
     _state: SessionState

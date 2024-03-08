@@ -5,7 +5,42 @@ from openjd.sessions._os_checker import is_windows
 if is_windows():
     import win32security
 
-FULL_CONTROL_MASK = 2032127
+MODIFY_READ_WRITE_MASK = 0x1301FF
+FULL_CONTROL_MASK = 0x1F01FF
+
+
+def get_aces_for_object(object_path: str) -> dict[str, tuple[list[int], list[int]]]:
+    """Obtain a dictionary representation of the Access Control Entities (ACEs) of the
+    given object. The returned dictionary has the form:
+    {
+        <username>: (
+            [ <access masks>, ... ],
+            [ <denied masks>, ... ]
+        ),
+        ...
+    }
+    """
+    return_dict = dict[str, tuple[list[int], list[int]]]()
+    sd = win32security.GetFileSecurity(object_path, win32security.DACL_SECURITY_INFORMATION)
+
+    dacl = sd.GetSecurityDescriptorDacl()
+
+    for i in range(dacl.GetAceCount()):
+        ace = dacl.GetAce(i)
+
+        ace_type = ace[0][0]
+        access_mask = ace[1]
+        ace_principal_sid = ace[2]
+
+        account_name, _, _ = win32security.LookupAccountSid(None, ace_principal_sid)
+        if account_name not in return_dict:
+            return_dict[account_name] = (list[int](), list[int]())
+        if ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE:
+            return_dict[account_name][0].append(access_mask)
+        elif ace_type == win32security.ACCESS_DENIED_ACE_TYPE:
+            return_dict[account_name][1].append(access_mask)
+
+    return return_dict
 
 
 def get_aces_for_principal_on_object(object_path: str, principal_name: str):
@@ -37,8 +72,6 @@ def get_aces_for_principal_on_object(object_path: str, principal_name: str):
         access_mask = ace[1]
         ace_principal_sid = ace[2]
 
-        account_name, _, _ = win32security.LookupAccountSid(None, ace_principal_sid)
-
         if ace_principal_sid == principal_to_check_sid:
             if ace_type == win32security.ACCESS_ALLOWED_ACE_TYPE:
                 access_allowed_masks.append(access_mask)
@@ -48,15 +81,9 @@ def get_aces_for_principal_on_object(object_path: str, principal_name: str):
     return access_allowed_masks, access_denied_masks
 
 
-def principal_has_full_control_of_object(object_path, principal_name):
+def principal_has_access_to_object(object_path, principal_name, access_mask):
     access_allowed_masks, access_denied_masks = get_aces_for_principal_on_object(
         object_path, principal_name
     )
 
-    return FULL_CONTROL_MASK in access_allowed_masks and len(access_denied_masks) == 0
-
-
-def principal_has_no_permissions_on_object(object_path, principal_name):
-    access_allowed_masks, _ = get_aces_for_principal_on_object(object_path, principal_name)
-
-    return len(access_allowed_masks) == 0
+    return access_allowed_masks == [access_mask] and len(access_denied_masks) == 0
