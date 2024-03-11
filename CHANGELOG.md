@@ -1,3 +1,10 @@
+## 0.7.0 (2024-03-11)
+
+### BREAKING CHANGES
+* remove group property from WindowsSessionUser (#102) ([`5fa8bf2`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/5fa8bf20df4f868995c30bea94006e7e542265e9))
+
+
+
 ## 0.6.1 (2024-03-05)
 
 This release does not contain any functional changes. It is functionally identical to 0.6.0.
