@@ -17,7 +17,7 @@ from ctypes.wintypes import (
     ULONG,
     WORD,
 )
-from ctypes import POINTER
+from ctypes import POINTER, WinError, byref, c_byte, c_size_t, c_void_p, pointer  # type: ignore
 from collections.abc import Sequence
 
 # This assertion short-circuits mypy from type checking this module on platforms other than Windows
@@ -112,12 +112,17 @@ TOKEN_ALL_ACCESS = (
 TokenPrivileges = 3
 TokenSecurityAttributes = 39
 
+PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
+
 # =======================
-# Structures
+# Structures/Types
 # =======================
 
+SIZE_T = c_size_t
+PSIZE_T = POINTER(SIZE_T)
 
-# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfoa
+
+# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-startupinfow
 class STARTUPINFO(ctypes.Structure):
     _fields_ = [
         ("cb", DWORD),
@@ -139,6 +144,43 @@ class STARTUPINFO(ctypes.Structure):
         ("hStdOutput", HANDLE),
         ("hStdError", HANDLE),
     ]
+
+
+PPROC_THREAD_ATTRIBUTE_LIST = c_void_p
+LPPROC_THREAD_ATTRIBUTE_LIST = PPROC_THREAD_ATTRIBUTE_LIST
+
+
+# https://learn.microsoft.com/en-us/windows/win32/api/winbase/ns-winbase-startupinfoexw
+class STARTUPINFOEX(ctypes.Structure):
+    _fields_ = [("StartupInfo", STARTUPINFO), ("lpAttributeList", PPROC_THREAD_ATTRIBUTE_LIST)]
+
+    def allocate_attribute_list(self, num_attributes: int) -> None:
+        """Allocate a buffer to lpAttributeList such that it can hold information for
+        'num_attributes' attributes.
+        Note: You must call 'deallocate_attribute_list()' when done with this structure if you call this;
+           that will ensure that the additional allocations that the OS has made are deallocated.
+        """
+        # As per https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist#remarks
+        # First we call InitializeProcThreadAttributeList with an null attribute list,
+        # and it'll tell us how large of a buffer lpAttributeList needs to be.
+        # This will always return False, so we don't check return code.
+        lp_size = SIZE_T(0)
+        InitializeProcThreadAttributeList(
+            None, num_attributes, 0, byref(lp_size)  # reserved, and must be 0
+        )
+
+        # Allocate the desired buffer
+        buffer = (c_byte * lp_size.value)()
+        self.lpAttributeList = ctypes.cast(pointer(buffer), c_void_p)
+
+        # Second call to actually initialize the buffer
+        if not InitializeProcThreadAttributeList(
+            self.lpAttributeList, num_attributes, 0, byref(lp_size)  # reserved, and must be 0
+        ):
+            raise WinError()
+
+    def deallocate_attribute_list(self) -> None:
+        DeleteProcThreadAttributeList(self.lpAttributeList)
 
 
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/ns-processthreadsapi-process_information
@@ -218,6 +260,12 @@ kernel32 = ctypes.WinDLL("kernel32")
 kernel32.CloseHandle.restype = BOOL
 kernel32.CloseHandle.argtypes = [HANDLE]  # [in] hObject
 
+# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-deleteprocthreadattributelist
+kernel32.DeleteProcThreadAttributeList.restype = None
+kernel32.DeleteProcThreadAttributeList.argtypes = [
+    LPPROC_THREAD_ATTRIBUTE_LIST,  # [in, out] lpAttributeList
+]
+
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocess
 kernel32.GetCurrentProcess.restype = HANDLE
 kernel32.GetCurrentProcess.argtypes = []
@@ -225,6 +273,27 @@ kernel32.GetCurrentProcess.argtypes = []
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentprocessid
 kernel32.GetCurrentProcessId.restype = DWORD
 kernel32.GetCurrentProcessId.argtypes = []
+
+# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-initializeprocthreadattributelist
+kernel32.InitializeProcThreadAttributeList.restype = BOOL
+kernel32.InitializeProcThreadAttributeList.argtypes = [
+    LPPROC_THREAD_ATTRIBUTE_LIST,  # [out, optional] lpAttributeList
+    DWORD,  # [in] dwAttributeCount
+    DWORD,  # [in] dwFlags
+    PSIZE_T,  # [in,out] lpSize
+]
+
+# https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-updateprocthreadattribute
+kernel32.UpdateProcThreadAttribute.restype = BOOL
+kernel32.UpdateProcThreadAttribute.argtypes = [
+    LPPROC_THREAD_ATTRIBUTE_LIST,  # [in,out] lpAttributeList
+    DWORD,  # [in] dwFlags
+    SIZE_T,  # [in] Attribute (note: Pointer-sized integer; not an actual pointer)
+    c_void_p,  # [in] lpValue
+    SIZE_T,  # [in] cbSize
+    c_void_p,  # [out, optional] lpPreviousValue
+    PSIZE_T,  # [in, optional] lpReturnSize
+]
 
 # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-processidtosessionid
 kernel32.ProcessIdToSessionId.restype = BOOL
@@ -235,9 +304,12 @@ kernel32.ProcessIdToSessionId.argtypes = [
 
 # exports:
 CloseHandle = kernel32.CloseHandle
+DeleteProcThreadAttributeList = kernel32.DeleteProcThreadAttributeList
 GetCurrentProcess = kernel32.GetCurrentProcess
 GetCurrentProcessId = kernel32.GetCurrentProcessId
 ProcessIdToSessionId = kernel32.ProcessIdToSessionId
+InitializeProcThreadAttributeList = kernel32.InitializeProcThreadAttributeList
+UpdateProcThreadAttribute = kernel32.UpdateProcThreadAttribute
 
 # ---------
 # From: advapi32.dll
@@ -267,7 +339,7 @@ advapi32.CreateProcessAsUserW.argtypes = [
     DWORD,  # [in] dwCreationFlags
     LPVOID,  # [in, optional] lpEnvironment
     LPCWSTR,  # [in, optional] lpCurrentDirectory
-    POINTER(STARTUPINFO),  # [in] lpStartupInfo
+    POINTER(STARTUPINFOEX),  # [in] lpStartupInfo
     POINTER(PROCESS_INFORMATION),  # [out] lpProcessInformation
 ]
 

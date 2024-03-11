@@ -9,23 +9,27 @@ assert sys.platform == "win32"
 
 from typing import Any, Optional, cast
 import ctypes
+from ctypes.wintypes import HANDLE
 from subprocess import list2cmdline, Popen
 from subprocess import Handle  # type: ignore # linter doesn't know it exists
 import platform
 from ._api import (
     # Constants
     LOGON_WITH_PROFILE,
+    PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
     STARTF_USESHOWWINDOW,
     STARTF_USESTDHANDLES,
     SW_HIDE,
     # Structures
     PROCESS_INFORMATION,
     STARTUPINFO,
+    STARTUPINFOEX,
     # Functions
     CloseHandle,
     CreateProcessAsUserW,
     CreateProcessWithLogonW,
     DestroyEnvironmentBlock,
+    UpdateProcThreadAttribute,
 )
 from ._helpers import (
     environment_block_for_user,
@@ -41,7 +45,32 @@ if platform.python_implementation() != "CPython":
         f"Not compatible with the {platform.python_implementation} of Python. Please use CPython."
     )
 
-CREATE_UNICODE_ENVIRONMENT = 0x400
+CREATE_UNICODE_ENVIRONMENT = 0x00000400
+EXTENDED_STARTUPINFO_PRESENT = 0x00080000
+
+
+def inherit_handles(startup_info: STARTUPINFOEX, handles: tuple[int]) -> ctypes.Array:
+    """Set the given 'startup_info' to have the subprocess inherit the given handles, and only the
+    given handles.
+
+    Returns:
+        - The allocated list of handles. Per the Win32 APIs, you must ensure that this buffer is
+          only deallocated *after* the attribute list in the startup_info has been deallocated.
+    """
+    handles_list = (HANDLE * len(handles))()
+    for i, h in enumerate(handles):
+        handles_list[i] = h
+    if not UpdateProcThreadAttribute(
+        startup_info.lpAttributeList,
+        0,  # reserved and must be 0
+        PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        ctypes.byref(handles_list),
+        ctypes.sizeof(handles_list),
+        None,  # reserved and must be null
+        None,  # reserved and must be null
+    ):
+        raise ctypes.WinError()
+    return handles_list
 
 
 class PopenWindowsAsUser(Popen):
@@ -151,34 +180,60 @@ class PopenWindowsAsUser(Popen):
                     # Raises: OSError
                     raise ctypes.WinError()
             elif self.user.logon_token is not None:
-                # From https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw
-                # If the lpEnvironment parameter is NULL, the new process inherits the environment of the calling process.
-                # CreateProcessAsUser does not automatically modify the environment block to include environment variables specific to
-                # the user represented by hToken. For example, the USERNAME and USERDOMAIN variables are inherited from the calling
-                # process if lpEnvironment is NULL. It is your responsibility to prepare the environment block for the new process and
-                # specify it in lpEnvironment.
 
-                env_ptr = environment_block_for_user(self.user.logon_token)
-                if env:
-                    env_block = _merge_environment(env_ptr, env)
-                else:
-                    env_block = env_ptr
+                siex = STARTUPINFOEX()
+                ctypes.memmove(
+                    ctypes.pointer(siex.StartupInfo), ctypes.pointer(si), ctypes.sizeof(STARTUPINFO)
+                )
+                siex.StartupInfo.cb = ctypes.sizeof(STARTUPINFOEX)
+                creationflags |= EXTENDED_STARTUPINFO_PRESENT
 
-                if not CreateProcessAsUserW(
-                    self.user.logon_token,
-                    executable,
-                    cmdline,
-                    None,
-                    None,
-                    True,
-                    creationflags | CREATE_UNICODE_ENVIRONMENT,
-                    env_block,
-                    cwd,
-                    ctypes.byref(si),
-                    ctypes.byref(pi),
-                ):
-                    # Raises: OSError
-                    raise ctypes.WinError()
+                handles_list: Optional[ctypes.Array] = None
+                handles_to_inherit = tuple(int(h) for h in (p2cread, c2pwrite, errwrite) if h != -1)
+                try:
+                    # Allocate the lpAttributeList array of the STARTUPINFOEX structure so that it
+                    # has sufficient space for a single attribute. We only have a single attribute that
+                    # we're setting -- namely a PROC_THREAD_ATTRIBUTE_HANDLE_LIST that itself contains a list of handles --
+                    # so this is sufficient.
+                    siex.allocate_attribute_list(1)
+
+                    # Note: We must ensure that 'handles_list' must persist until the
+                    # attribute list is destroyed using DeleteProcThreadAttributeList. We do this by holding on
+                    # to a reference to it until after the finally block of this try.
+                    handles_list = inherit_handles(  # noqa: F841 # ignore: assigned but not used
+                        siex, handles_to_inherit
+                    )
+
+                    # From https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessasuserw
+                    # If the lpEnvironment parameter is NULL, the new process inherits the environment of the calling process.
+                    # CreateProcessAsUser does not automatically modify the environment block to include environment variables specific to
+                    # the user represented by hToken. For example, the USERNAME and USERDOMAIN variables are inherited from the calling
+                    # process if lpEnvironment is NULL. It is your responsibility to prepare the environment block for the new process and
+                    # specify it in lpEnvironment.
+
+                    env_ptr = environment_block_for_user(self.user.logon_token)
+                    if env:
+                        env_block = _merge_environment(env_ptr, env)
+                    else:
+                        env_block = env_ptr
+
+                    if not CreateProcessAsUserW(
+                        self.user.logon_token,
+                        executable,
+                        cmdline,
+                        None,
+                        None,
+                        True,
+                        creationflags | CREATE_UNICODE_ENVIRONMENT,
+                        env_block,
+                        cwd,
+                        ctypes.byref(siex),
+                        ctypes.byref(pi),
+                    ):
+                        # Raises: OSError
+                        raise ctypes.WinError()
+                finally:
+                    siex.deallocate_attribute_list()
             else:
                 raise NotImplementedError("Unexpected case for WindowsSessionUser properties")
         finally:
