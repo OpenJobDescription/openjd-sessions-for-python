@@ -48,13 +48,17 @@ from .conftest import (
 class TerminatingRunner(ScriptRunnerBase):
     _cancel_called = False
 
-    def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:
+    def cancel(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
+    ) -> None:
         self._cancel_called = True
         self._cancel(TerminateCancelMethod())
 
 
 class NotifyingRunner(ScriptRunnerBase):
-    def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:
+    def cancel(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
+    ) -> None:
         self._cancel_called_at = datetime.utcnow()
         if time_limit is None:
             self._cancel(NotifyCancelMethod(timedelta(seconds=2)))
