@@ -144,6 +144,10 @@ class ScriptRunnerBase(ABC):
     """True iff the subprocess was canceled.
     """
 
+    _notify_canceled_action_as_failed: bool
+    """True iff the subprocess was canceled but action needs to be notified as FAILED.
+    """
+
     _runtime_limit: Optional[Timer]
     """The Timer that will fire when the currently running Action has exhausted
     its runtime limit.
@@ -208,6 +212,7 @@ class ScriptRunnerBase(ABC):
         self._cancel_gracetime_timer = None
         self._cancel_gracetime_end = None
         self._canceled = False
+        self._notify_canceled_action_as_failed = False
         self._runtime_limit = None
         self._runtime_limit_reached = False
         self._lock = Lock()
@@ -234,7 +239,9 @@ class ScriptRunnerBase(ABC):
         self._pool.shutdown()
 
     @abstractmethod
-    def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:  # pragma: nocover
+    def cancel(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
+    ) -> None:  # pragma: nocover
         """Cancel the runner's running Action according to whatever method is dictated
         by the specific script being run.
 
@@ -257,6 +264,8 @@ class ScriptRunnerBase(ABC):
         # If the future is done, then we have a terminal state.
         assert self._run_future is not None  # For the type checker
         if self._run_future.done():
+            if self._canceled and self._notify_canceled_action_as_failed:
+                return ScriptRunnerState.FAILED
             if self._canceled and self._runtime_limit_reached:
                 return ScriptRunnerState.TIMEOUT
             elif self._canceled:
@@ -417,7 +426,12 @@ class ScriptRunnerBase(ABC):
                 time_limit = timedelta(seconds=action.timeout)
             self._run(command, time_limit)
 
-    def _cancel(self, method: CancelMethod, time_limit: Optional[timedelta] = None) -> None:
+    def _cancel(
+        self,
+        method: CancelMethod,
+        time_limit: Optional[timedelta] = None,
+        mark_action_failed: bool = False,
+    ) -> None:
         # For the type checkers
         assert self._process is not None
         # Nothing to do if it's not running.
@@ -426,6 +440,7 @@ class ScriptRunnerBase(ABC):
 
         with self._lock:
             self._canceled = True
+            self._notify_canceled_action_as_failed = mark_action_failed
             now = datetime.utcnow()
             now_str = now.strftime(TIME_FORMAT_STR)
             if self._cancel_gracetime_timer is not None:

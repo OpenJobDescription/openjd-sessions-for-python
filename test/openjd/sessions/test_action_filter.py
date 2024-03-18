@@ -156,7 +156,7 @@ class TestActionMonitoringFilter:
         loga.info(message)
 
         # THEN
-        callback_mock.assert_called_once_with(kind, value)
+        callback_mock.assert_called_once_with(kind, value, False)
         assert message_queue.qsize() == 0, "Message is suppressed"
 
     def test_ignores_different_session(
@@ -238,7 +238,7 @@ class TestActionMonitoringFilter:
         loga.info(message)
 
         # THEN
-        callback_mock.assert_called_once_with(kind, value)
+        callback_mock.assert_called_once_with(kind, value, False)
         assert message_queue.qsize() == 1, "Message passed through"
         assert message_queue.get(block=False).getMessage() == message
 
@@ -268,22 +268,29 @@ class TestActionMonitoringFilter:
                 "OPENJD_FAIL: an error message",
                 id="fail, uppercase",
             ),
-            pytest.param(
-                " openjd_fail: an error message",
-                id="fail, leading whitespace",
-            ),
-            pytest.param(
-                "openjd_env:foo=bar",
-                id="env, no space",
-            ),
-            pytest.param(
-                "OPENJD_ENV: foo=bar",
-                id="env, uppercase",
-            ),
-            pytest.param(
-                " openjd_env: foo=bar",
-                id="env, leading whitespace",
-            ),
+        ),
+    )
+    def test_malformed_does_not_match_no_callback(
+        self, queue_handler: QueueHandler, message: str
+    ) -> None:
+        # GIVEN
+        h = sha256()
+        h.update(message.encode("utf-8"))
+        logger_name = "malformed" + h.hexdigest()[0:32]
+        callback_mock = MagicMock()
+        filter = ActionMonitoringFilter(session_id="foo", callback=callback_mock)
+        log = self.build_logger(logger_name, queue_handler, filter)
+        loga = LoggerAdapter(log, extra={"session_id": "foo"})
+
+        # WHEN
+        loga.info(message)
+
+        # THEN
+        callback_mock.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "message",
+        (
             pytest.param(
                 "openjd_env: foo",
                 id="env, missing assignment",
@@ -300,6 +307,40 @@ class TestActionMonitoringFilter:
                 "openjd_env: F😁=bar",
                 id="env, non-latin",
             ),
+        ),
+    )
+    def test_malformed_set_env_assigment(self, queue_handler: QueueHandler, message: str) -> None:
+        # GIVEN
+        h = sha256()
+        h.update(message.encode("utf-8"))
+        logger_name = "malformed" + h.hexdigest()[0:32]
+        callback_mock = MagicMock()
+        filter = ActionMonitoringFilter(session_id="foo", callback=callback_mock)
+        log = self.build_logger(logger_name, queue_handler, filter)
+        loga = LoggerAdapter(log, extra={"session_id": "foo"})
+
+        # WHEN
+        loga.info(message)
+
+        # THEN
+        err_message = "Failed to parse environment variable assignment."
+        callback_mock.assert_called_once_with(ActionMessageKind.ENV, err_message, True)
+
+    @pytest.mark.parametrize(
+        "message",
+        (
+            pytest.param(
+                "openjd_env:foo=bar",
+                id="env, no space",
+            ),
+            pytest.param(
+                "OPENJD_ENV: foo=bar",
+                id="env, uppercase",
+            ),
+            pytest.param(
+                " openjd_env: foo=bar",
+                id="env, leading whitespace",
+            ),
             pytest.param(
                 "openjd_unset_env:foo",
                 id="unset_env, no space",
@@ -312,6 +353,28 @@ class TestActionMonitoringFilter:
                 " openjd_unset_env: foo",
                 id="unset_env, leading whitespace",
             ),
+        ),
+    )
+    def test_malformed_openjd_regex(self, queue_handler: QueueHandler, message: str) -> None:
+        # GIVEN
+        h = sha256()
+        h.update(message.encode("utf-8"))
+        logger_name = "malformed" + h.hexdigest()[0:32]
+        callback_mock = MagicMock()
+        filter = ActionMonitoringFilter(session_id="foo", callback=callback_mock)
+        log = self.build_logger(logger_name, queue_handler, filter)
+        loga = LoggerAdapter(log, extra={"session_id": "foo"})
+
+        # WHEN
+        loga.info(message)
+
+        # THEN
+        err_message = f"Open Job Description: Incorrectly formatted openjd env command ({message})"
+        callback_mock.assert_called_once_with(ActionMessageKind.FAIL, err_message, True)
+
+    @pytest.mark.parametrize(
+        "message",
+        (
             pytest.param(
                 "openjd_unset_env: foo=bar",
                 id="unset_env, bad value",
@@ -326,7 +389,9 @@ class TestActionMonitoringFilter:
             ),
         ),
     )
-    def test_malformed_does_not_match(self, queue_handler: QueueHandler, message: str) -> None:
+    def test_malformed_does_not_match_unset_env(
+        self, queue_handler: QueueHandler, message: str
+    ) -> None:
         # GIVEN
         h = sha256()
         h.update(message.encode("utf-8"))
@@ -340,7 +405,8 @@ class TestActionMonitoringFilter:
         loga.info(message)
 
         # THEN
-        callback_mock.assert_not_called()
+        err_message = "Failed to parse environment variable name."
+        callback_mock.assert_called_once_with(ActionMessageKind.UNSET_ENV, err_message, True)
 
     @pytest.mark.parametrize(
         "message",

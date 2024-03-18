@@ -509,7 +509,9 @@ class Session(object):
     # =========================
     #  Running Actions
 
-    def cancel_action(self, *, time_limit: Optional[timedelta] = None) -> None:
+    def cancel_action(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed=False
+    ) -> None:
         """Initiate a cancelation of the currently running Script if there is one.
 
         Arguments:
@@ -527,7 +529,7 @@ class Session(object):
         # For the type checker
         assert self._runner is not None
 
-        self._runner.cancel(time_limit=time_limit)
+        self._runner.cancel(time_limit=time_limit, mark_action_failed=mark_action_failed)
 
     def enter_environment(
         self,
@@ -910,7 +912,9 @@ class Session(object):
 
         return result
 
-    def _action_log_filter_callback(self, kind: ActionMessageKind, value: Any) -> None:
+    def _action_log_filter_callback(
+        self, kind: ActionMessageKind, value: Any, cancel_action_mark_failed: bool = False
+    ) -> None:
         """This callback is invoked by the ActionMonitoringFilter that we've attached to the LOG.
         This will be called whenever an "openjd" message is detected in the log stream.
         This will be invoked by the main thread in LoggingSubprocess that is forwarding
@@ -929,9 +933,23 @@ class Session(object):
             # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
             assert isinstance(value, str)
             self._action_fail_message = value
+
+            if cancel_action_mark_failed:
+                # Cancel the action and pass the failure message
+                self.cancel_action(mark_action_failed=True)
+
         elif kind == ActionMessageKind.ENV:
             if self._running_environment_identifier is None:
                 # Ignore the message if we're not running an environment
+                return
+            if cancel_action_mark_failed:
+                # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+                assert isinstance(value, str)
+
+                # Cancel the action and pass the failure message
+                self.cancel_action(mark_action_failed=True)
+                self._action_fail_message = value
+
                 return
             # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
             assert isinstance(value, dict)
@@ -945,6 +963,17 @@ class Session(object):
             if self._running_environment_identifier is None:
                 # Ignore the message if we're not running an environment
                 return
+
+            if cancel_action_mark_failed:
+                # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+                assert isinstance(value, str)
+
+                # Cancel the action and pass the failure message
+                self.cancel_action(mark_action_failed=True)
+                self._action_fail_message = value
+
+                return
+
             # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
             assert isinstance(value, str)
             env_vars = self._created_env_vars[self._running_environment_identifier]

@@ -32,6 +32,9 @@ filter_regex = (
 )
 filter_matcher = re.compile(filter_regex)
 
+openjd_env_actions_filter_regex = "^(openjd_env|openjd_unset_env)"
+openjd_env_actions_filter_matcher = re.compile(openjd_env_actions_filter_regex)
+
 # A regex for matching the assignment of a value to an environment variable
 envvar_set_regex = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*$"  # Variable name
 envvar_set_matcher = re.compile(envvar_set_regex)
@@ -66,11 +69,12 @@ class ActionMonitoringFilter(logging.Filter):
     We only process records with the "session_id" attribute set to this value.
     """
 
-    _callback: Callable[[ActionMessageKind, Any], None]
+    _callback: Callable[[ActionMessageKind, Any, bool], None]
     """Callback to invoke when one of the Open Job Description update messages is detected.
     Args:
         [0]: The kind of the update message.
         [1]: The information/message given after the Open Job Description message prefix ("openjd_<name>: ")
+        [2]: A boolean to express whether or not the corresponding Action is to be Canceled & marked Failed
     """
 
     _suppress_filtered: bool
@@ -90,7 +94,7 @@ class ActionMonitoringFilter(logging.Filter):
         name: str = "",
         *,
         session_id: str,
-        callback: Callable[[ActionMessageKind, Any], None],
+        callback: Callable[[ActionMessageKind, Any, bool], None],
         suppress_filtered: bool = False,
     ):
         """
@@ -164,6 +168,20 @@ class ActionMonitoringFilter(logging.Filter):
                 # There was an error. Don't suppress the message from the log.
                 return True
             return not self._suppress_filtered
+
+        # Check for "almost" matching openjd_env and openjd_unset_env commands
+        lower_case_trimmed_msg: str = record.msg.lstrip().lower()
+        if openjd_env_actions_filter_matcher.match(lower_case_trimmed_msg):
+            # There was a minor error like spaces or case in the env commands
+            err_message = (
+                f"Open Job Description: Incorrectly formatted openjd env command ({record.msg})"
+            )
+            record.msg = record.msg + f" -- ERROR: {err_message}"
+
+            # Callback to cancel the action and mark it as FAILED
+            self._callback(ActionMessageKind.FAIL, err_message, True)
+            return True
+
         return True
 
     def _handle_progress(self, message: str) -> None:
@@ -178,7 +196,7 @@ class ActionMonitoringFilter(logging.Filter):
             progress = float(message)
             if not (self._MIN_PROGRESS <= progress <= self._MAX_PROGRESS):
                 raise ValueError()
-            self._callback(ActionMessageKind.PROGRESS, progress)
+            self._callback(ActionMessageKind.PROGRESS, progress, False)
         except ValueError:
             raise ValueError(
                 f"Progress must be a floating point value between {self._MIN_PROGRESS} and {self._MAX_PROGRESS}, inclusive."
@@ -191,7 +209,7 @@ class ActionMonitoringFilter(logging.Filter):
         Args:
             message (str): The message after the leading 'openjd_status: ' prefix
         """
-        self._callback(ActionMessageKind.STATUS, message)
+        self._callback(ActionMessageKind.STATUS, message, False)
 
     def _handle_fail(self, message: str) -> None:
         """Local handling of Fail messages. Just passes the message directly to
@@ -200,7 +218,7 @@ class ActionMonitoringFilter(logging.Filter):
         Args:
             message (str): The message after the leading 'openjd_fail: ' prefix
         """
-        self._callback(ActionMessageKind.FAIL, message)
+        self._callback(ActionMessageKind.FAIL, message, False)
 
     def _handle_env(self, message: str) -> None:
         """Local handling of the Env messages.
@@ -216,9 +234,12 @@ class ActionMonitoringFilter(logging.Filter):
         #             and starts with a non-digit
         #   <value> can be any characters including empty.
         if not envvar_set_matcher.match(message):
-            raise ValueError("Failed to parse environment variable assignment.")
+            err_message = "Failed to parse environment variable assignment."
+            # Callback to fail and cancel action on this error
+            self._callback(ActionMessageKind.ENV, err_message, True)
+            raise ValueError(err_message)
         name, _, value = message.partition("=")
-        self._callback(ActionMessageKind.ENV, {"name": name, "value": value})
+        self._callback(ActionMessageKind.ENV, {"name": name, "value": value}, False)
 
     def _handle_unset_env(self, message: str) -> None:
         """Local handling of the unset env messages.
@@ -233,8 +254,11 @@ class ActionMonitoringFilter(logging.Filter):
         #   <varname> consists of latin alphanumeric characters and the underscore,
         #             and starts with a non-digit
         if not envvar_unset_matcher.match(message):
-            raise ValueError("Failed to parse environment variable name.")
-        self._callback(ActionMessageKind.UNSET_ENV, message)
+            err_message = "Failed to parse environment variable name."
+            # Callback to fail and cancel action on this error
+            self._callback(ActionMessageKind.UNSET_ENV, err_message, True)
+            raise ValueError(err_message)
+        self._callback(ActionMessageKind.UNSET_ENV, message, False)
 
     def _handle_session_runtime_loglevel(self, message: str) -> None:
         """Local handling of the session runtime loglevel messages.
@@ -251,7 +275,7 @@ class ActionMonitoringFilter(logging.Filter):
         }
         loglevel = levels.get(message, None)
         if loglevel is not None:
-            self._callback(ActionMessageKind.SESSION_RUNTIME_LOGLEVEL, loglevel)
+            self._callback(ActionMessageKind.SESSION_RUNTIME_LOGLEVEL, loglevel, False)
         else:
             raise ValueError(
                 f"Unknown log level: {message}. Known values: {','.join(levels.keys())}"
