@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from enum import Enum
@@ -36,8 +37,10 @@ openjd_env_actions_filter_regex = "^(openjd_env|openjd_unset_env)"
 openjd_env_actions_filter_matcher = re.compile(openjd_env_actions_filter_regex)
 
 # A regex for matching the assignment of a value to an environment variable
-envvar_set_regex = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*$"  # Variable name
-envvar_set_matcher = re.compile(envvar_set_regex)
+envvar_set_regex_str = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*$"  # Variable name
+envvar_set_regex_json = '^(")?[A-Za-z_][A-Za-z0-9_]*' "=" ".*$"  # Variable name
+envvar_set_matcher_str = re.compile(envvar_set_regex_str)
+envvar_set_matcher_json = re.compile(envvar_set_regex_json)
 envvar_unset_regex = "^[A-Za-z_][A-Za-z0-9_]*$"
 envvar_unset_matcher = re.compile(envvar_unset_regex)
 
@@ -233,12 +236,17 @@ class ActionMonitoringFilter(logging.Filter):
         #   <varname> consists of latin alphanumeric characters and the underscore,
         #             and starts with a non-digit
         #   <value> can be any characters including empty.
-        if not envvar_set_matcher.match(message):
+        if not envvar_set_matcher_str.match(message) and not envvar_set_matcher_json.match(message):
             err_message = "Failed to parse environment variable assignment."
             # Callback to fail and cancel action on this error
             self._callback(ActionMessageKind.ENV, err_message, True)
             raise ValueError(err_message)
-        name, _, value = message.partition("=")
+        elif envvar_set_matcher_str.match(message):
+            name, _, value = message.partition("=")
+        else:
+            message_json_str = json.loads(message)
+            name, _, value = message_json_str.partition("=")
+
         self._callback(ActionMessageKind.ENV, {"name": name, "value": value}, False)
 
     def _handle_unset_env(self, message: str) -> None:
