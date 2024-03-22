@@ -2359,6 +2359,89 @@ class TestEnvironmentVariablesInTasks_2023_09:
             assert "BAR=BAR-value" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_multi_line_nonvalid_json_stdout(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables via a stdout handler
+        # as a multiline json it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable,
+                        args=["-c", "import json; print('openjd_env: \"FOO=12\\\\n34')"],
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            assert (
+                'openjd_env: "FOO=12\\n34 -- ERROR: Unterminated string starting at: line 1 column 1 (char 0)'
+                in caplog.messages
+            )
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_multi_line_stdout(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Test that when an environment defines variables via a stdout handler
+        # as a multiline json it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable,
+                        args=["-c", "print('openjd_env: \"FOO=12\\\\n34\"')"],
+                    )
+                ),
+            ),
+        )
+
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=sys.executable,
+                    args=[
+                        "-c",
+                        "import os; print('FOO:'); print(f'{os.environ[\"FOO\"]}'); print('---')",
+                    ],
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert "FOO:" in caplog.messages
+            assert "12" in caplog.messages
+            assert "34" in caplog.messages
+            assert "---" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_overrides_direct(
         self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
     ) -> None:
@@ -2395,6 +2478,76 @@ class TestEnvironmentVariablesInTasks_2023_09:
             # THEN
             assert "FOO=FOO-value" in caplog.messages
             assert "BAR=BAR-value" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_stdout_set_empty_json(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables directly and as empty json it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable, args=["-c", "print('openjd_env: \"FOO=\"')"]
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert "FOO=" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_stdout_set_empty(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables directly and as empty string it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable, args=["-c", "print('openjd_env: FOO=')"]
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert "FOO=" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_fails_session_action_on_error(
