@@ -8,6 +8,7 @@ from pathlib import Path
 from queue import SimpleQueue
 from typing import Optional, Union
 from unittest.mock import MagicMock, patch
+import os
 
 import pytest
 
@@ -29,6 +30,7 @@ from openjd.model.v2023_09 import (
 from openjd.model.v2023_09 import StepActions as StepActions_2023_09
 from openjd.model.v2023_09 import StepScript as StepScript_2023_09
 
+from openjd.sessions import WindowsSessionUser
 from openjd.sessions._runner_base import ScriptRunnerState
 from openjd.sessions._runner_step_script import (
     CancelMethod,
@@ -36,8 +38,15 @@ from openjd.sessions._runner_step_script import (
     StepScriptRunner,
     TerminateCancelMethod,
 )
+from openjd.sessions._tempdir import TempDir
+from openjd.sessions._os_checker import is_posix, is_windows
 
-from .conftest import build_logger, collect_queue_messages
+from .conftest import (
+    build_logger,
+    collect_queue_messages,
+    has_windows_user,
+    WIN_SET_TEST_ENV_VARS_MESSAGE,
+)
 
 
 # tmp_path - builtin temporary directory
@@ -85,7 +94,7 @@ class TestStepScriptRunner:
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
     ) -> None:
-        # Test that run of an action with no embedded files works as expected.
+        # Test that that en embedded file is properly materialized and can be used in the action
 
         # GIVEN
         script = StepScript_2023_09(
@@ -118,6 +127,71 @@ class TestStepScriptRunner:
         messages = collect_queue_messages(message_queue)
         assert "Hello" in messages
         assert len(symtab.symbols) == 1
+
+    @pytest.mark.parametrize(
+        "os_env_vars",
+        (
+            pytest.param(None, id="No defined env vars"),
+            pytest.param({"PATH": os.environ.get("PATH", "")}),
+        ),
+    )
+    def test_run_file_in_session_dir(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        os_env_vars: Optional[dict[str, Optional[str]]],
+    ) -> None:
+        # Test that if we materialize a script into the session directory, then we can run it by
+        # referencing it relative to the Session Working Directory.
+        # This primarily is intended to test the locate_windows_executable path of ScriptRunnerBase.
+
+        # GIVEN
+        if is_posix():
+            script = StepScript_2023_09(
+                actions=StepActions_2023_09(onRun=Action_2023_09(command="./test.sh")),
+                embeddedFiles=[
+                    EmbeddedFileText_2023_09(
+                        name="Foo",
+                        type=EmbeddedFileTypes_2023_09.TEXT,
+                        filename="test.sh",
+                        runnable=True,
+                        data="#!/bin/sh\necho 'Hello!'",
+                    )
+                ],
+            )
+        else:
+            script = StepScript_2023_09(
+                actions=StepActions_2023_09(onRun=Action_2023_09(command="test.bat")),
+                embeddedFiles=[
+                    EmbeddedFileText_2023_09(
+                        name="Foo",
+                        type=EmbeddedFileTypes_2023_09.TEXT,
+                        filename="test.bat",
+                        data="echo Hello!",
+                    )
+                ],
+            )
+        symtab = SymbolTable()
+        logger = build_logger(queue_handler)
+        runner = StepScriptRunner(
+            logger=logger,
+            session_working_directory=tmp_path,
+            script=script,
+            symtab=symtab,
+            session_files_directory=tmp_path,
+            os_env_vars=os_env_vars,
+        )
+
+        # WHEN
+        runner.run()
+        while runner.state == ScriptRunnerState.RUNNING:
+            time.sleep(0.2)
+
+        # THEN
+        assert runner.state == ScriptRunnerState.SUCCESS
+        messages = collect_queue_messages(message_queue)
+        assert "Hello!" in messages
 
     @pytest.mark.parametrize(
         "cancel_method,expected",
@@ -192,3 +266,64 @@ class TestStepScriptRunner:
                 assert arg0 == expected
                 arg1 = mock_cancel.call_args.args[1]
                 assert arg1 is time_limit
+
+    @pytest.mark.timeout(60)  # GitHub CI file operations may be causing a timeout
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only test")
+    @pytest.mark.xfail(
+        not has_windows_user(),
+        reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
+    )
+    @pytest.mark.parametrize(
+        "os_env_vars",
+        (
+            pytest.param(None, id="No defined env vars"),
+            pytest.param({"PATH": os.environ.get("PATH", "")}),
+        ),
+    )
+    def test_run_file_in_session_dir_as_windows_user(
+        self,
+        windows_user: WindowsSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        os_env_vars: Optional[dict[str, Optional[str]]],
+    ) -> None:
+        # Test that if we materialize a script into the session directory, then we can run it by
+        # referencing it relative to the Session Working Directory.
+        # This primarily is intended to test the locate_windows_executable path of ScriptRunnerBase.
+
+        # GIVEN
+        tmpdir = TempDir(user=windows_user)
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(onRun=Action_2023_09(command=r"test.bat")),
+            embeddedFiles=[
+                EmbeddedFileText_2023_09(
+                    name="Foo",
+                    type=EmbeddedFileTypes_2023_09.TEXT,
+                    filename="test.bat",
+                    data="echo Hello!",
+                )
+            ],
+        )
+        symtab = SymbolTable()
+        logger = build_logger(queue_handler)
+        runner = StepScriptRunner(
+            logger=logger,
+            session_working_directory=tmpdir.path,
+            script=script,
+            symtab=symtab,
+            session_files_directory=tmpdir.path,
+            os_env_vars=os_env_vars,
+            user=windows_user,
+        )
+
+        # WHEN
+        runner.run()
+        while runner.state == ScriptRunnerState.RUNNING:
+            time.sleep(0.2)
+
+        tmpdir.cleanup()
+
+        # THEN
+        assert runner.state == ScriptRunnerState.SUCCESS
+        messages = collect_queue_messages(message_queue)
+        assert "Hello!" in messages

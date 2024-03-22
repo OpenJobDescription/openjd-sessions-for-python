@@ -25,6 +25,7 @@ from ._os_checker import is_posix
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
 from ._types import ActionModel, ActionState, EmbeddedFilesListType
+from ._win32._locate_executable import locate_windows_executable
 
 __all__ = (
     "ScriptRunnerState",
@@ -144,6 +145,11 @@ class ScriptRunnerBase(ABC):
     """True iff the subprocess was canceled.
     """
 
+    _executable_not_found: bool
+    """True only on Windows, and only if the executable command that we were given
+    could not be found before even trying to run the subprocess.
+    """
+
     _notify_canceled_action_as_failed: bool
     """True iff the subprocess was canceled but action needs to be notified as FAILED.
     """
@@ -215,6 +221,7 @@ class ScriptRunnerBase(ABC):
         self._notify_canceled_action_as_failed = False
         self._runtime_limit = None
         self._runtime_limit_reached = False
+        self._executable_not_found = False
         self._lock = Lock()
         # Will run at most the run futures
         self._pool = ThreadPoolExecutor(max_workers=1)
@@ -311,6 +318,21 @@ class ScriptRunnerBase(ABC):
                     additional_permissions=stat.S_IXUSR | stat.S_IXGRP,
                 )
                 self._logger.debug(f"Wrote the following script to {filename}:\n{script}")
+            else:
+                try:
+                    args = locate_windows_executable(
+                        args, self._user, self._os_env_vars, str(self._session_working_directory)
+                    )
+                except RuntimeError as e:
+                    # Make use of the action filter to surface the failure reason to
+                    # the customer.
+                    self._logger.info(f"openjd_fail: {str(e)}")
+                    self._state_override = ScriptRunnerState.FAILED
+                    # We haven't started the future yet that runs the process,
+                    # but the Session still needs to know that the action is over.
+                    if self._callback is not None:
+                        self._callback(ActionState.FAILED)
+                    return
 
             subprocess_args = [filename] if is_posix() else args
             self._process = LoggingSubprocess(

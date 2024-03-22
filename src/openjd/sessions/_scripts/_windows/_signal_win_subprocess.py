@@ -50,8 +50,9 @@ def signal_process(pgid: int):
     # We send CTRL-BREAK as handler for it cannnot be disabled.
     # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
 
-    if not kernel32.GenerateConsoleCtrlEvent(CTRL_C_EVENT, pgid):
-        raise ctypes.WinError()
+    # We only send CTRL-BREAK
+    # if not kernel32.GenerateConsoleCtrlEvent(CTRL_C_EVENT, pgid):
+    #     raise ctypes.WinError()
     if not kernel32.GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pgid):
         raise ctypes.WinError()
 

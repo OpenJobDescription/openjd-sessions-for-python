@@ -407,6 +407,40 @@ class TestScriptRunnerBase:
         not has_windows_user(),
         reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
     )
+    @pytest.mark.timeout(90)
+    def test_failed_run_as_windows_user(
+        self,
+        windows_user: WindowsSessionUser,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Test we fail properly when given a command that does not exist
+
+        # GIVEN
+        tmpdir = TempDir(user=windows_user)
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(
+            logger=logger, session_working_directory=tmpdir.path, user=windows_user
+        ) as runner:
+            # WHEN
+            runner._run(["test_not_a_command"])
+            # Wait until the process exits.
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.1)
+
+        # THEN
+        assert runner.state == ScriptRunnerState.FAILED
+        assert runner.exit_code is None
+        messages = collect_queue_messages(message_queue)
+        assert messages == ["openjd_fail: Could not find executable file: test_not_a_command"]
+
+        tmpdir.cleanup()
+
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only test")
+    @pytest.mark.xfail(
+        not has_windows_user(),
+        reason=WIN_SET_TEST_ENV_VARS_MESSAGE,
+    )
     @pytest.mark.timeout(30)
     @pytest.mark.usefixtures("message_queue", "queue_handler", "windows_user")
     def test_run_as_windows_user_with_env_vars(
