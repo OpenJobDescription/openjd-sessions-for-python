@@ -166,7 +166,9 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
 
         self._run_env_action(self._environment_script.actions.onExit)
 
-    def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:
+    def cancel(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
+    ) -> None:
         if self._action is None:
             # Nothing to do.
             return
@@ -194,4 +196,4 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 )
 
         # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit)
+        self._cancel(method, time_limit, mark_action_failed)

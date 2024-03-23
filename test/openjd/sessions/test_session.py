@@ -10,7 +10,7 @@ import uuid
 from datetime import timedelta
 from pathlib import PurePosixPath, PureWindowsPath, Path
 from typing import Any, Optional
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import ANY, MagicMock, PropertyMock, patch, call
 from subprocess import DEVNULL, run
 
 import pytest
@@ -937,7 +937,7 @@ class TestSessionCancel:
 
         # THEN
         duration_seconds = end_time - start_time
-        runner_cancel_spy.assert_called_once_with(time_limit=time_limit)
+        runner_cancel_spy.assert_called_once_with(time_limit=time_limit, mark_action_failed=False)
         assert session.state == SessionState.ENDED
         if time_limit is not None:
             # Add some padding for the sleeps
@@ -2359,6 +2359,89 @@ class TestEnvironmentVariablesInTasks_2023_09:
             assert "BAR=BAR-value" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_multi_line_nonvalid_json_stdout(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables via a stdout handler
+        # as a multiline json it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable,
+                        args=["-c", "import json; print('openjd_env: \"FOO=12\\\\n34')"],
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            assert (
+                'openjd_env: "FOO=12\\n34 -- ERROR: Unterminated string starting at: line 1 column 1 (char 0)'
+                in caplog.messages
+            )
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_multi_line_stdout(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Test that when an environment defines variables via a stdout handler
+        # as a multiline json it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable,
+                        args=["-c", "print('openjd_env: \"FOO=12\\\\n34\"')"],
+                    )
+                ),
+            ),
+        )
+
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=sys.executable,
+                    args=[
+                        "-c",
+                        "import os; print('FOO:'); print(f'{os.environ[\"FOO\"]}'); print('---')",
+                    ],
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert "FOO:" in caplog.messages
+            assert "12" in caplog.messages
+            assert "34" in caplog.messages
+            assert "---" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_overrides_direct(
         self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
     ) -> None:
@@ -2395,6 +2478,138 @@ class TestEnvironmentVariablesInTasks_2023_09:
             # THEN
             assert "FOO=FOO-value" in caplog.messages
             assert "BAR=BAR-value" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_stdout_set_empty_json(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables directly and as empty json it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable, args=["-c", "print('openjd_env: \"FOO=\"')"]
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert "FOO=" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_stdout_set_empty(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables directly and as empty string it is processed properly
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable, args=["-c", "print('openjd_env: FOO=')"]
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=step_script_definition,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert "FOO=" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_stdout_fails_session_action_on_error(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables that are malformed then session fails
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=sys.executable, args=["-c", "print('openjd_env: FOO')"]
+                    )
+                )
+            ),
+        )
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        callback = MagicMock()
+        with Session(
+            session_id=session_id, job_parameter_values=job_params, callback=callback
+        ) as session:
+            # WHEN
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert session.state == SessionState.READY_ENDING
+            assert (
+                "openjd_env: FOO -- ERROR: Failed to parse environment variable assignment."
+                in caplog.messages
+            )
+
+        callback.assert_has_calls(
+            [
+                call.__bool__(),
+                call(
+                    session_id,
+                    ActionStatus(
+                        state=ActionState.RUNNING,
+                        progress=None,
+                        status_message=None,
+                        fail_message=None,
+                        exit_code=None,
+                    ),
+                ),
+                call.__bool__(),
+                call(
+                    session_id,
+                    ActionStatus(
+                        state=ActionState.FAILED,
+                        progress=None,
+                        status_message=None,
+                        fail_message="Failed to parse environment variable assignment.",
+                        exit_code=ANY,
+                    ),
+                ),
+            ]
+        )
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_undef_via_stdout(

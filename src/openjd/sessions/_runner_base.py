@@ -25,6 +25,7 @@ from ._os_checker import is_posix
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
 from ._types import ActionModel, ActionState, EmbeddedFilesListType
+from ._win32._locate_executable import locate_windows_executable
 
 __all__ = (
     "ScriptRunnerState",
@@ -144,6 +145,15 @@ class ScriptRunnerBase(ABC):
     """True iff the subprocess was canceled.
     """
 
+    _executable_not_found: bool
+    """True only on Windows, and only if the executable command that we were given
+    could not be found before even trying to run the subprocess.
+    """
+
+    _notify_canceled_action_as_failed: bool
+    """True iff the subprocess was canceled but action needs to be notified as FAILED.
+    """
+
     _runtime_limit: Optional[Timer]
     """The Timer that will fire when the currently running Action has exhausted
     its runtime limit.
@@ -208,8 +218,10 @@ class ScriptRunnerBase(ABC):
         self._cancel_gracetime_timer = None
         self._cancel_gracetime_end = None
         self._canceled = False
+        self._notify_canceled_action_as_failed = False
         self._runtime_limit = None
         self._runtime_limit_reached = False
+        self._executable_not_found = False
         self._lock = Lock()
         # Will run at most the run futures
         self._pool = ThreadPoolExecutor(max_workers=1)
@@ -234,7 +246,9 @@ class ScriptRunnerBase(ABC):
         self._pool.shutdown()
 
     @abstractmethod
-    def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:  # pragma: nocover
+    def cancel(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
+    ) -> None:  # pragma: nocover
         """Cancel the runner's running Action according to whatever method is dictated
         by the specific script being run.
 
@@ -257,6 +271,8 @@ class ScriptRunnerBase(ABC):
         # If the future is done, then we have a terminal state.
         assert self._run_future is not None  # For the type checker
         if self._run_future.done():
+            if self._canceled and self._notify_canceled_action_as_failed:
+                return ScriptRunnerState.FAILED
             if self._canceled and self._runtime_limit_reached:
                 return ScriptRunnerState.TIMEOUT
             elif self._canceled:
@@ -302,6 +318,21 @@ class ScriptRunnerBase(ABC):
                     additional_permissions=stat.S_IXUSR | stat.S_IXGRP,
                 )
                 self._logger.debug(f"Wrote the following script to {filename}:\n{script}")
+            else:
+                try:
+                    args = locate_windows_executable(
+                        args, self._user, self._os_env_vars, str(self._session_working_directory)
+                    )
+                except RuntimeError as e:
+                    # Make use of the action filter to surface the failure reason to
+                    # the customer.
+                    self._logger.info(f"openjd_fail: {str(e)}")
+                    self._state_override = ScriptRunnerState.FAILED
+                    # We haven't started the future yet that runs the process,
+                    # but the Session still needs to know that the action is over.
+                    if self._callback is not None:
+                        self._callback(ActionState.FAILED)
+                    return
 
             subprocess_args = [filename] if is_posix() else args
             self._process = LoggingSubprocess(
@@ -417,7 +448,12 @@ class ScriptRunnerBase(ABC):
                 time_limit = timedelta(seconds=action.timeout)
             self._run(command, time_limit)
 
-    def _cancel(self, method: CancelMethod, time_limit: Optional[timedelta] = None) -> None:
+    def _cancel(
+        self,
+        method: CancelMethod,
+        time_limit: Optional[timedelta] = None,
+        mark_action_failed: bool = False,
+    ) -> None:
         # For the type checkers
         assert self._process is not None
         # Nothing to do if it's not running.
@@ -426,6 +462,7 @@ class ScriptRunnerBase(ABC):
 
         with self._lock:
             self._canceled = True
+            self._notify_canceled_action_as_failed = mark_action_failed
             now = datetime.utcnow()
             now_str = now.strftime(TIME_FORMAT_STR)
             if self._cancel_gracetime_timer is not None:

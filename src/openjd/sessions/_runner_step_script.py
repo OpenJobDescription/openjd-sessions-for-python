@@ -121,7 +121,9 @@ class StepScriptRunner(ScriptRunnerBase):
         # Construct the command by evalutating the format strings in the command
         self._run_action(self._script.actions.onRun, symtab)
 
-    def cancel(self, *, time_limit: Optional[timedelta] = None) -> None:
+    def cancel(
+        self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
+    ) -> None:
         # For the type checker.
         assert isinstance(self._script, StepScript_2023_09)
 
@@ -145,4 +147,4 @@ class StepScriptRunner(ScriptRunnerBase):
                 )
 
         # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit)
+        self._cancel(method, time_limit, mark_action_failed)
