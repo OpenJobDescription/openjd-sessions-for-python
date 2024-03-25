@@ -1,3 +1,14 @@
+## 0.7.1 (2024-03-25)
+
+
+### Features
+* Support for multi line env variables in enter env (#115) ([`96e02ae`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/96e02ae2c7502e7019a1bc0600444020564c0fdc))
+* resolve windows command location prior to run (#116) ([`69f72e3`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/69f72e35b7c169d2f98295fde80cc1f1cce7008d))
+
+### Bug Fixes
+* Failing to parse openjd_env and openjd_unset_env should fail session action (#111) ([`8576a73`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/8576a732011e32deb8151a88e309be3fa970a241))
+* restrict handles inherited by win32 subprocess (#112) ([`aba3071`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/aba3071439b42cb09194718b84ceee7780206c36))
+
 ## 0.7.1 (2024-03-19)
 
 
