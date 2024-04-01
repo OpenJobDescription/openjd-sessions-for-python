@@ -1,6 +1,8 @@
 # Open Job Description - Sessions for Python
 
 [![pypi](https://img.shields.io/pypi/v/openjd-sessions.svg)](https://pypi.python.org/pypi/openjd-sessions)
+[![python](https://img.shields.io/pypi/pyversions/openjd-sessions.svg?style=flat)](https://pypi.python.org/pypi/openjd-sessions)
+[![license](https://img.shields.io/pypi/l/openjd-sessions.svg?style=flat)](https://github.com/OpenJobDescription/openjd-sessions/blob/mainline/LICENSE)
 
 Open Job Description is a flexible open specification for defining render jobs which are portable
 between studios and render solutions. This package provides a library that can be used to build
@@ -21,12 +23,6 @@ This library requires:
     * `sudo`
 4. On Windows:
     * CPython implementation of Python
-    * PowerShell 5.x
-
-**EXPERIMENTAL** Note that compatibility with the Windows operating system is currently in active development
-and should be considered to be experimental. We recommend that this library not be used in Windows-based
-production environments at this time. We will remove this notice when Windows compatibility is considered
-sufficiently stable and secure for use in Windows-based production environments.
 
 ## Versioning
 
