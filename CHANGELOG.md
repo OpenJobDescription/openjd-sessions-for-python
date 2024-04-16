@@ -1,3 +1,9 @@
+## 0.7.2 (2024-04-16)
+
+### Documenation
+* Windows is no longer marked as experimental in documentation.
+
+
 ## 0.7.1 (2024-03-25)
 
 
