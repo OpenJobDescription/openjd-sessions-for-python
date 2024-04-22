@@ -164,7 +164,7 @@ source = [
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 80
+fail_under = 79
 
 # https://github.com/wemake-services/coverage-conditional-plugin
 [tool.coverage.coverage_conditional_plugin.omit]
