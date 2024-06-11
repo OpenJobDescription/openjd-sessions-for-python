@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
-from typing import Optional, Tuple, Union
+from typing import Optional
 from abc import ABC, abstractmethod
 from ctypes.wintypes import HANDLE
 
@@ -14,8 +14,6 @@ if is_posix():
 if is_windows():
     import win32api
     import win32security
-    import win32net
-    import win32netcon
     import pywintypes
     import winerror
     from win32con import LOGON32_LOGON_INTERACTIVE, LOGON32_PROVIDER_DEFAULT
@@ -171,14 +169,7 @@ class WindowsSessionUser(SessionUser):
         if password and logon_token:
             raise ValueError('The "password" and "logon_token" arguments are mutually exclusive')
 
-        if "@" in user and self._is_domain_joined():
-            user = win32security.TranslateName(
-                user, win32api.NameUserPrincipal, win32api.NameSamCompatible
-            )
-
         self.user = user
-
-        domain, username_without_domain = self._split_domain_and_username(user)
 
         # Note: We allow user to be the process user to support the case of being able to supply
         # the group that the process will run under; differing from the user's default group.
@@ -201,7 +192,7 @@ class WindowsSessionUser(SessionUser):
                             "Passwords are not supported when running in Windows Session 0."
                         )
                     )
-                self._validate_username_password(user, domain, password)
+                self._validate_username_password(user, password)
                 self.password = password
                 self.logon_token = None
             else:
@@ -209,38 +200,11 @@ class WindowsSessionUser(SessionUser):
                 self.logon_token = logon_token
 
     @staticmethod
-    def _is_domain_joined() -> bool:
-        """
-        Returns True if the machine is joined to a domain, else False.
-        """
-        _, join_status = win32net.NetGetJoinInformation()
-        return join_status != win32netcon.NetSetupUnjoined
-
-    @staticmethod
     def _get_process_user():
         return get_process_user()
 
     @staticmethod
-    def _split_domain_and_username(user_name_with_domain: str) -> Tuple[Optional[str], str]:
-        """
-        Splits a username with domain into domain and username.
-
-        Args:
-            user_name_with_domain:  Username needed to be split.
-        Returns:
-            tuple[Optional[str], str]: domain and username. domain is None if the username is not a domain username.
-        """
-
-        domain = None
-        user_name = user_name_with_domain
-        if "\\" in user_name_with_domain and WindowsSessionUser._is_domain_joined():
-            domain, user_name = user_name_with_domain.split("\\")
-        return domain, user_name
-
-    @staticmethod
-    def _validate_username_password(
-        user_name: str, domain_name: Union[str, None], password: str
-    ) -> Optional[bool]:
+    def _validate_username_password(user_name: str, password: str) -> Optional[bool]:
         """
         Validates the username and password against Windows authentication.
 
@@ -255,10 +219,14 @@ class WindowsSessionUser(SessionUser):
         Raises:
             BadCredentialsException: If the username or password is incorrect.
         """
+        if "\\" in user_name:
+            domain, username = user_name.split("\\")
+        else:
+            domain, username = None, user_name
         try:
             handle = win32security.LogonUser(
-                user_name,
-                domain_name,
+                username,
+                domain,
                 password,
                 LOGON32_LOGON_INTERACTIVE,
                 LOGON32_PROVIDER_DEFAULT,
