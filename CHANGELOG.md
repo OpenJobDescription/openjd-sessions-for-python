@@ -1,3 +1,12 @@
+## 0.8.0 (2024-06-17)
+
+### BREAKING CHANGES
+* Windows locate_executable finds wrong binary to run (#141) ([`03defd9`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/03defd98e333eb08edf8dc64536165c9cdb10115))
+
+
+### Bug Fixes
+* eliminate TranslateName usage on Windows systems (#144) ([`f27b422`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/f27b422f91905f9a93dd83c974c45a56de703905))
+
 ## 0.7.2 (2024-04-16)
 
 ### Documenation
