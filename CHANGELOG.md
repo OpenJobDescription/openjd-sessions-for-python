@@ -2,6 +2,7 @@
 
 ### BREAKING CHANGES
 * Windows locate_executable finds wrong binary to run (#141) ([`03defd9`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/03defd98e333eb08edf8dc64536165c9cdb10115))
+  * Adds a new requirement that when impersonating a user for subprocesses, the Python installation hosting the library can be run by the impersonated user as well.
 
 
 ### Bug Fixes
