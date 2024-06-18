@@ -43,6 +43,15 @@ WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH = (
 LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
 
 
+def _exit_code_to_32bit_signed(exitcode: Optional[int]) -> Optional[int]:
+    # Workaround to ensure that the process exit code is returned in range of
+    # a 32-bit signed integer.
+    if exitcode is None:
+        return None
+    as_uint32_bytes = (exitcode & 0xFFFFFFFF).to_bytes(4, "big", signed=False)
+    return int.from_bytes(as_uint32_bytes, "big", signed=True)
+
+
 class LoggingSubprocess(object):
     """A process whose stdout/stderr lines are sent to a given Logger."""
 
@@ -101,15 +110,15 @@ class LoggingSubprocess(object):
     def exit_code(self) -> Optional[int]:
         """
         :return: None if the process has not yet exited. Otherwise, it returns the exit code of the
-            process
+            process. This will always be in range of a 32-bit signed integer.
         """
         # The process.wait() in the run() method ensures that the returncode
         # has been set once the subprocess has completed running. Don't poll here...
         # we only want to make the returncode available after the run method has
         # completed its work.
         if self._process is not None:
-            return self._process.returncode
-        return self._returncode
+            return _exit_code_to_32bit_signed(self._process.returncode)
+        return _exit_code_to_32bit_signed(self._returncode)
 
     @property
     def is_running(self) -> bool:

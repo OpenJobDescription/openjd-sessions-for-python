@@ -13,6 +13,7 @@ from pathlib import Path
 from queue import SimpleQueue
 from unittest.mock import MagicMock
 import pytest
+from typing import Optional
 
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
@@ -55,6 +56,70 @@ class TestLoggingSubprocessSameUser:
         assert subproc.pid is None
         assert subproc.exit_code is None
         assert not subproc.is_running
+
+    @pytest.mark.parametrize(
+        "exitcode, expected_result",
+        [
+            pytest.param(None, None, id="None"),
+            pytest.param(0, 0, id="Zero"),
+            pytest.param(0x7FFFFFFF, 0x7FFFFFFF, id="maxint"),
+            pytest.param(-2147483648, -2147483648, id="minint_decimal"),
+            pytest.param(0x80000000, -2147483648, id="minint_hex"),
+            pytest.param(0xFFFD0000, -196608, id="out-of-range-32bit"),
+            pytest.param(0xFFFFFFFD0000, -196608, id="out-of-range-big"),
+        ],
+    )
+    def test_return_code_in_range(
+        self, exitcode: Optional[int], expected_result: Optional[int]
+    ) -> None:
+        # We've seen process exit codes that are not properly converted from 32-bit to signed integer.
+        # Ensure that the process exit code is always in range of a 32-bit signed integer.
+
+        # GIVEN
+        subproc = LoggingSubprocess(
+            logger=MagicMock(),
+            args=[sys.executable, "-c", 'print("Test")'],
+        )
+        subproc._returncode = exitcode
+
+        # WHEN
+        result = subproc.exit_code
+
+        # THEN
+        assert result == expected_result
+
+    @pytest.mark.parametrize(
+        "exitcode, expected_result",
+        [
+            pytest.param(None, None, id="None"),
+            pytest.param(0, 0, id="Zero"),
+            pytest.param(0x7FFFFFFF, 0x7FFFFFFF, id="maxint"),
+            pytest.param(-2147483648, -2147483648, id="minint_decimal"),
+            pytest.param(0x80000000, -2147483648, id="minint_hex"),
+            pytest.param(0xFFFD0000, -196608, id="out-of-range-32bit"),
+            pytest.param(0xFFFFFFFD0000, -196608, id="out-of-range-big"),
+        ],
+    )
+    def test_return_code_in_range_from_process(
+        self, exitcode: Optional[int], expected_result: Optional[int]
+    ) -> None:
+        # We've seen process exit codes that are not properly converted from 32-bit to signed integer.
+        # Ensure that the process exit code is always in range of a 32-bit signed integer when fetched directly
+        # from an active Popen object.
+
+        # GIVEN
+        subproc = LoggingSubprocess(
+            logger=MagicMock(),
+            args=[sys.executable, "-c", 'print("Test")'],
+        )
+        subproc._process = MagicMock()
+        subproc._process.returncode = exitcode
+
+        # WHEN
+        result = subproc.exit_code
+
+        # THEN
+        assert result == expected_result
 
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation(
