@@ -182,6 +182,21 @@ class LoggingSubprocess(object):
 
             self._process.wait()
             self._returncode = self._process.returncode
+            if self._returncode is not None:
+                # Print out the signed representation of returncodes that would be negative as a 32-bit signed integer
+                if self._returncode < 0x7FFFFFFF:
+                    self._logger.info(
+                        f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex)"
+                    )
+                else:
+
+                    def _tosigned(n: int) -> int:
+                        b = (n & 0xFFFFFFFF).to_bytes(4, "big", signed=False)
+                        return int.from_bytes(b, "big", signed=True)
+
+                    self._logger.info(
+                        f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex) / {_tosigned(self._returncode)} (signed)"
+                    )
 
             if self._callback:
                 self._callback()
