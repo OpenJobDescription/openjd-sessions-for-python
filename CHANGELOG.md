@@ -1,3 +1,9 @@
+## 0.8.1 (2024-06-24)
+
+
+### Features
+* log process return code on process exit (#150) ([`c716e09`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/c716e090356a3cc11343175d34696e346d2ec816))
+
 ## 0.8.0 (2024-06-17)
 
 ### BREAKING CHANGES
