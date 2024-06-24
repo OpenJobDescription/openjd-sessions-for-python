@@ -1,12 +1,3 @@
-## 0.8.1 (2024-06-24)
-
-
-### Features
-* log process return code on process exit (#150) ([`c716e09`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/c716e090356a3cc11343175d34696e346d2ec816))
-
-### Bug Fixes
-* ensure process exit code is a 32-bit signed integer (#148) ([`d831c17`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/d831c179129186e43b6752dd881bf0a2e82bb74d))
-
 ## 0.8.0 (2024-06-17)
 
 ### BREAKING CHANGES
