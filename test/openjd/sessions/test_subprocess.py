@@ -437,7 +437,7 @@ sys.exit(0)
                 (10, [0, 1, 2, 3]),
             ]
             for command in [
-                f'["ping", "localhost", "{"-n" if os.name == "nt" else "-c"}", "{s}"]',
+                f'["python", "-c", "import time; [print(\\"Hello World {{i}}\\") for i in range({s}) if not time.sleep(1)]"]',
                 f'["python", "-c", "import time; time.sleep({s})"]',
             ]
         ],
