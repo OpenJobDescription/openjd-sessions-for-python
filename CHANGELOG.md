@@ -1,3 +1,11 @@
+## 0.8.2 (2024-08-12)
+
+
+
+### Bug Fixes
+* Session stuck reading on STDOUT stream (#162) ([`d30595f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/d30595fdd8fcce12fb4f7a6ca5408f62e8e310e3))
+* upper case all env vars on Windows (#161) ([`de03049`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/de030495c9a4af07a6a2ed25bdbe7675443db85e))
+
 ## 0.8.1 (2024-06-24)
 
 
