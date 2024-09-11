@@ -9,7 +9,6 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from logging import LoggerAdapter
 from pathlib import Path
 from threading import Lock, Timer
 from typing import Callable, Optional, Sequence, Type, cast
@@ -20,7 +19,7 @@ from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model.v2023_09 import Action as Action_2023_09
 from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, write_file_for_user
-from ._logging import log_subsection_banner
+from ._logging import log_subsection_banner, LoggerAdapter
 from ._os_checker import is_posix
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess

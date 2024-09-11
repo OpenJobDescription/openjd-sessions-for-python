@@ -5,7 +5,6 @@ import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
-from logging import LoggerAdapter
 from pathlib import Path
 from shutil import chown
 from tempfile import mkstemp
@@ -16,6 +15,7 @@ from openjd.model.v2023_09 import EmbeddedFileText as EmbeddedFileText_2023_09
 from openjd.model.v2023_09 import (
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
 )
+from ._logging import LoggerAdapter
 from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._types import EmbeddedFilesListType, EmbeddedFileType
 

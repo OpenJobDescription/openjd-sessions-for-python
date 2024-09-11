@@ -3,7 +3,7 @@
 import os
 import random
 import string
-from logging import INFO, LoggerAdapter, getLogger
+from logging import INFO, getLogger
 from logging.handlers import QueueHandler
 from queue import Empty, SimpleQueue
 from typing import Generator
@@ -11,6 +11,7 @@ import pytest
 
 from openjd.sessions import PosixSessionUser, WindowsSessionUser, BadCredentialsException
 from openjd.sessions._os_checker import is_posix, is_windows
+from openjd.sessions._logging import LoggerAdapter
 
 if is_windows():
     from openjd.sessions._win32._helpers import (  # type: ignore

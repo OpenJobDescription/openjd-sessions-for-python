@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 from datetime import timedelta
-from logging import LoggerAdapter
+from ._logging import LoggerAdapter
 from pathlib import Path
 from typing import Callable, Optional
 

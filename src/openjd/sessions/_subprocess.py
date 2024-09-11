@@ -12,7 +12,7 @@ if is_windows():
 from queue import Queue, Empty
 from typing import Any
 from threading import Event, Thread
-from logging import LoggerAdapter
+from ._logging import LoggerAdapter
 from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
 from typing import Callable, Optional, Sequence, cast
 from pathlib import Path

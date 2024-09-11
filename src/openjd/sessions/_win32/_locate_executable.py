@@ -3,7 +3,7 @@
 import os
 import sys
 import shutil
-from logging import INFO, LoggerAdapter, getLogger
+from logging import INFO, getLogger
 from logging.handlers import QueueHandler
 from pathlib import Path
 from queue import Empty, SimpleQueue
@@ -12,6 +12,7 @@ from typing import Optional, Sequence
 
 from .._session_user import SessionUser
 from .._subprocess import LoggingSubprocess
+from .._logging import LoggerAdapter
 
 _internal_logger_lock = Lock()
 _internal_logger = getLogger("openjd_sessions_runner_base_internal_logger")

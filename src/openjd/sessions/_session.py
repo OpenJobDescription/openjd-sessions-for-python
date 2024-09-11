@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from enum import Enum
-from logging import Filter, LoggerAdapter
+from logging import Filter
 from os import name as os_name
 from os import stat as os_stat
 from pathlib import Path
@@ -30,7 +30,7 @@ from openjd.model.v2023_09 import (
 )
 from ._action_filter import ActionMessageKind, ActionMonitoringFilter
 from ._embedded_files import write_file_for_user
-from ._logging import LOG, log_section_banner
+from ._logging import LOG, log_section_banner, LoggerAdapter
 from ._os_checker import is_posix, is_windows
 from ._path_mapping import PathMappingRule
 from ._runner_base import ScriptRunnerBase

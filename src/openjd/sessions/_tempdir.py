@@ -2,7 +2,7 @@
 
 import os
 import stat
-from logging import LoggerAdapter
+from ._logging import LoggerAdapter
 from pathlib import Path
 from shutil import chown, rmtree
 from tempfile import gettempdir, mkdtemp

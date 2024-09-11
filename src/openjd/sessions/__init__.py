@@ -1,6 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-from ._logging import LOG
+from ._logging import LOG, LogContent
 from ._path_mapping import PathFormat, PathMappingRule
 from ._session import ActionStatus, Session, SessionCallbackType, SessionState
 from ._session_user import (
@@ -25,6 +25,7 @@ __all__ = (
     "EnvironmentModel",
     "EnvironmentScriptModel",
     "LOG",
+    "LogContent",
     "PathFormat",
     "PathMappingRule",
     "PosixSessionUser",

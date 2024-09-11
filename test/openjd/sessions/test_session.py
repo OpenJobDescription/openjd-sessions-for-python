@@ -40,10 +40,12 @@ from openjd.sessions import (
     PathMappingRule,
     Session,
     SessionState,
+    LogContent,
 )
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
 from openjd.sessions._action_filter import ActionMessageKind
 from openjd.sessions._os_checker import is_posix, is_windows
+from openjd.sessions._logging import LoggerAdapter, LogExtraInfo
 from openjd.sessions._session import (
     EnvironmentVariableChange,
     EnvironmentVariableSetChange,
@@ -63,6 +65,38 @@ from .conftest import (
 
 def _environment_from_script(script: EnvironmentScript_2023_09) -> Environment_2023_09:
     return Environment_2023_09(name="DefinitelyNotAFakeEnvironment", script=script)
+
+
+class TestSessionLogging:
+    def test_log_record_fields(self, caplog) -> None:
+        "Confirms that both the session_id and log metadata fields are available in the session log"
+        # GIVEN
+        session_id = uuid.uuid4().hex
+        session = Session(session_id=session_id, job_parameter_values={})
+
+        # WHEN
+        session._logger.info(
+            "Process 9001 failed to stop.",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
+
+        # THEN
+        record = next(
+            (
+                record
+                for record in caplog.records
+                if record.message == "Process 9001 failed to stop."
+            ),
+            None,
+        )
+        assert record
+
+        assert hasattr(record, "session_id")
+        assert record.session_id == session_id
+
+        assert hasattr(record, "openjd_log_content")
+        assert isinstance(record.openjd_log_content, LogContent)
+        assert record.openjd_log_content == LogContent.PROCESS_CONTROL
 
 
 class TestSessionInitialization:
@@ -85,7 +119,7 @@ class TestSessionInitialization:
         assert session._session_id == session_id
         assert session._job_parameter_values == job_params
         assert session._job_parameter_values is not job_params
-        assert isinstance(session._logger, logging.LoggerAdapter)
+        assert isinstance(session._logger, LoggerAdapter)
         assert "session_id" in session._logger.extra
         assert session._logger.extra["session_id"] == session_id
         assert session._log_filter in LOG.filters

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 from hashlib import sha256
-from logging import LoggerAdapter
+from openjd.sessions._logging import LoggerAdapter
 from logging.handlers import QueueHandler
 from queue import SimpleQueue
 from typing import Union
