@@ -47,13 +47,24 @@ LOG.setLevel(logging.INFO)
 
 
 def log_section_banner(logger: logging.LoggerAdapter, section_title: str) -> None:
-    logger.info("")
-    logger.info("==============================================")
-    logger.info(f"--------- {section_title}")
-    logger.info("==============================================")
+    TITLE_META = OJDExtraInfo(openjd_log_metadata=LogMetadata(LogPurpose.TITLE))
+    logger.info("", extra=TITLE_META)
+    logger.info("==============================================", extra=TITLE_META)
+    logger.info(f"--------- {section_title}", extra=TITLE_META)
+    logger.info(
+        "==============================================",
+        extra=TITLE_META,
+    )
 
 
 def log_subsection_banner(logger: logging.LoggerAdapter, section_title: str) -> None:
-    logger.info("----------------------------------------------")
-    logger.info(section_title)
-    logger.info("----------------------------------------------")
+    TITLE_META = OJDExtraInfo(openjd_log_metadata=LogMetadata(LogPurpose.TITLE))
+    logger.info(
+        "----------------------------------------------",
+        extra=TITLE_META,
+    )
+    logger.info(section_title, extra=TITLE_META)
+    logger.info(
+        "----------------------------------------------",
+        extra=TITLE_META,
+    )

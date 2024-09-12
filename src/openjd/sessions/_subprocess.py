@@ -20,6 +20,7 @@ from datetime import timedelta
 import sys
 
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
+from ._logging import OJDExtraInfo, LogContent, LogMetadata, LogPurpose
 
 
 __all__ = ("LoggingSubprocess",)
@@ -165,8 +166,18 @@ class LoggingSubprocess(object):
 
         self._pid = self._process.pid
 
-        self._logger.info(f"Command started as pid: {self._process.pid}")
-        self._logger.info("Output:")
+        self._logger.info(
+            f"Command started as pid: {self._process.pid}",
+            extra=OJDExtraInfo(
+                openjd_log_metadata=LogMetadata(
+                    log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                )
+            ),
+        )
+        self._logger.info(
+            "Output:",
+            extra=OJDExtraInfo(openjd_log_metadata=LogMetadata(log_purpose=LogPurpose.TITLE)),
+        )
 
         try:
             self._log_subproc_stdout()  # Blocking
@@ -213,7 +224,12 @@ class LoggingSubprocess(object):
                 self._posix_signal_subprocess(signal="kill", signal_subprocesses=True)
             else:
                 self._logger.info(
-                    f"INTERRUPT: Start killing the process tree with the root pid: {self._process.pid}"
+                    f"INTERRUPT: Start killing the process tree with the root pid: {self._process.pid}",
+                    extra=OJDExtraInfo(
+                        openjd_log_metadata=LogMetadata(
+                            log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                        )
+                    ),
                 )
                 kill_windows_process_tree(self._logger, self._process.pid, signal_subprocesses=True)
 
@@ -257,7 +273,15 @@ class LoggingSubprocess(object):
                 cmd_line_for_logger = shlex.join(command)
             else:
                 cmd_line_for_logger = list2cmdline(self._args)
-            self._logger.info("Running command %s", cmd_line_for_logger)
+            self._logger.info(
+                "Running command %s",
+                cmd_line_for_logger,
+                extra=OJDExtraInfo(
+                    openjd_log_metadata=LogMetadata(
+                        log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.COMMAND_OUTPUT
+                    )
+                ),
+            )
 
             process: Popen
             if is_windows() and self._user and not user.is_process_user():
@@ -277,7 +301,17 @@ class LoggingSubprocess(object):
             return process
 
         except Exception as e:
-            self._logger.info(f"Process failed to start: {str(e)}")
+            self._logger.info(
+                f"Process failed to start: {str(e)}",
+                extra=OJDExtraInfo(
+                    openjd_log_metadata=LogMetadata(
+                        log_purpose=LogPurpose.DIAGNOSTIC,
+                        log_content=LogContent.EXCEPTION_INFO
+                        | LogContent.PROCESS_IDS
+                        | LogContent.COMMAND_OUTPUT,
+                    )
+                ),
+            )
             return None
 
     def _log_subproc_stdout(self):
@@ -350,7 +384,14 @@ class LoggingSubprocess(object):
                 # prevent closing the STDOUT stream. Waiting a maximum of 1 ms allows us to detect this quickly, while
                 # not significantly impacting CPU usage.
                 line = stdout_queue.get(timeout=0.001)
-                self._logger.info(line)
+                self._logger.info(
+                    line,
+                    extra=OJDExtraInfo(
+                        openjd_log_metadata=LogMetadata(
+                            log_purpose=LogPurpose.OUTPUT, log_content=LogContent.COMMAND_OUTPUT
+                        )
+                    ),
+                )
             except Empty:
                 pass  # queue.get timed out. This means the subprocess does not print much to STDOUT. Just continue.
 
@@ -364,12 +405,22 @@ class LoggingSubprocess(object):
                 elif not warn_time:
                     # It's been over a second of trying to empty STDOUT. Most likely the stream is still open.
                     self._logger.warning(
-                        f"Command exited but STDOUT stream is still open. Waiting gracetime of {STDOUT_END_GRACETIME_SECONDS} seconds for the STDOUT stream to close before ending action."
+                        f"Command exited but STDOUT stream is still open. Waiting gracetime of {STDOUT_END_GRACETIME_SECONDS} seconds for the STDOUT stream to close before ending action.",
+                        extra=OJDExtraInfo(
+                            openjd_log_metadata=LogMetadata(
+                                log_purpose=LogPurpose.DIAGNOSTIC,
+                            )
+                        ),
                     )
                     warn_time = time.monotonic()
                 elif (time.monotonic() - warn_time) > STDOUT_END_GRACETIME_SECONDS:
                     self._logger.warning(
-                        f"Gracetime of {STDOUT_END_GRACETIME_SECONDS} seconds elapsed but the STDOUT stream is still open. Ending action."
+                        f"Gracetime of {STDOUT_END_GRACETIME_SECONDS} seconds elapsed but the STDOUT stream is still open. Ending action.",
+                        extra=OJDExtraInfo(
+                            openjd_log_metadata=LogMetadata(
+                                log_purpose=LogPurpose.DIAGNOSTIC,
+                            )
+                        ),
                     )
                     exit_event.set()  # When the STDOUT stream ends this will cause the thread to exit.
                     break
@@ -377,7 +428,14 @@ class LoggingSubprocess(object):
         while not stdout_queue.empty():
             # empty the queue
             line = stdout_queue.get()
-            self._logger.info(line)
+            self._logger.info(
+                line,
+                extra=OJDExtraInfo(
+                    openjd_log_metadata=LogMetadata(
+                        log_purpose=LogPurpose.OUTPUT, log_content=LogContent.COMMAND_OUTPUT
+                    )
+                ),
+            )
 
     def _log_returncode(self):
         """Logs the return code of the exited subprocess"""
@@ -385,7 +443,12 @@ class LoggingSubprocess(object):
             # Print out the signed representation of returncodes that would be negative as a 32-bit signed integer
             if self._returncode < 0x7FFFFFFF:
                 self._logger.info(
-                    f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex)"
+                    f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex)",
+                    extra=OJDExtraInfo(
+                        openjd_log_metadata=LogMetadata(
+                            log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                        )
+                    ),
                 )
             else:
 
@@ -394,7 +457,12 @@ class LoggingSubprocess(object):
                     return int.from_bytes(b, "big", signed=True)
 
                 self._logger.info(
-                    f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex) / {_tosigned(self._returncode)} (signed)"
+                    f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex) / {_tosigned(self._returncode)} (signed)",
+                    extra=OJDExtraInfo(
+                        openjd_log_metadata=LogMetadata(
+                            log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                        )
+                    ),
                 )
 
     def _posix_signal_subprocess(self, signal: str, signal_subprocesses: bool = False) -> None:
@@ -439,7 +507,14 @@ class LoggingSubprocess(object):
                 str(signal_subprocesses),
             ]
         )
-        self._logger.info(f"INTERRUPT: Running: {shlex.join(cmd)}")
+        self._logger.info(
+            f"INTERRUPT: Running: {shlex.join(cmd)}",
+            extra=OJDExtraInfo(
+                openjd_log_metadata=LogMetadata(
+                    log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                )
+            ),
+        )
         result = run(
             cmd,
             stdout=PIPE,
@@ -450,6 +525,11 @@ class LoggingSubprocess(object):
             self._logger.warning(
                 f"Failed to send signal '{signal}' to subprocess {self._process.pid}: %s",
                 result.stdout.decode("utf-8"),
+                extra=OJDExtraInfo(
+                    openjd_log_metadata=LogMetadata(
+                        log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                    )
+                ),
             )
 
     def _windows_notify_subprocess(self) -> None:
@@ -463,7 +543,14 @@ class LoggingSubprocess(object):
         # https://learn.microsoft.com/en-us/windows/console/generateconsolectrlevent
         # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#remarks
         # https://stackoverflow.com/questions/35772001/how-to-handle-a-signal-sigint-on-a-windows-os-machine/35792192#35792192
-        self._logger.info(f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}")
+        self._logger.info(
+            f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}",
+            extra=OJDExtraInfo(
+                openjd_log_metadata=LogMetadata(
+                    log_purpose=LogPurpose.DIAGNOSTIC, log_content=LogContent.PROCESS_IDS
+                )
+            ),
+        )
 
         # _process will be running in new console, we run another process to attach to it and send signal
         cmd = [
@@ -482,4 +569,10 @@ class LoggingSubprocess(object):
             self._logger.warning(
                 f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}: %s",
                 result.stdout.decode("utf-8"),
+                extra=OJDExtraInfo(
+                    openjd_log_metadata=LogMetadata(
+                        log_purpose=LogPurpose.DIAGNOSTIC,
+                        log_content=LogContent.PROCESS_IDS | LogContent.COMMAND_OUTPUT,
+                    )
+                ),
             )
