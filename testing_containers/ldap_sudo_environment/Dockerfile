@@ -29,8 +29,7 @@ WORKDIR /code
 #   hostuser: hostuser, sharedgroup
 #   targetuser: targetuser, sharedgroup
 #   disjointuser: disjointuser, disjointgroup
-RUN echo $(grep $(hostname) /etc/hosts | cut -f1) ldap.environment.internal >> /etc/hosts && \
-    apt-get update && export DEBIAN_FRONTEND=noninteractive && \
+RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     apt-get install -y vim screen slapd ldap-utils && \
     echo slapd   slapd/password1 password | debconf-set-selections -v && \
     echo slapd   slapd/password2 password | debconf-set-selections -v && \

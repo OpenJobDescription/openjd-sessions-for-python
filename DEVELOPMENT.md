@@ -19,7 +19,8 @@ To develop the Python code in this repository you will need:
 
 1. Python 3.9 or higher. We recommend [mise](https://github.com/jdx/mise) if you would like to run more than one version
    of Python on the same system. When running unit tests against all supported Python versions, for instance.
-2. The [hatch](https://github.com/pypa/hatch) package installed (`pip install --upgrade hatch`) into your Python environment. 
+2. The [hatch](https://github.com/pypa/hatch) package installed (`pip install --upgrade hatch`) into your Python environment.
+3. If working on Linux cross-user support, Docker version 23.x or newer
 
 You can develop on a Linux, MacOs, or Windows workstation, but you will find that some of the support scripting is specific to
 Linux workstations.
@@ -151,18 +152,18 @@ on how to run these tests.
 
 #### User Impersonation: POSIX-Based Systems
 
-To run the impersonation tests you must create additional users and groups for the impersonation
-tests on your local system and then set environment variables before running the tests.
-
-Scripting has been added to this repository to test this functionality on Linux using
-docker containers that we have set up for this purpose.
+The codebase contains cross-user impersonation tests that rely on the existence of specific users and
+groups. There are scripts in the repository that automate the creation of Docker container images
+with the required user/group setup and then running the tests within a container that uses the
+image.
 
 To run these tests:
 1. With users configured locally in /etc/passwd & /etc/groups: `scripts/run_sudo_tests.sh --build`
 2. With users via an LDAP client: `scripts/run_sudo_tests.sh --build --ldap`
 
-If you are unable to use the provided docker container then you need to set up the `OPENJD_TEST_SUDO_*`
-environment variables and their referenced users and groups as in the Dockerfile under
+If you are unable to use the provided docker container setup, then you will first need to create
+the required users and groups on your development machine, and populate the `OPENJD_TEST_SUDO_*`
+environment variables as done in the Dockerfile under
 `testing_containers/localuser_sudo_environment/Dockerfile` in this repository.
 
 #### User Impersonation: Windows-Based Systems

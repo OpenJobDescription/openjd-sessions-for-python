@@ -46,21 +46,22 @@ if test "${PIP_INDEX_URL:-}" != ""; then
     # If PIP_INDEX_URL is set, then export that in to the container
     # so that `pip install` run in the container will fetch packages
     # from the correct repository.
-    ARGS="${ARGS} -e  PIP_INDEX_URL=${PIP_INDEX_URL}"
+    ARGS="${ARGS} -e PIP_INDEX_URL=${PIP_INDEX_URL}"
 fi
 
 if test "${USE_LDAP}" == "True"; then
-    ARGS="${ARGS} -h ldap.environment.internal"
+    CONTAINER_HOSTNAME=ldap.environment.internal
     CONTAINER_IMAGE_TAG="openjd_ldap_test"
     CONTAINER_IMAGE_DIR="ldap_sudo_environment"
 else
-    ARGS="${ARGS} -h localuser.environment.internal"
+    CONTAINER_HOSTNAME=localuser.environment.internal
     CONTAINER_IMAGE_TAG="openjd_localuser_test"
     CONTAINER_IMAGE_DIR="localuser_sudo_environment"
 fi
+ARGS="${ARGS} -h ${CONTAINER_HOSTNAME}"
 
 if test "${DO_BUILD}" == "True"; then
-    docker build testing_containers/"${CONTAINER_IMAGE_DIR}" -t "${CONTAINER_IMAGE_TAG}"
+    docker build -t "${CONTAINER_IMAGE_TAG}" --build-arg "BUILDKIT_SANDBOX_HOSTNAME=${CONTAINER_HOSTNAME}" "testing_containers/${CONTAINER_IMAGE_DIR}"
 fi
 
 if test "${BUILD_ONLY}" == "True"; then
