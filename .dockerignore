@@ -1,0 +1,16 @@
+# Directories
+.github
+.semantic_release
+build
+dist
+pipeline
+scripts
+
+# Top-level files
+.gitignore
+*.md
+LICENSE
+NOTICE
+# README.md is required since it is referenced by pyproject.toml
+!README.md
+Dockerfile

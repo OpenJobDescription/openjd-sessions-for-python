@@ -158,8 +158,8 @@ with the required user/group setup and then running the tests within a container
 image.
 
 To run these tests:
-1. With users configured locally in /etc/passwd & /etc/groups: `scripts/run_sudo_tests.sh --build`
-2. With users via an LDAP client: `scripts/run_sudo_tests.sh --build --ldap`
+1. With users configured locally in /etc/passwd & /etc/groups: `scripts/run_sudo_tests.sh`
+2. With users via an LDAP client: `scripts/run_sudo_tests.sh --ldap`
 
 If you are unable to use the provided docker container setup, then you will first need to create
 the required users and groups on your development machine, and populate the `OPENJD_TEST_SUDO_*`

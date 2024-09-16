@@ -1,7 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 """Tests for LoggingSubprocess"""
-import shutil
 import sys
 import tempfile
 import time
@@ -312,7 +311,7 @@ class TestLoggingSubprocessSameUser:
         queue_handler: QueueHandler,
     ) -> None:
         # Make sure that the subprocess and all of its children are forcefully killed when terminated
-        from psutil import Process, NoSuchProcess
+        from psutil import Process, NoSuchProcess, STATUS_ZOMBIE
 
         # GIVEN
         logger = build_logger(queue_handler)
@@ -372,8 +371,9 @@ class TestLoggingSubprocessSameUser:
             for child in children:
                 try:
                     # Raises NoSuchProcess if the process is gone
-                    child.status()
-                    num_children_running += 1
+                    child_status = child.status()
+                    if child_status != STATUS_ZOMBIE:
+                        num_children_running += 1
                 except NoSuchProcess:
                     # Expected. This is a success
                     pass
@@ -569,7 +569,6 @@ class TestLoggingSubprocessPosixCrossUser(object):
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-        shutil.chown(python_app_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(python_app_loc)],
@@ -617,7 +616,6 @@ class TestLoggingSubprocessPosixCrossUser(object):
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-        shutil.chown(python_app_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(python_app_loc)],
@@ -661,12 +659,11 @@ class TestLoggingSubprocessPosixCrossUser(object):
         posix_target_user: PosixSessionUser,
     ) -> None:
         # Make sure that the subprocess and all of its children are forcefully killed when terminated
-        from psutil import Process, NoSuchProcess
+        from psutil import Process, NoSuchProcess, STATUS_ZOMBIE
 
         # GIVEN
         logger = build_logger(queue_handler)
         script_loc = (Path(__file__).parent / "support_files" / "run_app_20s_run.py").resolve()
-        shutil.chown(script_loc, group=posix_target_user.group)
         subproc = LoggingSubprocess(
             logger=logger,
             args=[sys.executable, str(script_loc)],
@@ -714,8 +711,9 @@ class TestLoggingSubprocessPosixCrossUser(object):
             for child in children:
                 try:
                     # Raises NoSuchProcess if the process is gone
-                    child.status()
-                    num_children_running += 1
+                    child_status = child.status()
+                    if child_status != STATUS_ZOMBIE:
+                        num_children_running += 1
                 except NoSuchProcess:
                     # Expected. This is a success
                     pass

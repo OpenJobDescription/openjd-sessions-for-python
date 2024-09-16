@@ -1,7 +1,7 @@
 
 ## Build
 ```
-docker build --build-arg BUILDKIT_SANDBOX_HOSTNAME=ldap.environment.internal -t openjd_ldap_test testing_containers/ldap_sudo_environment
+docker build --build-arg BUILDKIT_SANDBOX_HOSTNAME=ldap.environment.internal -t openjd_ldap_test -f testing_containers/ldap_sudo_environment/Dockerfile .
 ```
 
 ## Run Interactive Bash

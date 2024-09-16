@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-FROM python:3.9-buster
+FROM python:3.9-bookworm
+ARG PIP_INDEX_URL
 
 # Let our tests know that we"re in an environment that can run the sudo
 # tests
@@ -8,17 +9,16 @@ ENV OPENJD_TEST_SUDO_TARGET_USER=targetuser
 ENV OPENJD_TEST_SUDO_SHARED_GROUP=sharedgroup
 ENV OPENJD_TEST_SUDO_DISJOINT_USER=disjointuser
 ENV OPENJD_TEST_SUDO_DISJOINT_GROUP=disjointgroup
+ENV PIP_INDEX_URL=$PIP_INDEX_URL
+ENV HATCH_DATA_DIR=/hatch/data
+ENV HATCH_CACHE_DIR=/hatch/cache
 
 WORKDIR /config
 
-COPY changePassword.ldif /config
-COPY addUsersGroups.ldif /config
-COPY addUsersToSharedGroup.ldif /config
-COPY run_tests.sh  /config
-COPY start_ldap.sh /config
-COPY test_setup.sh /config
-
-WORKDIR /code
+COPY testing_containers/ldap_sudo_environment/changePassword.ldif /config
+COPY testing_containers/ldap_sudo_environment/addUsersGroups.ldif /config
+COPY testing_containers/ldap_sudo_environment/addUsersToSharedGroup.ldif /config
+COPY testing_containers/ldap_sudo_environment/start_ldap.sh /config
 
 # We set up two users for our tests:
 #  1) hostuser -- the user that will be running the pytests.
@@ -61,13 +61,18 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     touch /etc/netgroup && service nscd restart && service nslcd restart && \
     # Create the home directories before login
     mkhomedir_helper hostuser 007 && mkhomedir_helper targetuser 007 && mkhomedir_helper disjointuser 007 && \
-    chmod 777 /config/run_tests.sh && \
-    chmod 777 /code && \
+    mkdir -p /hatch/data /hatch/cache && \
     # Set up the sudoers permissions
-    apt-get install sudo-ldap && \
-    echo "hostuser ALL=(${OPENJD_TEST_SUDO_TARGET_USER},hostuser) NOPASSWD: ALL" > /etc/sudoers.d/hostuser
+    apt-get install -y sudo-ldap && \
+    echo "hostuser ALL=(${OPENJD_TEST_SUDO_TARGET_USER},hostuser) NOPASSWD: ALL" > /etc/sudoers.d/hostuser && \
+    # Clean up apt cache
+    rm -rf /var/lib/apt/lists/* && \
+    apt-get clean && \
+    # Install hatch (for setting up environment and running tests)
+    pip install hatch
 
+COPY . /code/
+WORKDIR /code
+RUN hatch env create
 
-WORKDIR /home/hostuser
-
-CMD ["/bin/sh", "-c", "/config/start_ldap.sh && /config/test_setup.sh && sudo -u hostuser -i /home/hostuser/run_tests.sh"]
+CMD ["/bin/sh", "-c", "/config/start_ldap.sh && chown -R hostuser:hostuser /hatch /code && sudo -u hostuser --preserve-env=HATCH_CACHE_DIR,HATCH_DATA_DIR,PIP_INDEX_URL,OPENJD_TEST_SUDO_TARGET_USER,OPENJD_TEST_SUDO_SHARED_GROUP,OPENJD_TEST_SUDO_DISJOINT_USER,OPENJD_TEST_SUDO_DISJOINT_GROUP hatch run test --no-cov"]
