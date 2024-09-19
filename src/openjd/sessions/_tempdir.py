@@ -2,7 +2,7 @@
 
 import os
 import stat
-from ._logging import LoggerAdapter
+from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from pathlib import Path
 from shutil import chown, rmtree
 from tempfile import gettempdir, mkdtemp
@@ -37,7 +37,8 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
             program_data_path = r"C:\ProgramData"
             if logger:
                 logger.warning(
-                    f'"PROGRAMDATA" is not set. Set the root directory to the {program_data_path}'
+                    f'"PROGRAMDATA" is not set. Set the root directory to the {program_data_path}',
+                    extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
                 )
 
         temp_dir_parent = os.path.join(program_data_path, "Amazon")

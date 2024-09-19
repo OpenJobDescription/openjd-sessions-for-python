@@ -15,7 +15,7 @@ from openjd.model.v2023_09 import EmbeddedFileText as EmbeddedFileText_2023_09
 from openjd.model.v2023_09 import (
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
 )
-from ._logging import LoggerAdapter
+from ._logging import LoggerAdapter, LogExtraInfo, LogContent
 from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._types import EmbeddedFilesListType, EmbeddedFileType
 
@@ -148,7 +148,12 @@ class EmbeddedFiles:
             # Add symbols to the symbol table
             for record in records:
                 symtab[record.symbol] = str(record.filename)
-                self._logger.info(f"Mapping: {record.symbol} -> {record.filename}")
+                self._logger.info(
+                    f"Mapping: {record.symbol} -> {record.filename}",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.FILE_PATH | LogContent.PARAMETER_INFO
+                    ),
+                )
 
             # Write the files to disk.
             for record in records:
@@ -225,5 +230,10 @@ class EmbeddedFiles:
         # Create the file as r/w owner, and optionally group
         write_file_for_user(filename, data, self._user, additional_permissions=execute_permissions)
 
-        self._logger.info(f"Wrote: {file.name} -> {str(filename)}")
-        self._logger.debug("Contents:\n%s", data)
+        self._logger.info(
+            f"Wrote: {file.name} -> {str(filename)}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
+        )
+        self._logger.debug(
+            "Contents:\n%s", data, extra=LogExtraInfo(openjd_log_content=LogContent.FILE_CONTENTS)
+        )

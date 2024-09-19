@@ -8,7 +8,7 @@ import re
 from enum import Enum
 from typing import Any, Callable
 
-from ._logging import LOG
+from ._logging import LOG, LogContent, LogExtraInfo
 
 __all__ = ("ActionMessageKind", "ActionMonitoringFilter")
 
@@ -155,14 +155,18 @@ class ActionMonitoringFilter(logging.Filter):
                 # The only way that this happens is if filter_matcher is constructed incorrectly.
                 all_matched_groups = ",".join(k for k in matched_named_groups)
                 LOG.error(
-                    f"Open Job Description: Malformed output stream filter matched multiple kinds ({all_matched_groups})"
+                    f"Open Job Description: Malformed output stream filter matched multiple kinds ({all_matched_groups})",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.COMMAND_OUTPUT),
                 )
                 return True
             message_kind = ActionMessageKind(matched_named_groups[0])
             try:
                 handler = self._internal_handlers[message_kind]
             except KeyError:
-                LOG.error(f"Open Job Description: Unhandled message kind ({message_kind.value})")
+                LOG.error(
+                    f"Open Job Description: Unhandled message kind ({message_kind.value})",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.COMMAND_OUTPUT),
+                )
                 return True
             try:
                 handler(message)

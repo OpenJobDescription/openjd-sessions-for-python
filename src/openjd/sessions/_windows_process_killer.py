@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 import time
 
+from ._logging import LogExtraInfo, LogContent
 from psutil import NoSuchProcess, Process, wait_procs, STATUS_STOPPED
 from typing import List
 
@@ -24,7 +25,10 @@ def _suspend_process(logger, process: Process) -> bool:
             # Wait for the process to be suspended
             time.sleep(0.1)
     except Exception as e:
-        logger.error(f"Failed to suspend process {process.pid}: {e}")
+        logger.error(
+            f"Failed to suspend process {process.pid}: {e}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
         return False
 
     return False
@@ -77,12 +81,23 @@ def _kill_processes(logger, process_list: List[Process]) -> List[Process]:
 
     for process in process_list:
         try:
-            logger.info(f"Killing process with id {process.pid}.")
+            logger.info(
+                f"Killing process with id {process.pid}.",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
             process.kill()
         except NoSuchProcess:
-            logger.info(f"No process with id {process.pid} for termination")
+            logger.info(
+                f"No process with id {process.pid} for termination",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
         except Exception as e:
-            logger.error(f"Failed to kill process {process.pid}: {e}")
+            logger.error(
+                f"Failed to kill process {process.pid}: {e}",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                ),
+            )
 
     # Wait for the processes to be terminated
     _, alive = wait_procs(process_list, timeout=5)
@@ -103,7 +118,10 @@ def kill_windows_process_tree(logger, root_pid, signal_subprocesses=True) -> Non
     try:
         parent_process = Process(root_pid)
     except NoSuchProcess:
-        logger.error(f"Root process with PID {root_pid} not found.")
+        logger.error(
+            f"Root process with PID {root_pid} not found.",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
         return
 
     procs_failed_to_suspend: List[Process] = []
@@ -113,7 +131,8 @@ def kill_windows_process_tree(logger, root_pid, signal_subprocesses=True) -> Non
     )
     if procs_failed_to_suspend:
         logger.warning(
-            f"Following processes cannot be suspended. Processes IDs: {[proc.pid for proc in procs_failed_to_suspend]}"
+            f"Following processes cannot be suspended. Processes IDs: {[proc.pid for proc in procs_failed_to_suspend]}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
 
     # Ensure we kill child processes first
@@ -122,10 +141,12 @@ def kill_windows_process_tree(logger, root_pid, signal_subprocesses=True) -> Non
 
     if alive_processes:
         logger.warning(
-            f"Failed to kill following process(es): {[p.pid for p in alive_processes]}. Retrying..."
+            f"Failed to kill following process(es): {[p.pid for p in alive_processes]}. Retrying...",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
         alive_processes = _kill_processes(logger, processes_to_be_killed)
         if alive_processes:
             logger.warning(
-                f"Still failed to kill the following process(es): {[p.pid for p in alive_processes]}. Please handle manually."
+                f"Still failed to kill the following process(es): {[p.pid for p in alive_processes]}. Please handle manually.",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
             )

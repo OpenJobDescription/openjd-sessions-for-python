@@ -490,7 +490,7 @@ class TestSessionInitialization:
                                 lambda rec: rec.msg.startswith(expected_err_prefix), caplog.records
                             )
                         )[0]
-                        assert error_record.levelno == logging.WARN
+                        assert error_record.levelno == logging.WARNING
 
     @pytest.mark.usefixtures("caplog")  # built-in fixture
     def test_posix_permissions_no_warning(self, caplog: pytest.LogCaptureFixture) -> None:

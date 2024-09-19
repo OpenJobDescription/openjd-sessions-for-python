@@ -75,15 +75,17 @@ potentially sensitive information like filepaths or host info due to the nature 
 """
 LOG.setLevel(logging.INFO)
 
+_banner_log_extra = LogExtraInfo(openjd_log_content=LogContent.BANNER)
+
 
 def log_section_banner(logger: LoggerAdapter, section_title: str) -> None:
     logger.info("")
-    logger.info("==============================================")
-    logger.info(f"--------- {section_title}")
-    logger.info("==============================================")
+    logger.info("==============================================", extra=_banner_log_extra)
+    logger.info(f"--------- {section_title}", extra=_banner_log_extra)
+    logger.info("==============================================", extra=_banner_log_extra)
 
 
 def log_subsection_banner(logger: LoggerAdapter, section_title: str) -> None:
-    logger.info("----------------------------------------------")
-    logger.info(section_title)
-    logger.info("----------------------------------------------")
+    logger.info("----------------------------------------------", extra=_banner_log_extra)
+    logger.info(section_title, extra=_banner_log_extra)
+    logger.info("----------------------------------------------", extra=_banner_log_extra)

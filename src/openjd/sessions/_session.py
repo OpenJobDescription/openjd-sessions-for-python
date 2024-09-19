@@ -30,7 +30,7 @@ from openjd.model.v2023_09 import (
 )
 from ._action_filter import ActionMessageKind, ActionMonitoringFilter
 from ._embedded_files import write_file_for_user
-from ._logging import LOG, log_section_banner, LoggerAdapter
+from ._logging import LOG, log_section_banner, LoggerAdapter, LogExtraInfo, LogContent
 from ._os_checker import is_posix, is_windows
 from ._path_mapping import PathMappingRule
 from ._runner_base import ScriptRunnerBase
@@ -396,24 +396,40 @@ class Session(object):
         LOG.addFilter(self._log_filter)
         self._logger = LoggerAdapter(LOG, extra={"session_id": self._session_id})
 
-        self._logger.info(f"openjd.model Library Version: {model_version}")
-        self._logger.info(f"openjd.sessions Library Version: {version}")
-        self._logger.info("Installed at: %s", str(Path(__file__).resolve().parent.parent))
-        self._logger.info(f"Python Interpreter: {sys.executable}")
-        self._logger.info("Python Version: %s", sys.version.replace("\n", " - "))
-        self._logger.info(f"Platform: {sys.platform}")
+        host_info_extra = LogExtraInfo(openjd_log_content=LogContent.HOST_INFO)
+        self._logger.info(f"openjd.model Library Version: {model_version}", extra=host_info_extra)
+        self._logger.info(f"openjd.sessions Library Version: {version}", extra=host_info_extra)
+        self._logger.info(
+            "Installed at: %s", str(Path(__file__).resolve().parent.parent), extra=host_info_extra
+        )
+        self._logger.info(f"Python Interpreter: {sys.executable}", extra=host_info_extra)
+        self._logger.info(
+            "Python Version: %s", sys.version.replace("\n", " - "), extra=host_info_extra
+        )
+        self._logger.info(f"Platform: {sys.platform}", extra=host_info_extra)
         self._logger.info(f"Initializing Open Job Description Session: {self._session_id}")
 
         try:
             self._working_dir = self._create_working_directory()
             self._files_dir = self._create_files_directory()
         except RuntimeError as exc:
-            self._logger.error(f"ERROR creating Session Working Directory: {str(exc)}")
+            self._logger.error(
+                f"ERROR creating Session Working Directory: {str(exc)}",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.COMMAND_OUTPUT | LogContent.FILE_PATH
+                ),
+            )
             self._state = SessionState.ENDED
             raise
 
-        self._logger.info(f"Session Working Directory: {str(self.working_directory)}")
-        self._logger.info(f"Session's Embedded Files Directory: {str(self.files_directory)}")
+        self._logger.info(
+            f"Session Working Directory: {str(self.working_directory)}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
+        )
+        self._logger.info(
+            f"Session's Embedded Files Directory: {str(self.files_directory)}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
+        )
 
         self._state = SessionState.READY
 
@@ -424,7 +440,10 @@ class Session(object):
         self._cleanup_called = True
         if self._working_dir is not None and not self._retain_working_dir:
             log_section_banner(self._logger, "Session Cleanup")
-            self._logger.info(f"Deleting working directory: {str(self.working_directory)}")
+            self._logger.info(
+                f"Deleting working directory: {str(self.working_directory)}",
+                extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
+            )
             try:
                 # If running as a different user, then that user could have written files to the
                 # session diretory that make removing it as our user impossible. So, do a 2-phase
@@ -461,7 +480,12 @@ class Session(object):
                 self._working_dir.cleanup()
             except RuntimeError as exc:
                 # Warn if we couldn't cleanup the temporary files for some reason.
-                self._logger.exception(exc)
+                self._logger.exception(
+                    exc,
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.EXCEPTION_INFO | LogContent.FILE_PATH
+                    ),
+                )
 
         LOG.removeFilter(self._log_filter)
         del self._log_filter
@@ -612,7 +636,12 @@ class Session(object):
                 symtab, environment.variables
             )
             for name, value in resolved_variables.items():
-                self._logger.info("Setting: %s=%s", name, value)
+                self._logger.info(
+                    "Setting: %s=%s",
+                    name,
+                    value,
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
+                )
             env_var_changes = SimplifiedEnvironmentVariableChanges(resolved_variables)
             self._created_env_vars[identifier] = env_var_changes
         else:
@@ -753,9 +782,15 @@ class Session(object):
 
         log_section_banner(self._logger, "Running Task")
         if task_parameter_values:
-            self._logger.info("Parameter values:")
+            self._logger.info(
+                "Parameter values:",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
+            )
             for name, value in task_parameter_values.items():
-                self._logger.info(f"{name}({str(value.type.value)}) = {value.value}")
+                self._logger.info(
+                    f"{name}({str(value.type.value)}) = {value.value}",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
+                )
 
         self._reset_action_state()
         symtab = self._symbol_table(step_script.revision, task_parameter_values)
@@ -879,7 +914,10 @@ class Session(object):
                     parent_stat.st_mode & stat.S_ISVTX
                 ) == 0:
                     self._logger.warning(
-                        f"Sticky bit is not set on {str(parent)}. This may pose a risk when running work on this host as users may modify or delete files in this directory which do not belong to them."
+                        f"Sticky bit is not set on {str(parent)}. This may pose a risk when running work on this host as users may modify or delete files in this directory which do not belong to them.",
+                        extra=LogExtraInfo(
+                            openjd_log_content=LogContent.HOST_INFO | LogContent.FILE_PATH
+                        ),
                     )
 
         # Raises: RuntimeError
