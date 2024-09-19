@@ -1,3 +1,13 @@
+## 0.8.3 (2024-09-19)
+
+
+### Features
+* introduce log content on log records (#170) ([`6e98f16`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/6e98f16d8506893f82d7a7f4dbc217874d0ae1e9))
+
+### Bug Fixes
+* Run Windows Session cleanup at high priority. (#173) ([`6fb09b5`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/6fb09b53c2addd9ddb2607d4191ae92b36247789))
+* run python instead of pythonservice on windows to signal subprocesses (#171) ([`186b2a7`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/186b2a7cf90ae6728decd75fc2d20e8c035c9b12))
+
 ## 0.8.2 (2024-08-12)
 
 
