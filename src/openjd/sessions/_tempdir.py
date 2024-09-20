@@ -37,7 +37,7 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
             program_data_path = r"C:\ProgramData"
             if logger:
                 logger.warning(
-                    f'"PROGRAMDATA" is not set. Set the root directory to the {program_data_path}',
+                    f'Environment variable "PROGRAMDATA" is not set. Creating the session working directories under {program_data_path}',
                     extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
                 )
 
