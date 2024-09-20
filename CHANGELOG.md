@@ -1,3 +1,10 @@
+## 0.8.4 (2024-09-20)
+
+
+### Features
+* add log content metadata to log records (#175) ([`a50e94f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/a50e94f1ed3bc8fc72093aaa5f06e6082a45b060))
+
+
 ## 0.8.3 (2024-09-19)
 
 
