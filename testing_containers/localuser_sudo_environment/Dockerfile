@@ -20,7 +20,7 @@ ENV PIP_INDEX_URL=$PIP_INDEX_URL
 #   hostuser: hostuser, sharedgroup
 #   targetuser: targetuser, sharedgroup
 #   disjointuser: disjointuser, disjointgroup
-RUN apt-get update && apt-get install -y sudo && \
+RUN apt-get update && apt-get install -y sudo psmisc libcap2-bin libcap2 libcap-dev gcc && \
     # Clean up apt cache
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean && \
@@ -39,6 +39,8 @@ USER hostuser
 
 COPY --chown=hostuser:hostuser . /code/
 WORKDIR /code
-RUN hatch env create
+RUN hatch env create && \
+    # compile the output_signal_sender program which outputs the PID of a process sending a SIGTERM signal \
+    gcc -Wall /code/test/openjd/sessions/support_files/output_signal_sender.c -o /code/test/openjd/sessions/support_files/output_signal_sender
 
 CMD ["hatch", "run", "test", "--no-cov"]

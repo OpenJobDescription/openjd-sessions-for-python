@@ -36,6 +36,25 @@ POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE = f"Must define environment vars {POSIX_T
 POSIX_SET_DISJOINT_USER_ENV_VARS_MESSAGE = f"Must define environment vars {POSIX_DISJOINT_USER_ENV_VAR} and {POSIX_DISJOINT_GROUP_ENV_VAR} to run target-user impersonation tests on posix."
 
 
+def pytest_collection_modifyitems(config, items):
+    """This is a pytest hook that provides a default mark expression if one was not provided. By
+    default, we want to de-select tests that require the CAP_KILL Linux capability.
+
+    Those tests should only be selected when running the Docker container test workflow
+    described in DEVELOPMENT.md which grant the necessary capabilities and specify a
+    mark expression.
+
+    See:
+    - https://docs.pytest.org/en/8.3.x/reference/reference.html#pytest.hookspec.pytest_collection_modifyitems
+    - https://docs.pytest.org/en/8.3.x/reference/reference.html#command-line-flags
+    """
+    mark_expr = config.getoption("markexpr", False)
+    if not mark_expr:
+        config.option.markexpr = "not requires_cap_kill"
+    else:
+        config.option.markexpr = mark_expr
+
+
 def build_logger(handler: QueueHandler) -> LoggerAdapter:
     charset = string.ascii_letters + string.digits + string.punctuation
     name_suffix = "".join(random.choices(charset, k=32))

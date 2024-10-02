@@ -148,6 +148,9 @@ addopts = [
     "--numprocesses=auto",
     "--timeout=30"
 ]
+markers = [
+  "requires_cap_kill: tests that require CAP_KILL Linux capability",
+]
 
 
 [tool.coverage.run]

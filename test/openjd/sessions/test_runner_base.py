@@ -787,6 +787,97 @@ class TestScriptRunnerBase:
         delta_t = time_end - now
         assert timedelta(seconds=1) < delta_t < timedelta(seconds=3)
 
+    @pytest.mark.skipif(not is_posix(), reason="posix-only test")
+    @pytest.mark.xfail(
+        not has_posix_target_user(),
+        reason=POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
+    )
+    @pytest.mark.requires_cap_kill
+    def test_cancel_notify_direct_signal_with_cap_kill(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # Test for Linux hosts, that when CAP_KILL is in the permitted (and possibly effective)
+        # capability set(s), that the runner will:
+        #   1. directly signal the subprocess to notify
+        #   2. retain the status of CAP_KILL in the thread's effective capability set
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+
+        from openjd.sessions._linux._capabilities import (
+            _has_capability,
+            _get_libcap,
+            CAP_KILL,
+            CapabilitySetType,
+        )
+
+        # Record whether CAP_KILL is in the effective capability set before
+        # notifying the subprocess
+        libcap = _get_libcap()
+        caps = libcap.cap_get_proc()
+        cap_kill_was_effective = _has_capability(
+            caps=caps,
+            capability=CAP_KILL,
+            capability_set_type=CapabilitySetType.EFFECTIVE,
+        )
+
+        with NotifyingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            # Path to compiled C program that outputs the PID of the process sending the signal
+            output_signal_sender_app_loc = (
+                Path(__file__).parent / "support_files" / "output_signal_sender"
+            ).resolve()
+            assert output_signal_sender_app_loc.exists(), "output_signal_sender is not compiled."
+            runner._run([str(output_signal_sender_app_loc)])
+
+            # WHEN
+            secs = 2 if not is_windows() else 5
+            time.sleep(secs)  # Give the process a little time to do something
+            runner.cancel(time_limit=timedelta(seconds=2))
+
+            # THEN
+            for _ in range(10):
+                if runner.state == ScriptRunnerState.CANCELED:
+                    break
+                time.sleep(1)
+            else:
+                # Terminate the subprocess
+                runner.cancel()
+                assert False, "output_signal_sender process did not exit when sent SIGTERM"
+            assert runner.exit_code == 0
+
+        # Collect stdout lines. Based on the code of output_signal_sender.c, only a single
+        # line should be output with the PID of the process that sent the SIGINT signal.
+        # Extracting the log line requires finding the preceeding log line emitted by the runner,
+        # then taking the following line and parsing it as an integer
+        messages = collect_queue_messages(message_queue)
+        for i, message in enumerate(messages):
+            if message.startswith('INTERRUPT: Sending signal "term" to process '):
+                break
+        else:
+            assert False, "Could not find log line before stdout"
+        pid_line = messages[i + 1]
+        signal_sender_pid = int(pid_line)
+
+        current_pid = os.getpid()
+        assert (
+            current_pid == signal_sender_pid
+        ), "The runner's subprocess was not directly signalled"
+
+        # Assert that the presence/absence of CAP_KILL in the effective capability set
+        # is unchanged after calling Runner.cancel()
+        caps = libcap.cap_get_proc()
+        cap_kill_effective_after_cancel = _has_capability(
+            caps=caps,
+            capability=CAP_KILL,
+            capability_set_type=CapabilitySetType.EFFECTIVE,
+        )
+        assert (
+            cap_kill_was_effective == cap_kill_effective_after_cancel
+        ), "CAP_KILL added/removed from effetive set and persisted after cancelation"
+
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_double_cancel_notify(
         self,
