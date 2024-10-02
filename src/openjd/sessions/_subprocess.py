@@ -2,6 +2,7 @@
 
 import os
 import shlex
+import signal
 import time
 from ._os_checker import is_posix, is_windows
 
@@ -14,7 +15,7 @@ from typing import Any
 from threading import Event, Thread
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
-from typing import Callable, Optional, Sequence, cast
+from typing import Callable, Literal, Optional, Sequence, cast
 from pathlib import Path
 from datetime import timedelta
 import sys
@@ -200,7 +201,7 @@ class LoggingSubprocess(object):
         """
         if self._process is not None and self._process.poll() is None:
             if is_posix():
-                self._posix_signal_subprocess(signal="term", signal_subprocesses=False)
+                self._posix_signal_subprocess(signal_name="term")
             else:
                 self._windows_notify_subprocess()
 
@@ -216,7 +217,7 @@ class LoggingSubprocess(object):
         """
         if self._process is not None and self._process.poll() is None:
             if is_posix():
-                self._posix_signal_subprocess(signal="kill", signal_subprocesses=True)
+                self._posix_signal_subprocess(signal_name="kill")
             else:
                 self._logger.info(
                     f"INTERRUPT: Start killing the process tree with the root pid: {self._process.pid}",
@@ -298,7 +299,7 @@ class LoggingSubprocess(object):
             )
             return None
 
-    def _log_subproc_stdout(self):
+    def _log_subproc_stdout(self) -> None:
         """
         Blocking call which logs the STDOUT of the running subproc until the subprocess exits.
 
@@ -423,7 +424,10 @@ class LoggingSubprocess(object):
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
 
-    def _posix_signal_subprocess(self, signal: str, signal_subprocesses: bool = False) -> None:
+    def _posix_signal_subprocess(
+        self,
+        signal_name: Literal["term", "kill"],
+    ) -> None:
         """Send a given named signal, via pkill, to the subprocess when it is running
         as a different user than this process.
         """
@@ -450,23 +454,84 @@ class LoggingSubprocess(object):
         #  b. When we run the command using `sudo` then we need to either run code that does the whole
         #     algorithm as the other user, or `sudo` to send every process signal.
 
+        numeric_signal = 0
+        if signal_name == "term":
+            numeric_signal = signal.SIGTERM
+        elif signal_name == "kill":
+            numeric_signal = signal.SIGKILL
+        else:
+            raise NotImplementedError(f"Unsupported signal: {signal_name}")
+
         cmd = list[str]()
-        signal_child = False
+        pgid = os.getpgid(process.pid)
+        sudo_subproc_pid: Optional[int] = None
 
         if self._user is not None:
             user = cast(PosixSessionUser, self._user)
             # Only sudo if the user to run as is not the same as the current user.
             if not user.is_process_user():
                 cmd.extend(["sudo", "-u", user.user, "-i"])
-            signal_child = True
+                pgrep_result = run(
+                    ["pgrep", "-P", str(process.pid)],
+                    stdout=PIPE,
+                    stderr=STDOUT,
+                    stdin=DEVNULL,
+                    text=True,
+                )
+                if pgrep_result.returncode != 0:
+                    self._logger.warning(
+                        f"Failed to send signal '{signal_name}' to subprocess {process.pid}: Unable to query child processes of sudo process"
+                    )
+                    return
+                results = pgrep_result.stdout.splitlines()
+                if len(results) != 1:
+                    self._logger.warning(
+                        f"Failed to send signal '{signal_name}' to subprocess {process.pid}: More than one child proccess of sudo process"
+                    )
+                    return
+                sudo_subproc_pid = int(results[0])
+                pgid = os.getpgid(sudo_subproc_pid)
+
+        # Try directly signaling the process(es) first
+        try:
+            if signal_name == "kill":
+                self._logger.info(
+                    f'INTERRUPT: Sending signal "{signal_name}" to process group {pgid}',
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                )
+                os.killpg(pgid, numeric_signal)
+            else:
+                self._logger.info(
+                    f'INTERRUPT: Sending signal "{signal_name}" to process {process.pid}',
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                )
+                os.kill(sudo_subproc_pid or process.pid, numeric_signal)
+        except OSError:
+            self._logger.info(
+                "Could not directly send signal {signal_name} to {process.pid}, trying sudo.",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
+        else:
+            return
+
+        signal_pid_str: str
+        if signal_name == "kill":
+            signal_pid_str = f"-{pgid}"
+        elif sudo_subproc_pid:
+            signal_pid_str = str(sudo_subproc_pid)
+        else:
+            signal_pid_str = str(process.pid)
+
+        # pstree_result = run(["pstree", "-p"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
+        # self._logger.info("Pstree output: %s", pstree_result.stdout.read())
 
         cmd.extend(
             [
-                str(POSIX_SIGNAL_SUBPROC_SCRIPT_PATH),
-                str(process.pid),
-                signal,
-                str(signal_child),
-                str(signal_subprocesses),
+                "kill",
+                "-s",
+                signal_name,
+                "--",
+                signal_pid_str,
             ]
         )
         self._logger.info(
@@ -481,7 +546,7 @@ class LoggingSubprocess(object):
         )
         if result.returncode != 0:
             self._logger.warning(
-                f"Failed to send signal '{signal}' to subprocess {process.pid}: %s",
+                f"Failed to send signal '{signal_name}' to subprocess {signal_pid_str}: %s",
                 result.stdout.decode("utf-8"),
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO

@@ -376,18 +376,7 @@ class ScriptRunnerBase(ABC):
     def _generate_command_shell_script(self, args: Sequence[str]) -> str:
         """Generate a shell script for running a command given by the args."""
         script = list[str]()
-        script.append(
-            (
-                "#!/bin/sh\n"
-                "_term() {\n"
-                "  echo 'Caught SIGTERM'\n"
-                '  test "${CHILD_PID:-}" != "" && echo "Sending SIGTERM to ${CHILD_PID}" && kill -s TERM "${CHILD_PID}"\n'
-                '  wait "${CHILD_PID}"\n'
-                "  exit $?\n"  # The wait returns the exit code of the waited-for process
-                "}\n"
-                "trap _term TERM"
-            )
-        )
+        script.append("#!/bin/sh\n")
         if self._os_env_vars:
             for name, value in self._os_env_vars.items():
                 if value is None:
@@ -398,8 +387,7 @@ class ScriptRunnerBase(ABC):
             # Note: Single quotes around the path as it may have spaces, and we don't want to
             # process any shell commands in the path.
             script.append(f"cd '{self._startup_directory}'")
-        script.append(shlex.join(args) + " &")
-        script.append(("CHILD_PID=$!\n" 'wait "$CHILD_PID"\n' "exit $?\n"))
+        script.append("exec " + shlex.join(args))
         return "\n".join(script)
 
     def _materialize_files(

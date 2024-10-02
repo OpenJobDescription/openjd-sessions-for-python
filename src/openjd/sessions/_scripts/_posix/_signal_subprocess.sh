@@ -31,35 +31,14 @@ set -x
 
 PID="$1"
 SIG="$2"
-SIGNAL_CHILD="${3:-False}"
-INCL_SUBPROCS="${4:-False}"
 
 [ -f /bin/kill ] && KILL=/bin/kill
 [ ! -n "${KILL:-}" ] && [ -f /usr/bin/kill ] && KILL=/usr/bin/kill
-
-[ -f /bin/pgrep ] && PGREP=/bin/pgrep
-[ ! -n "${PGREP:-}" ] && [ -f /usr/bin/pgrep ] && PGREP=/usr/bin/pgrep
 
 if [ ! -n "${KILL:-}" ]
 then
     echo "ERROR - Could not find the 'kill' command under /bin or /usr/bin. Please install it."
     exit 1
-fi
-
-if [ ! -n "${PGREP:-}" ]
-then
-    echo "ERROR - Could not find the 'pgrep' command under /bin or /usr/bin. Please install it."
-    exit 1
-fi
-
-if test "${SIGNAL_CHILD}" = "True"
-then
-    PID=$( "${PGREP}" -P "${PID}" )
-fi
-
-if test "${INCL_SUBPROCS}" = "True"
-then
-    PID=-"${PID}"
 fi
 
 exec "$KILL" -s "$SIG" -- "$PID"
