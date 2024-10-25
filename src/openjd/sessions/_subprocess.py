@@ -427,8 +427,12 @@ class LoggingSubprocess(object):
         """Send a given named signal, via pkill, to the subprocess when it is running
         as a different user than this process.
         """
-        # Convince the type checker that accessing _process is okay
-        assert self._process is not None
+        # We can run into a race condition where the process exits (and another thread sets self._process to None)
+        # before the cancellation happens, so we swap to a local variable to ensure a cancellation that is not needed,
+        # does not raise an exception here.
+        process = self._process
+        # Convince the type checker that accessing process is okay
+        assert process is not None
 
         # Note: A limitation of this implementation is that it will only sigkill
         # processes that are in the same process-group as the command that we ran.
@@ -459,7 +463,7 @@ class LoggingSubprocess(object):
         cmd.extend(
             [
                 str(POSIX_SIGNAL_SUBPROC_SCRIPT_PATH),
-                str(self._process.pid),
+                str(process.pid),
                 signal,
                 str(signal_child),
                 str(signal_subprocesses),
@@ -477,7 +481,7 @@ class LoggingSubprocess(object):
         )
         if result.returncode != 0:
             self._logger.warning(
-                f"Failed to send signal '{signal}' to subprocess {self._process.pid}: %s",
+                f"Failed to send signal '{signal}' to subprocess {process.pid}: %s",
                 result.stdout.decode("utf-8"),
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
