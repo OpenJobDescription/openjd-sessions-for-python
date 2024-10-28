@@ -30,7 +30,7 @@ classifiers = [
 ]
 dependencies = [
   "openjd-model == 0.4.*",
-  "pywin32 == 306; platform_system == 'Windows'",
+  "pywin32 == 308; platform_system == 'Windows'",
   "psutil == 5.9.*; platform_system == 'Windows'",
 ]
 
