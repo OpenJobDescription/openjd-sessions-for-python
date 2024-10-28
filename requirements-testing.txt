@@ -7,4 +7,4 @@ pytest-xdist == 3.6.*
 black == 24.*
 ruff == 0.7.*
 mypy == 1.13.*
-psutil == 5.9.*
+psutil >= 5.9,< 6.2
