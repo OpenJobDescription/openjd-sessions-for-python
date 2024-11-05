@@ -1,3 +1,10 @@
+## 0.8.5 (2024-11-05)
+
+
+
+### Bug Fixes
+* unhandled exception in cancellation workflow (#186) ([`f8a9a48`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/f8a9a4825bc5f049f15502e1e6c423bf3a21c077))
+
 ## 0.8.4 (2024-09-20)
 
 
