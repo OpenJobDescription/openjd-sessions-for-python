@@ -29,7 +29,7 @@ classifiers = [
   "Topic :: Software Development :: Libraries"
 ]
 dependencies = [
-  "openjd-model == 0.4.*",
+  "openjd-model == 0.5.*",
   "pywin32 == 308; platform_system == 'Windows'",
   "psutil >= 5.9,< 6.2; platform_system == 'Windows'",
 ]
@@ -99,7 +99,7 @@ mypy_path = "src"
 
 # See: https://docs.pydantic.dev/mypy_plugin/
 #  - Helps mypy understand pydantic typing.
-plugins = "pydantic.mypy"
+plugins = "pydantic.v1.mypy"
 
 [tool.ruff]
 line-length = 100

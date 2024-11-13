@@ -797,7 +797,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             assert session.action_status == ActionStatus(
                 state=ActionState.FAILED,
-                fail_message="Error resolving format string: Failed to parse interpolation expression in import time; time.sleep(0.5); print('{{ Task.Param.P }}'); print('{{ Param.J }}') at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
+                fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
     def test_run_task_fail_run(self) -> None:
@@ -1218,7 +1218,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             assert session.action_status == ActionStatus(
                 state=ActionState.FAILED,
-                fail_message="Error resolving format string: Failed to parse interpolation expression in import time; time.sleep(0.5); print('{{ Task.Param.P }}'); print('{{ Param.J }}') at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
+                fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
     def test_enter_environment_fail_run(self) -> None:
@@ -1527,7 +1527,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             assert session.action_status == ActionStatus(
                 state=ActionState.FAILED,
-                fail_message="Error resolving format string: Failed to parse interpolation expression in import time; time.sleep(0.5); print('{{ Task.Param.P }}'); print('{{ Param.J }}') at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
+                fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
     def test_exit_environment_fail_run(self) -> None:
