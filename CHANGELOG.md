@@ -1,3 +1,12 @@
+## 0.9.0 (2024-11-13)
+
+
+### Features
+* **deps**: update openjd-model to 0.5.* (#194) ([`61bac54`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/61bac54274328c8629c4ca2abe3c74d807ffbacd))
+
+### Bug Fixes
+* unhandled exception in cancellation workflow (#186) ([`f8a9a48`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/f8a9a4825bc5f049f15502e1e6c423bf3a21c077))
+
 ## 0.8.4 (2024-09-20)
 
 
