@@ -1,9 +1,16 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
+import sys
 
+LINUX = "linux"
+MACOS = "darwin"
 POSIX = "posix"
 WINDOWS = "nt"
+
+
+def is_linux() -> bool:
+    return sys.platform == LINUX
 
 
 def is_posix() -> bool:
