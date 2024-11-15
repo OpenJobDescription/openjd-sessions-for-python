@@ -172,10 +172,12 @@ fail_under = 79
 # https://github.com/wemake-services/coverage-conditional-plugin
 [tool.coverage.coverage_conditional_plugin.omit]
 "sys_platform != 'win32'" = [
-  "src/openjd/sessions/_linux/*.py",
   "src/openjd/sessions/_win32/*.py",
   "src/openjd/sessions/_scripts/_windows/*.py",
   "src/openjd/sessions/_windows*.py"
+]
+"sys_platform != 'linux'" = [
+  "src/openjd/sessions/_linux/*.py",
 ]
 
 [tool.coverage.coverage_conditional_plugin.rules]

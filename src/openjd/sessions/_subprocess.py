@@ -216,6 +216,9 @@ class LoggingSubprocess(object):
         *,
         timeout_seconds: float = 1,
     ) -> Optional[SudoChildProcessIDs]:
+        # Hint to mypy to not raise module attribute errors (e.g. missing os.getpgid)
+        if sys.platform == "win32":
+            raise NotImplementedError("This method is for POSIX hosts only")
         process = self._process
         if process is None:
             raise ValueError("Process not launched")
@@ -593,6 +596,10 @@ class LoggingSubprocess(object):
     ) -> None:
         """Send a given named signal to the subprocess."""
 
+        # Hint to mypy to not raise module attribute errors (e.g. missing os.getpgid)
+        if sys.platform == "win32":
+            raise NotImplementedError("This method is for POSIX hosts only")
+
         # We can run into a race condition where the process exits (and another thread sets self._process to None)
         # before the cancellation happens, so we swap to a local variable to ensure a cancellation that is not needed,
         # does not raise an exception here.
@@ -633,8 +640,7 @@ class LoggingSubprocess(object):
                     f"INTERRUPT: Unable to send {signal_name} to {process.pid}",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
-            finally:
-                return
+            return
         elif signal_name == "kill":
             numeric_signal = signal.SIGKILL
         else:

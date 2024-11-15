@@ -20,7 +20,7 @@ ENV PIP_INDEX_URL=$PIP_INDEX_URL
 #   hostuser: hostuser, sharedgroup
 #   targetuser: targetuser, sharedgroup
 #   disjointuser: disjointuser, disjointgroup
-RUN apt-get update && apt-get install -y sudo psmisc libcap2-bin libcap2 libcap-dev gcc && \
+RUN apt-get update && apt-get install -y gcc libcap2-bin libcap2 libcap-dev psmisc sudo && \
     # Clean up apt cache
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean && \
