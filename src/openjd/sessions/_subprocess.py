@@ -4,24 +4,26 @@ import glob
 import os
 import shlex
 import signal
+import sys
 import time
+from contextlib import nullcontext
+from datetime import timedelta
+from pathlib import Path
+from queue import Queue, Empty
+from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
+from threading import Event, Thread
+from typing import Any
+from typing import Callable, Literal, NamedTuple, Optional, Sequence, cast
+
+from ._linux._capabilities import try_use_cap_kill
+from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from ._os_checker import is_linux, is_posix, is_windows
+from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 
 if is_windows():
     from subprocess import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW  # type: ignore
     from ._win32._popen_as_user import PopenWindowsAsUser  # type: ignore
     from ._windows_process_killer import kill_windows_process_tree
-from queue import Queue, Empty
-from typing import Any
-from threading import Event, Thread
-from ._logging import LoggerAdapter, LogContent, LogExtraInfo
-from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
-from typing import Callable, Literal, NamedTuple, Optional, Sequence, cast
-from pathlib import Path
-from datetime import timedelta
-import sys
-
-from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 
 
 __all__ = ("LoggingSubprocess",)
@@ -48,22 +50,24 @@ LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
 STDOUT_END_GRACETIME_SECONDS = 5
 
 
+class SudoChildProcessIDs(NamedTuple):
+    """Process IDs for the sudo child process when the process is cross-user on POSIX"""
+
+    pid: int
+    """The process ID"""
+
+    pgid: int
+    """The process group ID"""
+
+
+class FindSignalTargetError(Exception):
+    """Exception when unable to detect the signal target"""
+
+    pass
+
+
 class LoggingSubprocess(object):
     """A process whose stdout/stderr lines are sent to a given Logger."""
-
-    class _PosixSignalTarget(NamedTuple):
-        """A target for sending signals on POSIX hosts"""
-
-        pid: int
-        """The process ID"""
-
-        pgid: int
-        """The process group ID"""
-
-    class _FindSignalTargetError(Exception):
-        """Exception when unable to detect the signal target"""
-
-        pass
 
     _logger: LoggerAdapter
     _process: Optional[Popen]
@@ -77,9 +81,8 @@ class LoggingSubprocess(object):
     _working_dir: Optional[str]
 
     _pid: Optional[int]
+    _sudo_child_process_ids: Optional[SudoChildProcessIDs]
     _returncode: Optional[int]
-
-    _posix_signal_target: Optional[_PosixSignalTarget]
 
     def __init__(
         self,
@@ -111,7 +114,7 @@ class LoggingSubprocess(object):
         self._has_started = Event()
         self._pid = None
         self._returncode = None
-        self._posix_signal_target = None
+        self._sudo_child_process_ids = None
 
     @property
     def pid(self) -> Optional[int]:
@@ -183,7 +186,7 @@ class LoggingSubprocess(object):
         self._pid = self._process.pid
 
         if is_posix():
-            self._posix_signal_target = self._find_posix_signal_target()
+            self._sudo_child_process_ids = self._find_sudo_child_process_ids()
 
         self._logger.info(
             f"Command started as pid: {self._process.pid}",
@@ -208,11 +211,11 @@ class LoggingSubprocess(object):
             self._process = None
             del proc
 
-    def _find_posix_signal_target(
+    def _find_sudo_child_process_ids(
         self,
         *,
         timeout_seconds: float = 1,
-    ) -> Optional[_PosixSignalTarget]:
+    ) -> Optional[SudoChildProcessIDs]:
         process = self._process
         if process is None:
             raise ValueError("Process not launched")
@@ -227,9 +230,10 @@ class LoggingSubprocess(object):
         # If a user is not specified or is the same as the host process user, we signal the
         # immediate child
         if not self._user or self._user.is_process_user():
-            return LoggingSubprocess._PosixSignalTarget(
+            pgid = os.getpgid(process_pid)
+            return SudoChildProcessIDs(
                 pid=process_pid,
-                pgid=os.getpgid(process_pid),
+                pgid=pgid,
             )
 
         # For cross-user support, we use sudo which creates an intermediate process:
@@ -245,60 +249,90 @@ class LoggingSubprocess(object):
         # send SIGKILL signals to the subprocess of sudo
         start = time.monotonic()
         now = start
+        sudo_pgid = os.getpgid(process_pid)
 
         # Repeatedly scan for child processes
         #
         # This is put in a retry loop, because it takes a non-zero amount of time before sudo and
         # the kernel finish creating the subprocess. We cap this because the process may exit
         # quickly and we may never find the child process.
+        sudo_child_pid: Optional[int] = None
+        sudo_child_pgid: Optional[int] = None
         try:
             while now - start < timeout_seconds:
-                if is_linux():
-                    if signal_target := self._find_linux_signal_target(sudo_pid=process_pid):
-                        return signal_target
-                else:
-                    if signal_target := self._find_nonlinux_signal_target(sudo_pid=process_pid):
-                        return signal_target
+                if not sudo_child_pid:
+                    if is_linux():
+                        sudo_child_pid = self._find_sudo_child_process_id_procfs(
+                            sudo_pid=process_pid
+                        )
+                    else:
+                        sudo_child_pid = self._find_child_process_id_pgrep(sudo_pid=process_pid)
+
+                if sudo_child_pid:
+                    try:
+                        sudo_child_pgid = os.getpgid(sudo_child_pid)
+                    except ProcessLookupError:
+                        # If the process has exited, we short-circuit
+                        return None
+                    # sudo first forks, then creates a new process group. There is a race condition
+                    # where the process group ID we observe has not yet changed. If the PGID detected
+                    # matches the PGID of sudo, then we retry again in the loop
+                    if sudo_child_pgid == sudo_pgid:
+                        sudo_child_pgid = None
+                    else:
+                        break
 
                 # If we did not find any child processes yet, sleep for some time and retry
                 time.sleep(min(0.05, now - start))
                 now = time.monotonic()
-        except LoggingSubprocess._FindSignalTargetError as e:
+            if not sudo_child_pid or not sudo_child_pgid:
+                raise FindSignalTargetError("unable to detect subprocess before timeout")
+        except FindSignalTargetError as e:
             self._logger.warning(
                 f"Unable to determine signal target: {e}",
                 extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
             )
 
-        return None
-
-    def _find_linux_signal_target(self, *, sudo_pid: int) -> Optional[_PosixSignalTarget]:
-        # Look for the child process of sudo using procfs. See
-        # https://docs.kernel.org/filesystems/proc.html#proc-pid-task-tid-children-information-about-task-children
-        children_pids: set[int] = set()
-        for task_children_path in glob.glob(f"/proc/{sudo_pid}/task/**/children"):
-            with open(task_children_path, "r") as f:
-                children_pids.update(int(pid_str) for pid_str in f.read().split())
-
-        # If we found exactly one child, we return it
-        if len(children_pids) == 1:
-            child_pid = children_pids.pop()
-            self._logger.info(
-                f"Command process (sudo child) PID is {child_pid}",
+        if sudo_child_pid and sudo_child_pgid:
+            self._logger.debug(
+                f"Signal target = PID {sudo_child_pid} / PGID {sudo_child_pgid}",
                 extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
             )
-            return LoggingSubprocess._PosixSignalTarget(
-                pid=child_pid,
-                pgid=os.getpgid(child_pid),
+            return SudoChildProcessIDs(
+                pid=sudo_child_pid,
+                pgid=sudo_child_pgid,
             )
+        else:
+            return None
+
+    def _find_sudo_child_process_id_procfs(self, *, sudo_pid: int) -> Optional[int]:
+        # Look for the child process of sudo using procfs. See
+        # https://docs.kernel.org/filesystems/proc.html#proc-pid-task-tid-children-information-about-task-children
+
+        child_pids: set[int] = set()
+        for task_children_path in glob.glob(f"/proc/{sudo_pid}/task/**/children"):
+            with open(task_children_path, "r") as f:
+                child_pids.update(int(pid_str) for pid_str in f.read().split())
+
+        # If we found exactly one child, we return it
+        if len(child_pids) == 1:
+
+            child_pid = child_pids.pop()
+
+            self._logger.debug(
+                f"Session action process (sudo child) PID is {child_pid}",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
+            return child_pid
         # If we found multiple child processes, this violates our assumptions about how sudo
         # works. We will fall-back to using pkill for signalling the process
-        elif len(children_pids) > 1:
-            raise LoggingSubprocess._FindSignalTargetError(
-                f"Expected single child processes of sudo, but found {children_pids}"
+        elif len(child_pids) > 1:
+            raise FindSignalTargetError(
+                f"Expected single child processes of sudo, but found {child_pids}"
             )
         return None
 
-    def _find_nonlinux_signal_target(self, *, sudo_pid: int) -> Optional[_PosixSignalTarget]:
+    def _find_child_process_id_pgrep(self, *, sudo_pid: int) -> Optional[int]:
         pgrep_result = run(
             ["pgrep", "-P", str(sudo_pid)],
             stdout=PIPE,
@@ -307,21 +341,16 @@ class LoggingSubprocess(object):
             text=True,
         )
         if pgrep_result.returncode != 0:
-            raise LoggingSubprocess._FindSignalTargetError(
-                "Unable to query child processes of sudo process"
-            )
+            raise FindSignalTargetError("Unable to query child processes of sudo process")
         results = pgrep_result.stdout.splitlines()
         if len(results) > 1:
-            raise LoggingSubprocess._FindSignalTargetError(
+            raise FindSignalTargetError(
                 f"Expected a single child process of sudo, but found {results}"
             )
         elif len(results) == 0:
             return None
         sudo_subproc_pid = int(results[0])
-        return LoggingSubprocess._PosixSignalTarget(
-            pid=sudo_subproc_pid,
-            pgid=os.getpgid(sudo_subproc_pid),
-        )
+        return sudo_subproc_pid
 
     def notify(self) -> None:
         """The 'Notify' part of Open Job Description's subprocess cancelation method.
@@ -562,9 +591,8 @@ class LoggingSubprocess(object):
         self,
         signal_name: Literal["term", "kill"],
     ) -> None:
-        """Send a given named signal, via pkill, to the subprocess when it is running
-        as a different user than this process.
-        """
+        """Send a given named signal to the subprocess."""
+
         # We can run into a race condition where the process exits (and another thread sets self._process to None)
         # before the cancellation happens, so we swap to a local variable to ensure a cancellation that is not needed,
         # does not raise an exception here.
@@ -591,14 +619,28 @@ class LoggingSubprocess(object):
         numeric_signal = 0
         if signal_name == "term":
             numeric_signal = signal.SIGTERM
+            # SIGTERM is the simpler case. In the cross-user sudo case, we can send a signal to the
+            # sudo process and it will forward the signal. For the same-user case, the subprocess
+            # is the one we want to signal.
+            self._logger.info(
+                f'INTERRUPT: Sending signal "{signal_name}" to process {process.pid}',
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
+            try:
+                os.kill(process.pid, numeric_signal)
+            except OSError:
+                self._logger.warning(
+                    f"INTERRUPT: Unable to send {signal_name} to {process.pid}",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                )
+            finally:
+                return
         elif signal_name == "kill":
             numeric_signal = signal.SIGKILL
         else:
             raise NotImplementedError(f"Unsupported signal: {signal_name}")
 
         kill_cmd = list[str]()
-        pgid = os.getpgid(process.pid)
-        sudo_subproc_pid: Optional[int] = None
 
         if self._user is not None:
             user = cast(PosixSessionUser, self._user)
@@ -608,47 +650,40 @@ class LoggingSubprocess(object):
 
         # If we were unable to detect sudo's child process PID after launching the
         # subprocess, we try again now
-        if not self._posix_signal_target:
-            self._posix_signal_target = self._find_posix_signal_target()
+        if not self._sudo_child_process_ids:
+            self._sudo_child_process_ids = self._find_sudo_child_process_ids()
 
-        if not self._posix_signal_target:
+        if not self._sudo_child_process_ids:
             self._logger.warning(
-                f"Failed to send signal '{signal_name}' to subprocess {process.pid}: Unable to query child processes of sudo process"
+                f"Failed to send signal '{signal_name}': Unable to determine child process of sudo"
             )
             return
 
         # Try directly signaling the process(es) first
-        try:
-            if signal_name == "kill":
-                self._logger.info(
-                    f'INTERRUPT: Sending signal "{signal_name}" to process group {pgid}',
-                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-                )
-                os.killpg(pgid, numeric_signal)
+        ctx_mgr = try_use_cap_kill() if is_linux() else nullcontext(enter_result=False)
+        with ctx_mgr as has_cap_kill:
+            if has_cap_kill or not self._user or self._user.is_process_user():
+                try:
+                    self._logger.info(
+                        f'INTERRUPT: Sending signal "{signal_name}" to process group {self._sudo_child_process_ids.pgid}',
+                        extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                    )
+                    os.killpg(self._sudo_child_process_ids.pgid, numeric_signal)
+                except OSError:
+                    self._logger.info(
+                        "Could not directly send signal {signal_name} to {self._posix_signal_target.pid}, trying sudo.",
+                        extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                    )
+                else:
+                    return
             else:
                 self._logger.info(
-                    f'INTERRUPT: Sending signal "{signal_name}" to process {process.pid}',
+                    "Could not directly send signal {signal_name} to {process.pid}, trying sudo.",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
-                os.kill(sudo_subproc_pid or process.pid, numeric_signal)
-        except OSError:
-            self._logger.info(
-                "Could not directly send signal {signal_name} to {process.pid}, trying sudo.",
-                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-            )
-        else:
-            return
 
-        signal_pid_str: str
-        if signal_name == "kill":
-            signal_pid_str = f"-{pgid}"
-        elif sudo_subproc_pid:
-            signal_pid_str = str(sudo_subproc_pid)
-        else:
-            signal_pid_str = str(process.pid)
-
-        # pstree_result = run(["pstree", "-p"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
-        # self._logger.info("Pstree output: %s", pstree_result.stdout.read())
+        # Uncomment to visualize process tree when debugging tests
+        # self._log_process_tree()
 
         kill_cmd.extend(
             [
@@ -656,7 +691,7 @@ class LoggingSubprocess(object):
                 "-s",
                 signal_name,
                 "--",
-                signal_pid_str,
+                f"-{self._sudo_child_process_ids.pgid}",
             ]
         )
         self._logger.info(
@@ -671,12 +706,25 @@ class LoggingSubprocess(object):
         )
         if result.returncode != 0:
             self._logger.warning(
-                f"Failed to send signal '{signal_name}' to subprocess {signal_pid_str}: %s",
+                f"Failed to send signal '{signal_name}' to PGID {self._sudo_child_process_ids.pgid}: %s",
                 result.stdout.decode("utf-8"),
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
                 ),
             )
+
+    def _log_process_tree(self) -> None:
+        """A developer method to visualize the process tree including PIDs and PGIDs when debuging tests"""
+        pstree_result = run(["pstree", "-pg"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
+        self._logger.debug(
+            f"pstree -pg output: {pstree_result.stdout}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
+        ps_result = run(["ps", "-ejH"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
+        self._logger.debug(
+            f"ps -ejH output:\n{ps_result.stdout}",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
 
     def _windows_notify_subprocess(self) -> None:
         """Sends a CTRL_BREAK_EVENT signal to the subprocess"""
