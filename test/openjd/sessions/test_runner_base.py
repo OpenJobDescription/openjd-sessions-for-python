@@ -817,6 +817,7 @@ class TestScriptRunnerBase:
         # Record whether CAP_KILL is in the effective capability set before
         # notifying the subprocess
         libcap = _get_libcap()
+        assert libcap is not None, "Libcap not found"
         caps = libcap.cap_get_proc()
         cap_kill_was_effective = _has_capability(
             caps=caps,

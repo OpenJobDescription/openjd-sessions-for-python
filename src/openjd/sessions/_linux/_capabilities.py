@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from ctypes.util import find_library
 from enum import Enum
 from functools import cache
-from typing import Any, Generator, Tuple, TYPE_CHECKING
+from typing import Any, Generator, Optional, Tuple, TYPE_CHECKING
 
 
 from .._logging import LOG
@@ -109,11 +109,18 @@ def _cap_get_flag_errcheck(
 
 
 @cache
-def _get_libcap() -> ctypes.CDLL:
+def _get_libcap() -> Optional[ctypes.CDLL]:
     if not sys.platform.startswith("linux"):
         raise OSError(f"libcap is only available on Linux, but found platform: {sys.platform}")
 
-    libcap = ctypes.CDLL(find_library("cap"), use_errno=True)
+    libcap_path = find_library("cap")
+    if libcap_path is None:
+        LOG.info(
+            "Unable to locate libcap. Session action cancelation signals will be sent using sudo"
+        )
+        return None
+
+    libcap = ctypes.CDLL(libcap_path, use_errno=True)
 
     # https://man7.org/linux/man-pages/man3/cap_set_proc.3.html
     libcap.cap_set_proc.restype = ctypes.c_int
@@ -157,6 +164,7 @@ def _has_capability(
     capability_set_type: CapabilitySetType,
 ) -> bool:
     libcap = _get_libcap()
+    assert libcap is not None
     flag_value = cap_flag_value_t()
     libcap.cap_get_flag(caps, capability, capability_set_type.value, ctypes.byref(flag_value))
     return flag_value.value == CAP_SET
@@ -184,6 +192,11 @@ def try_use_cap_kill() -> Generator[bool, None, None]:
         raise OSError(f"Only Linux is supported, but platform is {sys.platform}")
 
     libcap = _get_libcap()
+    # If libcap is not found, we yield False indicating we are not aware of having CAP_KILL
+    if not libcap:
+        yield False
+        return
+
     caps = libcap.cap_get_proc()
 
     if _has_capability(
