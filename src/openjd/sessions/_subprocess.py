@@ -1,6 +1,5 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-import glob
 import os
 import shlex
 import signal
@@ -13,14 +12,15 @@ from queue import Queue, Empty
 from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
 from threading import Event, Thread
 from typing import Any
-from typing import Callable, Literal, NamedTuple, Optional, Sequence, cast
+from typing import Callable, Literal, Optional, Sequence, cast
 
 from ._linux._capabilities import try_use_cap_kill
+from ._linux._sudo import find_sudo_child_process_group_id
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from ._os_checker import is_linux, is_posix, is_windows
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 
-if is_windows():
+if is_windows():  # pragma: nocover
     from subprocess import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW  # type: ignore
     from ._win32._popen_as_user import PopenWindowsAsUser  # type: ignore
     from ._windows_process_killer import kill_windows_process_tree
@@ -50,22 +50,6 @@ LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
 STDOUT_END_GRACETIME_SECONDS = 5
 
 
-class SudoChildProcessIDs(NamedTuple):
-    """Process IDs for the sudo child process when the process is cross-user on POSIX"""
-
-    pid: int
-    """The process ID"""
-
-    pgid: int
-    """The process group ID"""
-
-
-class FindSignalTargetError(Exception):
-    """Exception when unable to detect the signal target"""
-
-    pass
-
-
 class LoggingSubprocess(object):
     """A process whose stdout/stderr lines are sent to a given Logger."""
 
@@ -81,7 +65,7 @@ class LoggingSubprocess(object):
     _working_dir: Optional[str]
 
     _pid: Optional[int]
-    _sudo_child_process_ids: Optional[SudoChildProcessIDs]
+    _sudo_child_process_group_id: Optional[int]
     _returncode: Optional[int]
 
     def __init__(
@@ -114,7 +98,7 @@ class LoggingSubprocess(object):
         self._has_started = Event()
         self._pid = None
         self._returncode = None
-        self._sudo_child_process_ids = None
+        self._sudo_child_process_group_id = None
 
     @property
     def pid(self) -> Optional[int]:
@@ -185,8 +169,16 @@ class LoggingSubprocess(object):
 
         self._pid = self._process.pid
 
-        if is_posix():
-            self._sudo_child_process_ids = self._find_sudo_child_process_ids()
+        # Would use is_posix(), but it doesn't short-circuit mypy which then complains
+        # about os.getpgid not being a valid attribute.
+        if not sys.platform == "win32":
+            if not self._user or self._user.is_process_user():
+                self._sudo_child_process_group_id = os.getpgid(self._process.pid)
+            else:
+                self._sudo_child_process_group_id = find_sudo_child_process_group_id(
+                    logger=self._logger,
+                    sudo_process=self._process,
+                )
 
         self._logger.info(
             f"Command started as pid: {self._process.pid}",
@@ -210,150 +202,6 @@ class LoggingSubprocess(object):
             proc = self._process
             self._process = None
             del proc
-
-    def _find_sudo_child_process_ids(
-        self,
-        *,
-        timeout_seconds: float = 1,
-    ) -> Optional[SudoChildProcessIDs]:
-        # Hint to mypy to not raise module attribute errors (e.g. missing os.getpgid)
-        if sys.platform == "win32":
-            raise NotImplementedError("This method is for POSIX hosts only")
-        process = self._process
-        if process is None:
-            raise ValueError("Process not launched")
-        process_pid = process.pid
-        if not is_posix():
-            raise NotImplementedError(f"Only POSIX supported, but running on {sys.platform}")
-        if timeout_seconds <= 0:
-            raise ValueError(
-                f"Expected positive value for timeout_seconds but got {timeout_seconds}"
-            )
-
-        # If a user is not specified or is the same as the host process user, we signal the
-        # immediate child
-        if not self._user or self._user.is_process_user():
-            pgid = os.getpgid(process_pid)
-            return SudoChildProcessIDs(
-                pid=process_pid,
-                pgid=pgid,
-            )
-
-        # For cross-user support, we use sudo which creates an intermediate process:
-        #
-        #    openjd-process
-        #      |
-        #      +-- sudo
-        #            |
-        #            +-- subprocess
-        #
-        # Sudo forwards signals that it is able to handle, but in the case of SIGKILL sudo cannot
-        # handle the signal and the kernel will kill it leaving the child orphaned. We need to
-        # send SIGKILL signals to the subprocess of sudo
-        start = time.monotonic()
-        now = start
-        sudo_pgid = os.getpgid(process_pid)
-
-        # Repeatedly scan for child processes
-        #
-        # This is put in a retry loop, because it takes a non-zero amount of time before sudo and
-        # the kernel finish creating the subprocess. We cap this because the process may exit
-        # quickly and we may never find the child process.
-        sudo_child_pid: Optional[int] = None
-        sudo_child_pgid: Optional[int] = None
-        try:
-            while now - start < timeout_seconds:
-                if not sudo_child_pid:
-                    if is_linux():
-                        sudo_child_pid = self._find_sudo_child_process_id_procfs(
-                            sudo_pid=process_pid
-                        )
-                    else:
-                        sudo_child_pid = self._find_child_process_id_pgrep(sudo_pid=process_pid)
-
-                if sudo_child_pid:
-                    try:
-                        sudo_child_pgid = os.getpgid(sudo_child_pid)
-                    except ProcessLookupError:
-                        # If the process has exited, we short-circuit
-                        return None
-                    # sudo first forks, then creates a new process group. There is a race condition
-                    # where the process group ID we observe has not yet changed. If the PGID detected
-                    # matches the PGID of sudo, then we retry again in the loop
-                    if sudo_child_pgid == sudo_pgid:
-                        sudo_child_pgid = None
-                    else:
-                        break
-
-                # If we did not find any child processes yet, sleep for some time and retry
-                time.sleep(min(0.05, now - start))
-                now = time.monotonic()
-            if not sudo_child_pid or not sudo_child_pgid:
-                raise FindSignalTargetError("unable to detect subprocess before timeout")
-        except FindSignalTargetError as e:
-            self._logger.warning(
-                f"Unable to determine signal target: {e}",
-                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-            )
-
-        if sudo_child_pid and sudo_child_pgid:
-            self._logger.debug(
-                f"Signal target = PID {sudo_child_pid} / PGID {sudo_child_pgid}",
-                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-            )
-            return SudoChildProcessIDs(
-                pid=sudo_child_pid,
-                pgid=sudo_child_pgid,
-            )
-        else:
-            return None
-
-    def _find_sudo_child_process_id_procfs(self, *, sudo_pid: int) -> Optional[int]:
-        # Look for the child process of sudo using procfs. See
-        # https://docs.kernel.org/filesystems/proc.html#proc-pid-task-tid-children-information-about-task-children
-
-        child_pids: set[int] = set()
-        for task_children_path in glob.glob(f"/proc/{sudo_pid}/task/**/children"):
-            with open(task_children_path, "r") as f:
-                child_pids.update(int(pid_str) for pid_str in f.read().split())
-
-        # If we found exactly one child, we return it
-        if len(child_pids) == 1:
-
-            child_pid = child_pids.pop()
-
-            self._logger.debug(
-                f"Session action process (sudo child) PID is {child_pid}",
-                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-            )
-            return child_pid
-        # If we found multiple child processes, this violates our assumptions about how sudo
-        # works. We will fall-back to using pkill for signalling the process
-        elif len(child_pids) > 1:
-            raise FindSignalTargetError(
-                f"Expected single child processes of sudo, but found {child_pids}"
-            )
-        return None
-
-    def _find_child_process_id_pgrep(self, *, sudo_pid: int) -> Optional[int]:
-        pgrep_result = run(
-            ["pgrep", "-P", str(sudo_pid)],
-            stdout=PIPE,
-            stderr=STDOUT,
-            stdin=DEVNULL,
-            text=True,
-        )
-        if pgrep_result.returncode != 0:
-            raise FindSignalTargetError("Unable to query child processes of sudo process")
-        results = pgrep_result.stdout.splitlines()
-        if len(results) > 1:
-            raise FindSignalTargetError(
-                f"Expected a single child process of sudo, but found {results}"
-            )
-        elif len(results) == 0:
-            return None
-        sudo_subproc_pid = int(results[0])
-        return sudo_subproc_pid
 
     def notify(self) -> None:
         """The 'Notify' part of Open Job Description's subprocess cancelation method.
@@ -656,10 +504,13 @@ class LoggingSubprocess(object):
 
         # If we were unable to detect sudo's child process PID after launching the
         # subprocess, we try again now
-        if not self._sudo_child_process_ids:
-            self._sudo_child_process_ids = self._find_sudo_child_process_ids()
+        if not self._sudo_child_process_group_id:
+            self._sudo_child_process_group_id = find_sudo_child_process_group_id(
+                logger=self._logger,
+                sudo_process=process,
+            )
 
-        if not self._sudo_child_process_ids:
+        if not self._sudo_child_process_group_id:
             self._logger.warning(
                 f"Failed to send signal '{signal_name}': Unable to determine child process of sudo"
             )
@@ -671,10 +522,10 @@ class LoggingSubprocess(object):
             if has_cap_kill or not self._user or self._user.is_process_user():
                 try:
                     self._logger.info(
-                        f'INTERRUPT: Sending signal "{signal_name}" to process group {self._sudo_child_process_ids.pgid}',
+                        f'INTERRUPT: Sending signal "{signal_name}" to process group {self._sudo_child_process_group_id}',
                         extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                     )
-                    os.killpg(self._sudo_child_process_ids.pgid, numeric_signal)
+                    os.killpg(self._sudo_child_process_group_id, numeric_signal)
                 except OSError:
                     self._logger.info(
                         "Could not directly send signal {signal_name} to {self._posix_signal_target.pid}, trying sudo.",
@@ -697,7 +548,7 @@ class LoggingSubprocess(object):
                 "-s",
                 signal_name,
                 "--",
-                f"-{self._sudo_child_process_ids.pgid}",
+                f"-{self._sudo_child_process_group_id}",
             ]
         )
         self._logger.info(
@@ -712,7 +563,7 @@ class LoggingSubprocess(object):
         )
         if result.returncode != 0:
             self._logger.warning(
-                f"Failed to send signal '{signal_name}' to PGID {self._sudo_child_process_ids.pgid}: %s",
+                f"Failed to send signal '{signal_name}' to PGID {self._sudo_child_process_group_id}: %s",
                 result.stdout.decode("utf-8"),
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
