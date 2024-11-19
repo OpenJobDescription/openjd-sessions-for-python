@@ -820,6 +820,7 @@ class TestScriptRunnerBase:
         assert libcap is not None, "Libcap not found"
         caps = libcap.cap_get_proc()
         cap_kill_was_effective = _has_capability(
+            libcap=libcap,
             caps=caps,
             capability=CAP_KILL,
             capability_set_type=CapabilitySetType.EFFECTIVE,
@@ -871,6 +872,7 @@ class TestScriptRunnerBase:
         # is unchanged after calling Runner.cancel()
         caps = libcap.cap_get_proc()
         cap_kill_effective_after_cancel = _has_capability(
+            libcap=libcap,
             caps=caps,
             capability=CAP_KILL,
             capability_set_type=CapabilitySetType.EFFECTIVE,

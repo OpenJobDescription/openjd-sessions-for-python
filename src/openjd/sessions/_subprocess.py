@@ -512,7 +512,8 @@ class LoggingSubprocess(object):
 
         if not self._sudo_child_process_group_id:
             self._logger.warning(
-                f"Failed to send signal '{signal_name}': Unable to determine child process of sudo"
+                f"Failed to send signal '{signal_name}': Unable to determine child process of sudo",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
             )
             return
 

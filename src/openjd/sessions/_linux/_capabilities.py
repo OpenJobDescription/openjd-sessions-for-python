@@ -125,7 +125,7 @@ def _get_libcap() -> Optional[ctypes.CDLL]:
     # https://man7.org/linux/man-pages/man3/cap_set_proc.3.html
     libcap.cap_set_proc.restype = ctypes.c_int
     libcap.cap_set_proc.argtypes = [
-        ctypes.POINTER(Cap),
+        cap_t,
     ]
     libcap.cap_set_proc.errcheck = _cap_set_err_check  # type: ignore
 
@@ -159,12 +159,11 @@ def _get_libcap() -> Optional[ctypes.CDLL]:
 
 def _has_capability(
     *,
+    libcap: ctypes.CDLL,
     caps: cap_t,
     capability: int,
     capability_set_type: CapabilitySetType,
 ) -> bool:
-    libcap = _get_libcap()
-    assert libcap is not None
     flag_value = cap_flag_value_t()
     libcap.cap_get_flag(caps, capability, capability_set_type.value, ctypes.byref(flag_value))
     return flag_value.value == CAP_SET
@@ -200,12 +199,16 @@ def try_use_cap_kill() -> Generator[bool, None, None]:
     caps = libcap.cap_get_proc()
 
     if _has_capability(
-        caps=caps, capability=CAP_KILL, capability_set_type=CapabilitySetType.EFFECTIVE
+        libcap=libcap,
+        caps=caps,
+        capability=CAP_KILL,
+        capability_set_type=CapabilitySetType.EFFECTIVE,
     ):
         LOG.debug("CAP_KILL is in the thread's effective set")
         # CAP_KILL is already in the effective set
         yield True
     elif _has_capability(
+        libcap=libcap,
         caps=caps,
         capability=CAP_KILL,
         capability_set_type=CapabilitySetType.PERMITTED,

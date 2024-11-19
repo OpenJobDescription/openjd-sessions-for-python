@@ -81,7 +81,7 @@ def find_sudo_child_process_group_id(
                     break
 
             # If we did not find any child processes yet, sleep for some time and retry
-            time.sleep(min(0.05, now - start))
+            time.sleep(min(0.05, timeout_seconds - (now - start)))
             now = time.monotonic()
         if not sudo_child_pid or not sudo_child_pgid:
             raise FindSignalTargetError("unable to detect subprocess before timeout")
