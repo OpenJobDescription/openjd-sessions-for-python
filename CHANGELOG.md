@@ -1,3 +1,10 @@
+## 0.9.1 (2024-12-12)
+
+
+### Features
+* directly signal session action processes using CAP_KILL (#196) ([`84008be`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/84008be79e80cdd9b06095933ea0c58baee89c92))
+
+
 ## 0.9.0 (2024-11-13)
 
 
