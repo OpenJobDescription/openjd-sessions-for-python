@@ -698,6 +698,26 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "Jvalue Jvalue" in caplog.messages
             assert "Pvalue Pvalue" in caplog.messages
+            assert "--------- Running Task" in caplog.messages
+
+    def test_run_task_no_log_banners(
+        self, caplog: pytest.LogCaptureFixture, fix_basic_task_script: StepScript_2023_09
+    ) -> None:
+        # GIVEN
+        # This ensures that the log_task_banner argument is correctly controlling the task banner logging.
+        session_id = uuid.uuid4().hex
+        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
+        task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            # WHEN
+            session.run_task(
+                step_script=fix_basic_task_script,
+                task_parameter_values=task_params,
+                log_task_banner=False,
+            )
+
+            # THEN
+            assert "--------- Running Task" not in caplog.messages
 
     def test_run_task_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
         # GIVEN
