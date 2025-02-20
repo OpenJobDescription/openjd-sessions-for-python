@@ -424,8 +424,24 @@ class ScriptRunnerBase(ABC):
             if self._callback is not None:
                 self._callback(ActionState.FAILED)
 
-    def _run_action(self, action: ActionModel, symtab: SymbolTable) -> None:
-        """Helper for derived classes to run a specific Action."""
+    def _run_action(
+        self,
+        action: ActionModel,
+        symtab: SymbolTable,
+        *,
+        default_timeout: Optional[timedelta] = None,
+    ) -> None:
+        """Helper for derived classes to run a specific Action.
+
+        Args:
+            action (ActionModel): The action model to be executed. Must be an
+                instance of Action_2023_09.
+            symtab (SymbolTable): Symbol table used for resolving command and
+                arguments.
+            default_timeout (Optional[timedelta], optional): Default timeout duration
+                for the action if no timeout is specified in the action. The default behaviour if
+                None is passed will allow the action to run indefinitely until it completes.
+        """
         assert isinstance(action, Action_2023_09)
         try:
             command = [action.command.resolve(symtab=symtab)]
@@ -444,7 +460,7 @@ class ScriptRunnerBase(ABC):
             if self._callback is not None:
                 self._callback(ActionState.FAILED)
         else:
-            time_limit: Optional[timedelta] = None
+            time_limit: Optional[timedelta] = default_timeout
             if action.timeout:
                 time_limit = timedelta(seconds=action.timeout)
             self._run(command, time_limit)
