@@ -397,3 +397,90 @@ class TestEnvironmentScriptRunner:
                 assert arg0 == expected
                 arg1 = mock_cancel.call_args.args[1]
                 assert arg1 is time_limit
+
+    @pytest.mark.parametrize(
+        argnames="default_timeout",
+        argvalues=(
+            None,
+            timedelta(seconds=30),
+            timedelta(seconds=60),
+        ),
+    )
+    def test_run_env_action_passes_default_timeout(
+        self,
+        tmp_path: Path,
+        default_timeout: Optional[timedelta],
+    ) -> None:
+        # GIVEN
+        action = Action_2023_09(
+            command="{{ Task.Command }}",
+            args=["-c", "print('Hello')"],
+        )
+        script = EnvironmentScript_2023_09(
+            actions=EnvironmentActions_2023_09(
+                onExit=action,
+            )
+        )
+
+        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        runner = EnvironmentScriptRunner(
+            logger=MagicMock(),
+            session_working_directory=tmp_path,
+            environment_script=script,
+            symtab=symtab,
+            session_files_directory=tmp_path,
+        )
+        with (
+            patch.object(runner, "_run_action") as mock_run_action,
+            runner,
+        ):
+            # WHEN
+            runner._run_env_action(
+                action=action,
+                default_timeout=default_timeout,
+            )
+
+        # THEN
+        mock_run_action.assert_called_once_with(
+            action,
+            symtab,
+            default_timeout=default_timeout,
+        )
+
+    def test_exit_uses_default_timeout(
+        self,
+        tmp_path: Path,
+    ):
+        # GIVEN
+        # An "onExit" action with no defined timeout
+        on_exit_action = Action_2023_09(
+            command="{{ Task.Command }}",
+            args=["-c", "print('Hello')"],
+        )
+        expected_default_timeout = timedelta(minutes=5)
+        script = EnvironmentScript_2023_09(
+            actions=EnvironmentActions_2023_09(
+                onExit=on_exit_action,
+            )
+        )
+
+        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        runner = EnvironmentScriptRunner(
+            logger=MagicMock(),
+            session_working_directory=tmp_path,
+            environment_script=script,
+            symtab=symtab,
+            session_files_directory=tmp_path,
+        )
+        with (
+            patch.object(runner, "_run_env_action") as mock_run_env_action,
+            runner,
+        ):
+            # WHEN
+            runner.exit()
+
+        # THEN
+        mock_run_env_action.assert_called_once_with(
+            on_exit_action,
+            default_timeout=expected_default_timeout,
+        )

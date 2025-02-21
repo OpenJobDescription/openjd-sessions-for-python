@@ -760,6 +760,7 @@ class Session(object):
         step_script: StepScriptModel,
         task_parameter_values: TaskParameterSet,
         os_env_vars: Optional[dict[str, str]] = None,
+        log_task_banner: bool = True,
     ) -> None:
         """Run a Task within the Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -776,11 +777,15 @@ class Session(object):
                 by values defined in Environments.
                     Key: Environment variable name
                     Value: Value for the environment variable.
+            log_task_banner (bool): Whether to log a banner before running the Task.
+                Default: True
         """
         if self.state != SessionState.READY:
             raise RuntimeError("Session must be in the READY state to run a task.")
 
-        log_section_banner(self._logger, "Running Task")
+        if log_task_banner:
+            log_section_banner(self._logger, "Running Task")
+
         if task_parameter_values:
             self._logger.info(
                 "Parameter values:",
