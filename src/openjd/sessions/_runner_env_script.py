@@ -27,6 +27,13 @@ from ._types import ActionModel, ActionState, EnvironmentScriptModel
 __all__ = ("EnvironmentScriptRunner",)
 
 
+_ENV_EXIT_DEFAULT_TIMEOUT = timedelta(minutes=5)
+"""The default timeout for environment exit actions if none is specified.
+
+See https://github.com/OpenJobDescription/openjd-specifications/wiki/2023-09-Template-Schemas#5-action
+"""
+
+
 class EnvironmentScriptRunner(ScriptRunnerBase):
     """Use this to run actions from an Environment."""
 
@@ -103,7 +110,12 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         ):
             raise NotImplementedError("Unknown model type")
 
-    def _run_env_action(self, action: ActionModel) -> None:
+    def _run_env_action(
+        self,
+        action: ActionModel,
+        *,
+        default_timeout: Optional[timedelta] = None,
+    ) -> None:
         """Run a specific given action from this Environment."""
 
         log_subsection_banner(self._logger, "Phase: Setup")
@@ -128,7 +140,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
 
         # Construct the command by evalutating the format strings in the command
         self._action = action
-        self._run_action(self._action, symtab)
+        self._run_action(self._action, symtab, default_timeout=default_timeout)
 
     def enter(self) -> None:
         """Run the Environment's onEnter action."""
@@ -164,7 +176,10 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 self._callback(ActionState.SUCCESS)
             return
 
-        self._run_env_action(self._environment_script.actions.onExit)
+        self._run_env_action(
+            self._environment_script.actions.onExit,
+            default_timeout=_ENV_EXIT_DEFAULT_TIMEOUT,
+        )
 
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False

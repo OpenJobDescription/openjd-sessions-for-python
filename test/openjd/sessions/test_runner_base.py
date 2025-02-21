@@ -641,6 +641,72 @@ class TestScriptRunnerBase:
         assert "Log from test 9" not in messages
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
+    @pytest.mark.parametrize(
+        argnames=("default_timeout_seconds", "action_timeout_seconds"),
+        argvalues=(
+            pytest.param(1, 5, id="action-timeout-prevails"),
+            pytest.param(2, None, id="default-applied"),
+            pytest.param(None, None, id="no-timeout"),
+        ),
+    )
+    def test_run_action_default_timeout(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        default_timeout_seconds: Optional[int],
+        action_timeout_seconds: Optional[int],
+    ) -> None:
+        # Tests that the effective timeout is applied correctly given a supplied default timeout
+        # and an optional timeout defined on the action
+
+        # GIVEN
+        expected_effective_timeout_seconds: Optional[int] = None
+        if action_timeout_seconds is not None:
+            expected_effective_timeout_seconds = action_timeout_seconds
+        elif default_timeout_seconds is not None:
+            expected_effective_timeout_seconds = default_timeout_seconds
+        default_timeout = (
+            timedelta(seconds=default_timeout_seconds)
+            if default_timeout_seconds is not None
+            else None
+        )
+        action = Action_2023_09(
+            command="{{Task.PythonInterpreter}}",
+            args=["{{Task.ScriptFile}}"],
+            timeout=action_timeout_seconds,
+        )
+        python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
+        symtab = SymbolTable(
+            source={
+                "Task.PythonInterpreter": sys.executable,
+                "Task.ScriptFile": str(python_app_loc),
+            }
+        )
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            # WHEN
+            runner._run_action(action, symtab, default_timeout=default_timeout)
+            # wait for the process to exit
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.2)
+
+        # THEN
+        if expected_effective_timeout_seconds is not None:
+            assert runner.state == ScriptRunnerState.TIMEOUT
+        else:
+            assert runner.state == ScriptRunnerState.SUCCESS
+        messages = collect_queue_messages(message_queue)
+        # The application prints out 0, ..., 19 once a second for 20s .
+        # If it ended early, then we printed the first but not the last.
+        print(messages)
+        if expected_effective_timeout_seconds is not None:
+            assert f"Log from test {expected_effective_timeout_seconds - 1}" in messages
+            assert f"Log from test {expected_effective_timeout_seconds + 1}" not in messages
+        else:
+            assert "Log from test 19" in messages
+
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(
         self,
         tmp_path: Path,
