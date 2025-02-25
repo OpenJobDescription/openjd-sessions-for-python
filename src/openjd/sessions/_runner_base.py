@@ -7,7 +7,7 @@ import shlex
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from threading import Lock, Timer
@@ -480,7 +480,7 @@ class ScriptRunnerBase(ABC):
         with self._lock:
             self._canceled = True
             self._notify_canceled_action_as_failed = mark_action_failed
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             now_str = now.strftime(TIME_FORMAT_STR)
             if self._cancel_gracetime_timer is not None:
                 # This cancel request is a duplicate that may have a different gracetime.
@@ -590,7 +590,7 @@ class ScriptRunnerBase(ABC):
             self._cancel_gracetime_timer = None
         self._logger.info(
             "Notify period ended. Terminate at %s",
-            datetime.utcnow().strftime(TIME_FORMAT_STR),
+            datetime.now(timezone.utc).strftime(TIME_FORMAT_STR),
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
         try:
@@ -612,7 +612,7 @@ class ScriptRunnerBase(ABC):
             self._runtime_limit = None
         self._logger.info(
             "TIMEOUT - Runtime limit reached at %s. Canceling action.",
-            datetime.utcnow().strftime(TIME_FORMAT_STR),
+            datetime.now(timezone.utc).strftime(TIME_FORMAT_STR),
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
         self._runtime_limit_reached = True
