@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from logging.handlers import QueueHandler
 from pathlib import Path
 from queue import SimpleQueue
@@ -59,7 +59,7 @@ class NotifyingRunner(ScriptRunnerBase):
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
     ) -> None:
-        self._cancel_called_at = datetime.utcnow()
+        self._cancel_called_at = datetime.now(timezone.utc)
         if time_limit is None:
             self._cancel(NotifyCancelMethod(timedelta(seconds=2)))
         else:
@@ -817,7 +817,7 @@ class TestScriptRunnerBase:
             # WHEN
             secs = 2 if not is_windows() else 5
             time.sleep(secs)  # Give the process a little time to do something
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             runner.cancel(time_limit=timedelta(seconds=2))
 
             # THEN
@@ -847,7 +847,9 @@ class TestScriptRunnerBase:
         assert len(notification_data) == 1
         assert "NotifyEnd" in notification_data
         assert notification_data["NotifyEnd"][-1] == "Z"
-        time_end = datetime.fromisoformat(notification_data["NotifyEnd"][:-1])
+        time_end = datetime.fromisoformat(notification_data["NotifyEnd"][:-1]).astimezone(
+            timezone.utc
+        )
         # Timestamp should be around 2s from cancel signal, but give a 1s window
         # for timing differences.
         delta_t = time_end - now

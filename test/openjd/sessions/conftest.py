@@ -139,7 +139,7 @@ def has_windows_user() -> bool:
     )
 
 
-def tests_are_in_windows_session_0() -> bool:
+def are_tests_in_windows_session_0() -> bool:
     return TEST_RUNNING_IN_WINDOWS_SESSION_0
 
 

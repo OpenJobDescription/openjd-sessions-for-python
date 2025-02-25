@@ -23,7 +23,7 @@ from .conftest import (
     collect_queue_messages,
     has_posix_target_user,
     has_windows_user,
-    tests_are_in_windows_session_0,
+    are_tests_in_windows_session_0,
     WIN_SET_TEST_ENV_VARS_MESSAGE,
     POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
 )
@@ -485,7 +485,9 @@ sys.exit(0)
         ]
 
         assert list_has_items_in_order(expected_messages, messages)
-        assert all(m not in messages for m in not_expected_messages)
+        assert all(
+            m not in messages for m in not_expected_messages
+        ), f"Unexpected messages: {', '.join(repr(m) for m in not_expected_messages if m in messages)}"
 
 
 def list_has_items_in_order(expected: list, actual: list) -> bool:
@@ -989,7 +991,7 @@ foreach ($envVar in $allEnvVars) {
         all_messages = []
         # conhost, python
         expected_num_child_procs: int = 2
-        if tests_are_in_windows_session_0():
+        if are_tests_in_windows_session_0():
             # Session 0 doesn't get the conhost process, so just:
             # python
             expected_num_child_procs = 1
