@@ -37,14 +37,14 @@ from any directory of this repository:
 * `hatch run fmt` - To automatically reformat all code to adhere to our formatting standards.
 * `hatch shell` - Enter a shell environment where you can run the `deadline` command-line directly as it is implemented in your
   checked-out local git repository.
-* `hatch env prune` - Delete all of your isolated workspace [environments](https://hatch.pypa.io/1.12/environment/) 
+* `hatch env prune` - Delete all of your isolated workspace [environments](https://hatch.pypa.io/1.12/environment/)
    for this package.
 
 If you are not sure about how to approach development for this package, then we have some suggestions.
 
 1. Run python within a `hatch shell` environment for interactive development. Python will import your in-development
    codebase when you `import openjd.session` from this environment. This makes it easy to use interactive python, the python
-   debugger, and short test scripts to develop and test your changes. 
+   debugger, and short test scripts to develop and test your changes.
    * Note that if you make changes to your source and are running interactive Python then you will need to use
     [importlib.reload](https://docs.python.org/3/library/importlib.html#importlib.reload) to reload the the module(s) that
     you modified for your modifications to take effect.
@@ -64,11 +64,12 @@ sometimes pruning (`hatch env prune`) all of these environments for the package 
 This module is responsible for providing functionality for a running Open Job Description Session.
 
 The public interface is via the `Session` class. An instance of this class represents a single
-running Session context, in the terms of the Open Job Description's Job Running Model.
+running Session context, in the terms of
+[How Open Job Description Jobs Are Run](https://github.com/OpenJobDescription/openjd-specifications/wiki/How-Jobs-Are-Run).
 
 The interface to a `Session` follows an asychronous computing model backed, internally,
 by threads. The `Session` has a state that gates what is able to be performed, and when.
-A user can begin running a new Action, whether that be the enter/exit of an Environment or 
+A user can begin running a new Action, whether that be the enter/exit of an Environment or
 the run-action of a Task, when the `Session` is in `READY` state. Running the action starts
 background threads that will monitor the running subprocess, and forward its stdout/stderr to
 a given Logger.
@@ -108,7 +109,7 @@ and invokes a callback in the `Session` when encountering one. This callback rec
 within the `Session`.
 
 The `LoggingSubprocess` has specialized logic for running the subprocess as a separate user depending on the
-operating system, and context in which it is being run. 
+operating system, and context in which it is being run.
 
 ## Testing
 
@@ -127,7 +128,7 @@ and [unitest.mock documentation](https://docs.python.org/3.8/library/unittest.mo
 
 Our tests are implemented using the [PyTest](https://docs.pytest.org/en/stable/) testing framework,
 and unit tests occationally make use of Python's [unittest.mock](https://docs.python.org/3.8/library/unittest.mock.html)
-package to avoid runtime dependencies and narrowly focus tests on a specific aspect of the implementation. 
+package to avoid runtime dependencies and narrowly focus tests on a specific aspect of the implementation.
 
 As a rule, we aim to keep usage of `unittest.mock` to a bare minimum in this package's tests. Using a mock inherrently
 encodes assumptions into the tests about how the mocked functionality functions. So, if a change is made that
@@ -199,7 +200,7 @@ password, that you are able to logon as. Then:
     * If done correctly, then you should not see any xfail tests related to impersonation.
 
 Run these tests in both:
-1. A terminal in your interactive logon session to test the impersonation logic when 
+1. A terminal in your interactive logon session to test the impersonation logic when
    Windows Session ID > 0; and
 2. An `ssh` terminal into your workstation to test the impersonation logic when Windows
    Session ID is 0.

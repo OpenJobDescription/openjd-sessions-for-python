@@ -14,7 +14,7 @@ from .conftest import (
     WIN_USERNAME_ENV_VAR,
     WIN_PASS_ENV_VAR,
     has_windows_user,
-    tests_are_in_windows_session_0,
+    are_tests_in_windows_session_0,
 )
 
 
@@ -22,7 +22,7 @@ from .conftest import (
 class TestWindowsSessionUser:
 
     @pytest.mark.skipif(
-        tests_are_in_windows_session_0(),
+        are_tests_in_windows_session_0(),
         reason="Cannot create a WindowsSessionUser with a password while in Session 0.",
     )
     @pytest.mark.parametrize(
@@ -40,7 +40,7 @@ class TestWindowsSessionUser:
         assert windows_session_user.user == user
 
     @pytest.mark.skipif(
-        tests_are_in_windows_session_0(),
+        are_tests_in_windows_session_0(),
         reason="Cannot create a WindowsSessionUser with a password while in Session 0.",
     )
     @pytest.mark.xfail(
@@ -68,7 +68,7 @@ class TestWindowsSessionUser:
             WindowsSessionUser("nonexistent_user")
 
     @pytest.mark.skipif(
-        tests_are_in_windows_session_0(),
+        are_tests_in_windows_session_0(),
         reason="Cannot create a WindowsSessionUser with a password while in Session 0.",
     )
     def test_incorrect_credential(self):
