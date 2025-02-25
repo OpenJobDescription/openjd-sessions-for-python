@@ -1,3 +1,15 @@
+## 0.10.0 (2025-02-25)
+
+### BREAKING CHANGES
+* When a timeout is not specified for an environment exit action, it now has a timeout of 300 seconds or five minutes. Before this change, environment exit actions would run indefinintely. To have long-running environment exit actions, job templates can specify a large timeout value when defining the action in a job or environment template.
+* The dependency openjd-model-for-python updated from Pydantic V1 to V2, see its [release notes](https://github.com/OpenJobDescription/openjd-model-for-python/releases/tag/0.6.0) for details.
+
+### Features
+* add ability to not log banner when running a task (#204) ([`e8acc8a`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/e8acc8a761e5712c9fc436d94e0935fbbf616184))
+
+### Bug Fixes
+* use default timeout of 5 minutes for environment exits (#213) ([`8bf93a0`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/8bf93a043b3bcb68eb552fa01bf8e92c02cdeaa7))
+
 ## 0.9.1 (2024-12-12)
 
 
