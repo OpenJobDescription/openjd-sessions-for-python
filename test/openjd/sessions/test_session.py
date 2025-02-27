@@ -1674,6 +1674,90 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session._runner is not None
             assert session._runner._os_env_vars == dict(variables1)
 
+    def test_run_task_after_env_exit(self) -> None:
+        # By default, tasks can't run after an environment exit. The exit_environment call
+        # can override that, however, and allow it.
+
+        # GIVEN
+        session_id = uuid.uuid4().hex
+        variables = {
+            "FOO": "corge",
+            "BAZ": "QUX",
+        }
+        environment = _make_environment(enter_script=False, exit_script=False, variables=variables)
+        step_script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(command=sys.executable, args=["{{ Task.File.Foo }}"])
+            ),
+            embeddedFiles=[
+                EmbeddedFileText_2023_09(
+                    name="Foo",
+                    type=EmbeddedFileTypes_2023_09.TEXT,
+                    data="print('Task running')",
+                )
+            ],
+        )
+        with Session(session_id=session_id, job_parameter_values={}) as session:
+            # WHEN Enter the environment and run a task
+            env_id = session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            session.run_task(step_script=step_script, task_parameter_values={})
+            # Wait for the process to exit
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            assert session.state == SessionState.READY
+
+            # THEN If we exit the environment with keep_session_running set, we can run another task
+            session.exit_environment(identifier=env_id, keep_session_running=True)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            assert session.state == SessionState.READY
+            assert session.action_status == ActionStatus(
+                state=ActionState.SUCCESS,
+            )
+
+            # This should succeed
+            session.run_task(step_script=step_script, task_parameter_values={})
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            assert session.state == SessionState.READY
+
+            # WHEN Enter the environment again, and run a task
+            env_id = session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+            session.run_task(step_script=step_script, task_parameter_values={})
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            assert session.state == SessionState.READY
+
+            # THEN If we exit the environment without keep_session_running set, we can't run another task
+            session.exit_environment(identifier=env_id)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            assert session.state == SessionState.READY_ENDING
+            assert session.action_status == ActionStatus(
+                state=ActionState.SUCCESS,
+            )
+
+            # This should fail
+            with pytest.raises(
+                RuntimeError, match="Session must be in the READY state to run a task."
+            ):
+                session.run_task(step_script=step_script, task_parameter_values={})
+
+            assert session.state == SessionState.READY_ENDING
+            assert session.action_status == ActionStatus(
+                state=ActionState.SUCCESS,
+            )
+
 
 class TestPathMapping_v2023_09:  # noqa: N801
     """Tests that path mapping works with the 2023-09 schema."""
