@@ -681,7 +681,11 @@ class Session(object):
         return identifier
 
     def exit_environment(
-        self, *, identifier: EnvironmentIdentifier, os_env_vars: Optional[dict[str, str]] = None
+        self,
+        *,
+        identifier: EnvironmentIdentifier,
+        os_env_vars: Optional[dict[str, str]] = None,
+        keep_session_running: bool = False,
     ) -> None:
         """Exits an Open Job Description Environment from this Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -699,6 +703,9 @@ class Session(object):
                 by values defined in Environments.
                     Key: Environment variable name
                     Value: Value for the environment variable.
+            keep_session_running (bool): This overrides the default of requiring only environment exits after
+                the first exit_environment is called. The caller can set this to True in order to exit
+                the environments of a step and then run tasks from a different step.
 
         Raises:
             ValueError - If the given identifier is not that of the next one that must be exited.
@@ -716,8 +723,9 @@ class Session(object):
 
         self._reset_action_state()
 
-        # Once we've started exiting environments, then we can only exit environments.
-        self._ending_only = True
+        # Unless overridden by the caller, once we've started exiting environments, then we can only exit environments.
+        if not keep_session_running:
+            self._ending_only = True
 
         environment = self._environments[identifier]
         log_section_banner(self._logger, f"Exiting Environment: {environment.name}")
