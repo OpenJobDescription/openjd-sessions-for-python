@@ -1,3 +1,10 @@
+## 0.10.1 (2025-03-03)
+
+
+### Features
+* Allow opt-in of running tasks after an env exit ([`bb75463`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/bb75463a6ee673f0f7e6d80af789e50c157f4872))
+
+
 ## 0.10.0 (2025-02-25)
 
 ### BREAKING CHANGES
