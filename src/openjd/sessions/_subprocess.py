@@ -19,6 +19,7 @@ from ._linux._sudo import find_sudo_child_process_group_id
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from ._os_checker import is_linux, is_posix, is_windows
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
+from ._action_filter import redact_openjd_redacted_env_requests
 
 if is_windows():  # pragma: nocover
     from subprocess import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW  # type: ignore
@@ -274,11 +275,18 @@ class LoggingSubprocess(object):
                 # https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
 
+            # Get the command string for logging
             cmd_line_for_logger: str
             if is_posix():
                 cmd_line_for_logger = shlex.join(command)
             else:
-                cmd_line_for_logger = list2cmdline(self._args)
+
+                cmd_line = list2cmdline(self._args)
+                # Command line could contain openjd_redacted_env: token lines not yet processed by the
+                # session logger.  If the token appears in the command line we'll redact everything
+                # in the line after it for the logs.  Note that on Linux currently the command including
+                # args are in a .sh script, so the full argument list isn't printed by default.
+                cmd_line_for_logger = redact_openjd_redacted_env_requests(cmd_line)
             self._logger.info(
                 "Running command %s",
                 cmd_line_for_logger,

@@ -15,7 +15,13 @@ from subprocess import DEVNULL, run
 
 import pytest
 
-from openjd.model import ParameterValue, ParameterValueType, SpecificationRevision, SymbolTable
+from openjd.model import (
+    ParameterValue,
+    ParameterValueType,
+    SpecificationRevision,
+    SymbolTable,
+    RevisionExtensions,
+)
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import (
     EmbeddedFileText as EmbeddedFileText_2023_09,
@@ -3014,3 +3020,376 @@ class TestEnvironmentVariablesInTasks_2023_09:
             # THEN
             assert "FOO=FOO-not-set" in caplog.messages
             assert "BAR=BAR-value" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_redacted_env_stdout(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables via a stdout handler with openjd_redacted_env
+        # the variable is set correctly but the value is redacted in logs
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=CommandString_2023_09(sys.executable),
+                        args=[
+                            ArgString_2023_09("-c"),
+                            ArgString_2023_09("print('openjd_redacted_env: PASSWORD=secret123')"),
+                        ],
+                    )
+                )
+            ),
+        )
+
+        # Create a script that will print the environment variable to verify it was set correctly
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(sys.executable),
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09(
+                            "import os; print(f'PASSWORD={os.environ[\"PASSWORD\"]}')"
+                        ),
+                    ],
+                )
+            ),
+        )
+
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            # Check that the redacted message appears in the logs
+            assert "openjd_redacted_env: PASSWORD=********" in caplog.messages
+            # Check that the actual value is not in the logs from the environment setup
+            assert "openjd_redacted_env: PASSWORD=secret123" not in caplog.messages
+            # Check that the script output shows a KeyError since the env var wasn't set
+            # (extension not enabled by default)
+            assert "KeyError: 'PASSWORD'" in "\n".join(caplog.messages)
+            # Check that the sensitive value doesn't appear anywhere in the logs
+            assert "secret123" not in "\n".join(caplog.messages)
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_redacted_env_json_stdout(
+        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+    ) -> None:
+        # Test that when an environment defines variables via a stdout handler with openjd_redacted_env
+        # using JSON format, the variable is set correctly but the value is redacted in logs
+
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=CommandString_2023_09(sys.executable),
+                        args=[
+                            ArgString_2023_09("-c"),
+                            ArgString_2023_09("print('openjd_redacted_env: API_KEY=abc123def456')"),
+                        ],
+                    )
+                )
+            ),
+        )
+
+        # Create a script that will print the environment variable to verify it was set correctly
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(sys.executable),
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09("import os; print(f'API_KEY={os.environ[\"API_KEY\"]}')"),
+                    ],
+                )
+            ),
+        )
+
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            # Check that the redacted message appears in the logs with fixed-length redaction
+            assert "openjd_redacted_env: API_KEY=********" in "\n".join(caplog.messages)
+            # Check that the actual value is not in the logs from the environment setup
+            assert "openjd_redacted_env: API_KEY=abc123def456" not in "\n".join(caplog.messages)
+            # Check that the script output shows a KeyError since the env var wasn't set
+            # (extension not enabled by default)
+            assert "KeyError: 'API_KEY'" in "\n".join(caplog.messages)
+            # Check that the sensitive value doesn't appear anywhere in the logs
+            assert "abc123def456" not in "\n".join(caplog.messages)
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_session_with_enabled_extensions(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that the Session constructor accepts and stores enabled_extensions."""
+        # GIVEN
+        session_id = str(uuid.uuid4())
+        job_parameter_values = {"Foo": ParameterValue(type=ParameterValueType.STRING, value="Bar")}
+        enabled_extensions = ["REDACTED_ENV_VARS"]
+        revision_extensions = RevisionExtensions(
+            spec_rev=SpecificationRevision.v2023_09, supported_extensions=enabled_extensions
+        )
+
+        # WHEN
+        with Session(
+            session_id=session_id,
+            job_parameter_values=job_parameter_values,
+            revision_extensions=revision_extensions,
+        ) as session:
+            # THEN
+            # Check that the revision_extensions was properly set
+            assert session.get_enabled_extensions() == enabled_extensions
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_session_with_no_extensions(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that the Session constructor handles None for enabled_extensions."""
+        # GIVEN
+        session_id = str(uuid.uuid4())
+        job_parameter_values = {"Foo": ParameterValue(type=ParameterValueType.STRING, value="Bar")}
+
+        # WHEN
+        with Session(
+            session_id=session_id,
+            job_parameter_values=job_parameter_values,
+        ) as session:
+            # THEN
+            # Check that the default empty list is used
+            assert session.get_enabled_extensions() == []
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_redacted_env_with_variables(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that redacted env vars override directly defined variables."""
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=CommandString_2023_09(sys.executable),
+                        args=[
+                            ArgString_2023_09("-c"),
+                            ArgString_2023_09("print('openjd_redacted_env: TOKEN=secret-token')"),
+                        ],
+                    )
+                )
+            ),
+            variables={"TOKEN": EnvironmentVariableValueString_2023_09("public-token")},
+        )
+
+        # Create a script that will print the environment variable to verify it was set correctly
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(sys.executable),
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09("import os; print(f'TOKEN={os.environ[\"TOKEN\"]}')"),
+                    ],
+                )
+            ),
+        )
+
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        with Session(session_id=session_id, job_parameter_values=job_params) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            # Check that the redacted message appears in the logs
+            assert "openjd_redacted_env: TOKEN=********" in caplog.messages
+            # Check that the actual value is not in the logs from the environment setup
+            assert "openjd_redacted_env: TOKEN=secret-token" not in caplog.messages
+            # Check that the script output shows the original value since the redacted value wasn't set
+            # (extension not enabled by default)
+            assert "TOKEN=public-token" in caplog.messages
+            # Check that the sensitive value doesn't appear anywhere in the logs
+            assert "secret-token" not in "\n".join(caplog.messages)
+            # The original value is visible when setting up the environment
+            assert "Setting: TOKEN=public-token" in caplog.messages
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_def_via_redacted_env_with_extension(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that redacted env vars are set when the extension is enabled."""
+        # GIVEN
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=CommandString_2023_09(sys.executable),
+                        args=[
+                            ArgString_2023_09("-c"),
+                            ArgString_2023_09("print('openjd_redacted_env: PASSWORD=secret123')"),
+                        ],
+                    )
+                )
+            ),
+        )
+
+        # Create a script that will print the environment variable to verify it was set correctly
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(sys.executable),
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09(
+                            "import os; print(f'PASSWORD={os.environ[\"PASSWORD\"]}') if 'PASSWORD' in os.environ else print('PASSWORD not set')"
+                        ),
+                    ],
+                )
+            ),
+        )
+
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+        revision_extensions = RevisionExtensions(
+            spec_rev=SpecificationRevision.v2023_09, supported_extensions=["REDACTED_ENV_VARS"]
+        )
+        with Session(
+            session_id=session_id,
+            job_parameter_values=job_params,
+            revision_extensions=revision_extensions,  # Enable the extension
+        ) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            # Check that the redacted message appears in the logs
+            assert "openjd_redacted_env: PASSWORD=********" in caplog.messages
+            # Check that the actual value is not in the logs from the environment setup
+            assert "openjd_redacted_env: PASSWORD=secret123" not in caplog.messages
+            # Check that the script was able to access the actual value but it's redacted in logs
+            assert "PASSWORD=********" in caplog.messages
+            # Check that the sensitive value doesn't appear anywhere in the logs
+            assert "secret123" not in "\n".join(caplog.messages)
+
+    @pytest.mark.usefixtures("caplog")  # builtin fixture
+    def test_multiple_different_redacted_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Test that multiple redacted env vars with similar but different values are handled correctly."""
+        # GIVEN
+        # Create an environment that sets two similar but different redacted env vars
+        environment = Environment_2023_09(
+            name="Env",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(
+                        command=CommandString_2023_09(sys.executable),
+                        args=[
+                            ArgString_2023_09("-c"),
+                            ArgString_2023_09(
+                                "print('openjd_redacted_env: PASSWORD=secret123'); print('openjd_redacted_env: PASSWORD2=mysecret123')"
+                            ),
+                        ],
+                    )
+                )
+            ),
+        )
+
+        # Create a script that will print both environment variables to verify they were set correctly
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(sys.executable),
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09(
+                            'import os; print(f\'PASSWORD={os.environ.get("PASSWORD", "not-set")}\'); '
+                            'print(f\'PASSWORD2={os.environ.get("PASSWORD2", "not-set")}\'); '
+                            "print('Both values are present in this log: secret123 mysecret123')"
+                        ),
+                    ],
+                )
+            ),
+        )
+
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        revision_extensions = RevisionExtensions(
+            spec_rev=SpecificationRevision.v2023_09, supported_extensions=["REDACTED_ENV_VARS"]
+        )
+        with Session(
+            session_id=session_id,
+            job_parameter_values=job_params,
+            revision_extensions=revision_extensions,  # Enable the extension
+        ) as session:
+            session.enter_environment(environment=environment)
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            session.run_task(
+                step_script=script,
+                task_parameter_values=dict[str, ParameterValue](),
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.1)
+
+            # THEN
+            # Check that both redacted messages appear in the logs with redacted values
+            assert "openjd_redacted_env: PASSWORD=********" in caplog.messages
+            assert "openjd_redacted_env: PASSWORD2=********" in caplog.messages
+
+            # Check that the actual values are not in the logs from the environment setup
+            assert "openjd_redacted_env: PASSWORD=secret123" not in caplog.messages
+            assert "openjd_redacted_env: PASSWORD2=mysecret123" not in caplog.messages
+
+            # Check that the script output shows the variables were set but values are redacted
+            assert "PASSWORD=********" in caplog.messages
+            assert "PASSWORD2=********" in caplog.messages
+
+            # Check that both sensitive values are redacted in the log line that contains both
+            assert "Both values are present in this log: ******** ********" in caplog.messages
+
+            # Check that neither sensitive value appears anywhere in the logs
+            log_content = "\n".join(caplog.messages)
+            assert "secret123" not in log_content
+            assert "mysecret123" not in log_content

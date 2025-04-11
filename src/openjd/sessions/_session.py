@@ -20,6 +20,7 @@ from openjd.model import (
     JobParameterValues,
     ParameterValue,
     ParameterValueType,
+    RevisionExtensions,
     SpecificationRevision,
     SymbolTable,
     TaskParameterSet,
@@ -318,6 +319,9 @@ class Session(object):
         callback: Optional[SessionCallbackType] = None,
         os_env_vars: Optional[dict[str, str]] = None,
         session_root_directory: Optional[Path] = None,
+        revision_extensions: RevisionExtensions = RevisionExtensions(
+            spec_rev=SpecificationRevision.v2023_09, supported_extensions=[]
+        ),
     ):
         """
         Arguments:
@@ -358,6 +362,8 @@ class Session(object):
                 2. The 'user' (if given) must have at least read permissions to it; and
                 3. The Working Directory for this Session will be created in the given directory.
                 If not provided, then the default of gettempdir()/"openjd" is used instead.
+            revision_extensions (RevisionExtensions): Specification revision and supported extensions
+                for this session. Defaults to SpecificationRevision.v2023_09 with no extensions.
 
         Raises:
             RuntimeError - If the Session initialization fails for any reason.
@@ -389,9 +395,14 @@ class Session(object):
                 )
         self._reset_action_state()
 
+        # Store the revision_extensions
+        self._revision_extensions = revision_extensions
+
         # Set up our logging hook & callback
         self._log_filter = ActionMonitoringFilter(
-            session_id=self._session_id, callback=self._action_log_filter_callback
+            session_id=self._session_id,
+            callback=self._action_log_filter_callback,
+            revision_extensions=revision_extensions,
         )
         LOG.addFilter(self._log_filter)
         self._logger = LoggerAdapter(LOG, extra={"session_id": self._session_id})
@@ -831,6 +842,14 @@ class Session(object):
 
     # =========================
     #  Helpers
+
+    def get_enabled_extensions(self) -> list[str]:
+        """Return the list of enabled extensions for this session.
+
+        Returns:
+            list[str]: The list of enabled extensions
+        """
+        return list(self._revision_extensions.extensions)
 
     def _reset_action_state(self) -> None:
         """Reset the internal action state.
