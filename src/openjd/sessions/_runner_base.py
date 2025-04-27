@@ -225,6 +225,7 @@ class ScriptRunnerBase(ABC):
         # Will run at most the run futures
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._state_override = None
+        self._print_section_banner = True
 
     # Context manager for use in our tests
     def __enter__(self) -> "ScriptRunnerBase":
@@ -354,7 +355,8 @@ class ScriptRunnerBase(ABC):
                 self._runtime_limit = Timer(time_limit.total_seconds(), self._on_timelimit)
                 self._runtime_limit.start()
 
-            log_subsection_banner(self._logger, "Phase: Running action")
+            if self._print_section_banner:
+                log_subsection_banner(self._logger, "Phase: Running action")
             self._run_future = self._pool.submit(self._process.run)
         # Intentionally leave the lock section. If the process was *really* fast,
         # then it's possible for the future to have finished before we get to add
