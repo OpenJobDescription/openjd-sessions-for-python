@@ -22,6 +22,10 @@ from openjd.model.v2023_09 import (
 from openjd.model.v2023_09 import (
     EmbeddedFileTypes as EmbeddedFileTypes_2023_09,
 )
+from openjd.model.v2023_09 import (
+    CommandString as CommandString_2023_09,
+    ArgString as ArgString_2023_09,
+)
 from openjd.sessions import ActionState, PosixSessionUser, WindowsSessionUser
 from openjd.sessions._embedded_files import EmbeddedFilesScope
 from openjd.sessions._os_checker import is_posix, is_windows
@@ -612,8 +616,8 @@ class TestScriptRunnerBase:
 
         # GIVEN
         action = Action_2023_09(
-            command="{{Task.PythonInterpreter}}",
-            args=["{{Task.ScriptFile}}"],
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[ArgString_2023_09("{{Task.ScriptFile}}")],
             timeout=(5),
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
@@ -672,8 +676,8 @@ class TestScriptRunnerBase:
             else None
         )
         action = Action_2023_09(
-            command="{{Task.PythonInterpreter}}",
-            args=["{{Task.ScriptFile}}"],
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[ArgString_2023_09("{{Task.ScriptFile}}")],
             timeout=action_timeout_seconds,
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
@@ -718,7 +722,9 @@ class TestScriptRunnerBase:
 
         # GIVEN
         action = Action_2023_09(
-            command="{{Task.PythonInterpreter}}", args=["{{Task.ScriptFile}}"], timeout=1
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[ArgString_2023_09("{{Task.ScriptFile}}")],
+            timeout=1,
         )
         symtab = SymbolTable()
         logger = build_logger(queue_handler)

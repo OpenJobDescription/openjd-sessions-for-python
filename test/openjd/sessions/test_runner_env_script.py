@@ -31,6 +31,9 @@ from openjd.model.v2023_09 import (
 )
 from openjd.model.v2023_09 import (
     EnvironmentScript as EnvironmentScript_2023_09,
+    CommandString as CommandString_2023_09,
+    ArgString as ArgString_2023_09,
+    DataString as DataString_2023_09,
 )
 from openjd.sessions import ActionState
 from openjd.sessions._runner_base import ScriptRunnerState
@@ -53,7 +56,8 @@ class TestEnvironmentScriptRunner:
             pytest.param(
                 EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command="{{ Task.Command }}", args=["-c", "print('Hello')"]
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
                     )
                 ),
                 id="onEnter",
@@ -61,7 +65,8 @@ class TestEnvironmentScriptRunner:
             pytest.param(
                 EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command="{{ Task.Command }}", args=["-c", "print('Hello')"]
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
                     )
                 ),
                 id="onExit",
@@ -108,7 +113,8 @@ class TestEnvironmentScriptRunner:
             pytest.param(
                 EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command="{{ Task.Command }}", args=["-c", "print('Hello')"]
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
                     )
                 ),
                 id="onEnter",
@@ -116,7 +122,8 @@ class TestEnvironmentScriptRunner:
             pytest.param(
                 EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command="{{ Task.Command }}", args=["-c", "print('Hello')"]
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
                     )
                 ),
                 id="onExit",
@@ -205,14 +212,18 @@ class TestEnvironmentScriptRunner:
             pytest.param(
                 EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command="{{ Task.Command }}", args=["{{ Env.File.Foo }}"]
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
                 id="onEnter",
             ),
             pytest.param(
                 EnvironmentActions_2023_09(
-                    onExit=Action_2023_09(command="{{ Task.Command }}", args=["{{ Env.File.Foo }}"])
+                    onExit=Action_2023_09(
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("{{ Env.File.Foo }}")],
+                    )
                 ),
                 id="onExit",
             ),
@@ -232,7 +243,9 @@ class TestEnvironmentScriptRunner:
             actions=env_actions,
             embeddedFiles=[
                 EmbeddedFileText_2023_09(
-                    name="Foo", type=EmbeddedFileTypes_2023_09.TEXT, data="print('Hello')"
+                    name="Foo",
+                    type=EmbeddedFileTypes_2023_09.TEXT,
+                    data=DataString_2023_09("print('Hello')"),
                 )
             ],
         )
@@ -266,14 +279,18 @@ class TestEnvironmentScriptRunner:
             pytest.param(
                 EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command="{{ Task.Command }}", args=["{{ Env.File.Foo }}"]
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
                 id="onEnter",
             ),
             pytest.param(
                 EnvironmentActions_2023_09(
-                    onExit=Action_2023_09(command="{{ Task.Command }}", args=["{{ Env.File.Foo }}"])
+                    onExit=Action_2023_09(
+                        command=CommandString_2023_09("{{ Task.Command }}"),
+                        args=[ArgString_2023_09("{{ Env.File.Foo }}")],
+                    )
                 ),
                 id="onExit",
             ),
@@ -298,7 +315,7 @@ class TestEnvironmentScriptRunner:
                 EmbeddedFileText_2023_09(
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
-                    data="{{ Task.Not.A.Value }}",
+                    data=DataString_2023_09("{{ Task.Not.A.Value }}"),
                 )
             ],
         )
@@ -371,8 +388,8 @@ class TestEnvironmentScriptRunner:
                 script = EnvironmentScript_2023_09(
                     actions=EnvironmentActions_2023_09(
                         onEnter=Action_2023_09(
-                            command="{{ Task.Command }}",
-                            args=["-c", "print('Hello')"],
+                            command=CommandString_2023_09("{{ Task.Command }}"),
+                            args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
                             cancelation=cancel_method,
                         )
                     )
@@ -413,8 +430,8 @@ class TestEnvironmentScriptRunner:
     ) -> None:
         # GIVEN
         action = Action_2023_09(
-            command="{{ Task.Command }}",
-            args=["-c", "print('Hello')"],
+            command=CommandString_2023_09("{{ Task.Command }}"),
+            args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
         )
         script = EnvironmentScript_2023_09(
             actions=EnvironmentActions_2023_09(
@@ -454,8 +471,8 @@ class TestEnvironmentScriptRunner:
         # GIVEN
         # An "onExit" action with no defined timeout
         on_exit_action = Action_2023_09(
-            command="{{ Task.Command }}",
-            args=["-c", "print('Hello')"],
+            command=CommandString_2023_09("{{ Task.Command }}"),
+            args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
         )
         expected_default_timeout = timedelta(minutes=5)
         script = EnvironmentScript_2023_09(

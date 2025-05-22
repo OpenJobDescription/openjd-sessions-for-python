@@ -27,6 +27,11 @@ from openjd.model.v2023_09 import (
 from openjd.model.v2023_09 import (
     EmbeddedFileTypes as EmbeddedFileTypes_2023_09,
 )
+from openjd.model.v2023_09 import (
+    CommandString as CommandString_2023_09,
+    ArgString as ArgString_2023_09,
+    DataString as DataString_2023_09,
+)
 from openjd.model.v2023_09 import StepActions as StepActions_2023_09
 from openjd.model.v2023_09 import StepScript as StepScript_2023_09
 
@@ -64,7 +69,8 @@ class TestStepScriptRunner:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command="{{ Task.Command }}", args=["-c", "print('\"Hello\"')"]
+                    command=CommandString_2023_09("{{ Task.Command }}"),
+                    args=[ArgString_2023_09("-c"), ArgString_2023_09("print('\"Hello\"')")],
                 )
             )
         )
@@ -99,11 +105,16 @@ class TestStepScriptRunner:
         # GIVEN
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
-                onRun=Action_2023_09(command="{{ Task.Command }}", args=["{{ Task.File.Foo }}"])
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09("{{ Task.Command }}"),
+                    args=[ArgString_2023_09("{{ Task.File.Foo }}")],
+                )
             ),
             embeddedFiles=[
                 EmbeddedFileText_2023_09(
-                    name="Foo", type=EmbeddedFileTypes_2023_09.TEXT, data="print('Hello')"
+                    name="Foo",
+                    type=EmbeddedFileTypes_2023_09.TEXT,
+                    data=DataString_2023_09("print('Hello')"),
                 )
             ],
         )
@@ -149,26 +160,30 @@ class TestStepScriptRunner:
         # GIVEN
         if is_posix():
             script = StepScript_2023_09(
-                actions=StepActions_2023_09(onRun=Action_2023_09(command="./test.sh")),
+                actions=StepActions_2023_09(
+                    onRun=Action_2023_09(command=CommandString_2023_09("./test.sh"))
+                ),
                 embeddedFiles=[
                     EmbeddedFileText_2023_09(
                         name="Foo",
                         type=EmbeddedFileTypes_2023_09.TEXT,
                         filename="test.sh",
                         runnable=True,
-                        data="#!/bin/sh\necho 'Hello!'",
+                        data=DataString_2023_09("#!/bin/sh\necho 'Hello!'"),
                     )
                 ],
             )
         else:
             script = StepScript_2023_09(
-                actions=StepActions_2023_09(onRun=Action_2023_09(command="test.bat")),
+                actions=StepActions_2023_09(
+                    onRun=Action_2023_09(command=CommandString_2023_09("test.bat"))
+                ),
                 embeddedFiles=[
                     EmbeddedFileText_2023_09(
                         name="Foo",
                         type=EmbeddedFileTypes_2023_09.TEXT,
                         filename="test.bat",
-                        data="echo Hello!",
+                        data=DataString_2023_09("echo Hello!"),
                     )
                 ],
             )
@@ -241,8 +256,8 @@ class TestStepScriptRunner:
                 script = StepScript_2023_09(
                     actions=StepActions_2023_09(
                         onRun=Action_2023_09(
-                            command="{{ Task.Command }}",
-                            args=["-c", "print('Hello')"],
+                            command=CommandString_2023_09("{{ Task.Command }}"),
+                            args=[ArgString_2023_09("-c"), ArgString_2023_09("print('Hello')")],
                             cancelation=cancel_method,
                         )
                     )
@@ -300,7 +315,7 @@ class TestStepScriptRunner:
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
                     filename="test.bat",
-                    data="echo Hello!",
+                    data=DataString_2023_09("echo Hello!"),
                 )
             ],
         )
