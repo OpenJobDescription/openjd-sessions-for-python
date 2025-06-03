@@ -205,7 +205,7 @@ Run these tests in both:
 2. Use the `scripts\windows_service_test.py` to test in the context of a service running session 0
    1. `hatch build`
    1. `pip install --force-reinstall dist\openjd_sessions*.whl`
-      1. `win32` doesn't work well in virtual environments, so it's more reliable to run with the system Python. The wheel file name will change depending the date and the version that the git branch is based off of.
+      1. `pywin32` doesn't work well in virtual environments, so it's more reliable to run with the system Python. The wheel file name will change depending the date and the version that the git branch is based off of.
    1. Install the service by running `python scripts\windows_service_test.py install --user-name <UserYouWantRunningTheService> --pytest-args="<AnyAdditionalPytestArgsYou'dWantToPassIn>"`
    1. Run the test in the service by running `python scripts\windows_service_test.py run`
    1. Test output is streamed to 'test.log' in the repository's root directory.
