@@ -208,7 +208,7 @@ Run these tests in both:
       1. `win32` doesn't work well in virtual environments, so it's more reliable to run with the system Python. The wheel file name will change depending the date and the version that the git branch is based off of.
    1. Install the service by running `python scripts\windows_service_test.py install --user-name <UserYouWantRunningTheService> --pytest-args="<AnyAdditionalPytestArgsYou'dWantToPassIn>"`
    1. Run the test in the service by running `python scripts\windows_service_test.py run`
-   1. You'll find the test output in the root project directory under `test.log`, the tests will live right to the log file.
+   1. Test output is streamed to 'test.log' in the repository's root directory.
 
 ### Super verbose test output
 
