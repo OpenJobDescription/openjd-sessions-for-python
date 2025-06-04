@@ -322,12 +322,14 @@ class TestLoggingSubprocessSameUser:
         all_messages = []
         # Note: This is the number of *CHILD* processes of the main process that we start.
         #  The total number of processes in flight will be this plus one.
-        expected_num_child_procs: int
-        if is_posix():
-            # Process tree: python -> python
-            # Children: python
-            expected_num_child_procs = 1
-        else:
+
+        # On Posix and on Windows not in a virutal environment:
+        # Process tree: python -> python
+        # Children: python
+        expected_num_child_procs = 1
+
+        # Check if we're in a virtual environment on Windows, see https://docs.python.org/3/library/venv.html#how-venvs-work
+        if is_windows() and sys.prefix != sys.base_prefix:
             # Windows starts an extra python process due to running in a virtual environment
             # Process tree: conhost -> python -> python -> python
             # Children: python, python, python
@@ -488,6 +490,18 @@ sys.exit(0)
         assert all(
             m not in messages for m in not_expected_messages
         ), f"Unexpected messages: {', '.join(repr(m) for m in not_expected_messages if m in messages)}"
+
+    @pytest.mark.skipif(is_windows(), reason="Posix-specific tests")
+    def test_creation_flags_posix(self, queue_handler: QueueHandler) -> None:
+
+        with pytest.raises(ValueError):
+            logger = build_logger(queue_handler)
+            LoggingSubprocess(
+                logger=logger,
+                args=[sys.executable, "-c", 'print("this should not run")'],
+                # Creation flags aren't supported on Posix systems.
+                creation_flags=1337,
+            )
 
 
 def list_has_items_in_order(expected: list, actual: list) -> bool:

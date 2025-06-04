@@ -48,6 +48,9 @@ from ._types import (
 )
 from ._version import version
 
+if is_windows():  # pragma: nocover
+    from subprocess import HIGH_PRIORITY_CLASS  # type: ignore
+
 if TYPE_CHECKING:
     from openjd.model.v2023_09._model import EnvironmentVariableObject
 
@@ -463,15 +466,11 @@ class Session(object):
                 if self._user is not None:
                     files = [str(f) for f in self.working_directory.glob("*")]
 
+                    creation_flags = None
                     if is_posix():
                         recursive_delete_cmd = ["rm", "-rf"]
                     else:
                         recursive_delete_cmd = [
-                            "start",
-                            '"Powershell"',
-                            "/high",
-                            "/wait",
-                            "/b",
                             "powershell",
                             "-Command",
                             "Remove-Item",
@@ -479,14 +478,18 @@ class Session(object):
                             "-Force",
                         ]
                         files = [", ".join(files)]
+                        # The cleanup needs to run as a high priority
+                        # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getpriorityclass#return-value
+                        creation_flags = HIGH_PRIORITY_CLASS
 
-                    subprocess = LoggingSubprocess(
+                    _subprocess = LoggingSubprocess(
                         logger=self._logger,
                         args=recursive_delete_cmd + files,
                         user=self._user,
+                        creation_flags=creation_flags,
                     )
                     # Note: Blocking call until the process has exited
-                    subprocess.run()
+                    _subprocess.run()
 
                 self._working_dir.cleanup()
             except RuntimeError as exc:
