@@ -64,6 +64,7 @@ class LoggingSubprocess(object):
     _has_started: Event
     _os_env_vars: Optional[dict[str, Optional[str]]]
     _working_dir: Optional[str]
+    _creation_flags: Optional[int]
 
     _pid: Optional[int]
     _sudo_child_process_group_id: Optional[int]
@@ -79,6 +80,7 @@ class LoggingSubprocess(object):
         callback: Optional[Callable[[], None]] = None,
         os_env_vars: Optional[dict[str, Optional[str]]] = None,
         working_dir: Optional[str] = None,
+        creation_flags: Optional[int] = None,
     ):
         if len(args) < 1:
             raise ValueError("'args' kwarg must be a sequence of at least one element")
@@ -86,6 +88,8 @@ class LoggingSubprocess(object):
             raise ValueError("Argument 'user' must be a PosixSessionUser on posix systems.")
         if user is not None and is_windows() and not isinstance(user, WindowsSessionUser):
             raise ValueError("Argument 'user' must be a WindowsSessionUser on Windows systems.")
+        if not is_windows() and creation_flags is not None:
+            raise ValueError("Argument 'creation_flags' is only supported on Windows")
 
         self._logger = logger
         self._args = args[:]  # Make a copy
@@ -100,6 +104,7 @@ class LoggingSubprocess(object):
         self._pid = None
         self._returncode = None
         self._sudo_child_process_group_id = None
+        self._creation_flags = creation_flags
 
     @property
     def pid(self) -> Optional[int]:
@@ -274,6 +279,9 @@ class LoggingSubprocess(object):
                 # We need a process group in order to send notify signals
                 # https://docs.python.org/2/library/subprocess.html#subprocess.CREATE_NEW_PROCESS_GROUP
                 popen_args["creationflags"] = CREATE_NEW_PROCESS_GROUP
+
+                if self._creation_flags:
+                    popen_args["creationflags"] |= self._creation_flags
 
             # Get the command string for logging
             cmd_line_for_logger: str

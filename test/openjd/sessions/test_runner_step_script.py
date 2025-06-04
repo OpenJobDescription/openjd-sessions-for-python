@@ -309,7 +309,9 @@ class TestStepScriptRunner:
         # GIVEN
         tmpdir = TempDir(user=windows_user)
         script = StepScript_2023_09(
-            actions=StepActions_2023_09(onRun=Action_2023_09(command=r"test.bat")),
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(command=CommandString_2023_09(r"test.bat"))
+            ),
             embeddedFiles=[
                 EmbeddedFileText_2023_09(
                     name="Foo",
