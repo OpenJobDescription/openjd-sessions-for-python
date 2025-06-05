@@ -60,7 +60,7 @@ pip_index_arg=""
 if test "${PIP_INDEX_URL:-}" != ""; then
     pip_index_arg="--build-arg PIP_INDEX_URL "
 fi
-docker build -t "${CONTAINER_IMAGE_TAG}" $pip_index_arg --build-arg "BUILDKIT_SANDBOX_HOSTNAME=${CONTAINER_HOSTNAME}" --file "testing_containers/${CONTAINER_IMAGE_DIR}/Dockerfile" .
+docker build -t "${CONTAINER_IMAGE_TAG}" $pip_index_arg --build-arg "BUILDKIT_SANDBOX_HOSTNAME=${CONTAINER_HOSTNAME}" --ulimit nofile=1024 --file "testing_containers/${CONTAINER_IMAGE_DIR}/Dockerfile" .
 
 if test "${BUILD_ONLY}" == "True"; then
     exit 0
