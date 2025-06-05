@@ -1,3 +1,13 @@
+## 0.10.3 (2025-06-05)
+
+
+### Features
+* Adding support for redacted environment variable values through openjd_redacted_env (#232) ([`b949a16`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/b949a16ee71866845537923b9ea4799c59a629e0))
+
+### Bug Fixes
+* sdist failed to install (#240) ([`c855d29`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/c855d296c361f5193f02f71682d9a071575fad76))
+* cleanup session dir on windows (#241) ([`f1f8933`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/f1f89335ea909be097faa164a57d7429a8acf018))
+
 ## 0.10.2 (2025-04-30)
 
 * Dependencies update, and other non-functional updates
