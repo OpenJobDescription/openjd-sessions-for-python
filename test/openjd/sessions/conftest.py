@@ -10,6 +10,7 @@ from typing import Generator, Optional
 from hashlib import sha256
 from unittest.mock import MagicMock
 import pytest
+import sys
 
 from openjd.sessions import PosixSessionUser, WindowsSessionUser, BadCredentialsException
 from openjd.sessions._os_checker import is_posix, is_windows
@@ -21,6 +22,8 @@ if is_windows():
     from openjd.sessions._win32._helpers import (  # type: ignore
         get_current_process_session_id,
         logon_user_context,
+        load_user_profile,
+        unload_user_profile,
     )
 
     TEST_RUNNING_IN_WINDOWS_SESSION_0 = 0 == get_current_process_session_id()
@@ -251,10 +254,10 @@ def windows_user() -> Generator[WindowsSessionUser, None, None]:
 
     if TEST_RUNNING_IN_WINDOWS_SESSION_0:
         try:
-            # Note: We don't load the user profile; it's currently not needed by our tests,
-            # and we're getting a mysterious crash when unloading it.
             with logon_user_context(user, password) as logon_token:
+                profile_info = load_user_profile(logon_token, user)
                 yield WindowsSessionUser(user, logon_token=logon_token)
+                unload_user_profile(logon_token, profile_info)
         except OSError as e:
             raise Exception(
                 f"Could not logon as {user}. Check the password that was provided in {WIN_PASS_ENV_VAR}."
@@ -282,3 +285,10 @@ def queue_handler(message_queue: SimpleQueue) -> QueueHandler:
 @pytest.fixture(scope="function")
 def session_id() -> str:
     return "some Id"
+
+
+@pytest.fixture(scope="function")
+def python_exe() -> str:
+    if is_windows() and TEST_RUNNING_IN_WINDOWS_SESSION_0:
+        return sys.executable.lower().replace("pythonservice.exe", "python.exe")
+    return sys.executable

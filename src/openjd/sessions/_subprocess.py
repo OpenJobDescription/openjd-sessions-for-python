@@ -11,8 +11,7 @@ from pathlib import Path
 from queue import Queue, Empty
 from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
 from threading import Event, Thread
-from typing import Any
-from typing import Callable, Literal, Optional, Sequence, cast
+from typing import Callable, Literal, Optional, Sequence, cast, Any
 
 from ._linux._capabilities import try_use_cap_kill
 from ._linux._sudo import find_sudo_child_process_group_id
@@ -623,17 +622,22 @@ class LoggingSubprocess(object):
             str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
             str(self._process.pid),
         ]
-        result = run(
-            cmd,
-            stdout=PIPE,
-            stderr=STDOUT,
-            stdin=DEVNULL,
-            creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
+        process = LoggingSubprocess(
+            logger=self._logger,
+            args=cmd,
+            encoding=self._encoding,
+            user=self._user,
+            os_env_vars=self._os_env_vars,
+            working_dir=self._working_dir,
+            creation_flags=CREATE_NO_WINDOW,
         )
-        if result.returncode != 0:
+
+        # Blocking call
+        process.run()
+
+        if process.exit_code != 0:
             self._logger.warning(
-                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}: %s",
-                result.stdout.decode("utf-8"),
+                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}",
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
                 ),

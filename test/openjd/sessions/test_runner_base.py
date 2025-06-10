@@ -2,7 +2,6 @@
 
 import json
 import os
-import sys
 import time
 from datetime import datetime, timedelta, timezone
 from logging.handlers import QueueHandler
@@ -118,7 +117,7 @@ class TestScriptRunnerBase:
         assert runner.state == ScriptRunnerState.READY
         assert runner.exit_code is None
 
-    def test_basic_run(self, tmp_path: Path) -> None:
+    def test_basic_run(self, tmp_path: Path, python_exe: str) -> None:
         # Run a simple command with no timeout and check the state during and
         # after the run.
 
@@ -128,7 +127,7 @@ class TestScriptRunnerBase:
             logger=MagicMock(), session_working_directory=tmp_path, callback=callback
         ) as runner:
             # WHEN
-            runner._run([sys.executable, "-c", "import time; time.sleep(0.25)"])
+            runner._run([python_exe, "-c", "import time; time.sleep(0.25)"])
 
             # THEN
             assert runner.state == ScriptRunnerState.RUNNING
@@ -162,7 +161,11 @@ class TestScriptRunnerBase:
                 time.sleep(0.0001)
 
     def test_working_dir_is_cwd(
-        self, tmp_path: Path, message_queue: SimpleQueue, queue_handler: QueueHandler
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test to make sure that the current working dir of the command that's run is
         # the startup directory.
@@ -173,7 +176,7 @@ class TestScriptRunnerBase:
             logger=logger, session_working_directory=tmp_path, startup_directory=tmp_path
         ) as runner:
             # WHEN
-            runner._run([sys.executable, "-c", "import os; print(os.getcwd())"])
+            runner._run([python_exe, "-c", "import os; print(os.getcwd())"])
             # Wait until the process exits.
             while runner.state == ScriptRunnerState.RUNNING:
                 time.sleep(0.1)
@@ -182,14 +185,14 @@ class TestScriptRunnerBase:
         messages = collect_queue_messages(message_queue)
         assert str(tmp_path) in messages
 
-    def test_failing_run(self, tmp_path: Path) -> None:
+    def test_failing_run(self, tmp_path: Path, python_exe: str) -> None:
         # Test to make sure that we properly communicate a process with
         # non-zero return as
 
         # GIVEN
         with TerminatingRunner(logger=MagicMock(), session_working_directory=tmp_path) as runner:
             # WHEN
-            runner._run([sys.executable, "-c", "import sys; sys.exit(1)"])
+            runner._run([python_exe, "-c", "import sys; sys.exit(1)"])
 
             # THEN
             while runner.state == ScriptRunnerState.RUNNING:
@@ -243,6 +246,7 @@ class TestScriptRunnerBase:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Run a simple command with no timeout and check the state during and
         # after the run.
@@ -256,7 +260,7 @@ class TestScriptRunnerBase:
             # WHEN
             runner._run(
                 [
-                    sys.executable,
+                    python_exe,
                     "-c",
                     r"import os;print(*(f'{k} = {v}' for k,v in os.environ.items()), sep='\n')",
                 ]
@@ -298,7 +302,7 @@ class TestScriptRunnerBase:
             runner._run(
                 [
                     # Note: Intentionally not `sys.executable`. Reasons:
-                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    #  1) This is a cross-account command, and python_exe may be in a user-specific venv
                     #  2) This test is, generally, intended to be run in a docker container where the system
                     #     python is the correct version that we want to run under.
                     "python",
@@ -348,8 +352,8 @@ class TestScriptRunnerBase:
             # WHEN
             runner._run(
                 [
-                    # Note: Intentionally not `sys.executable`. Reasons:
-                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    # Note: Intentionally not `python_exe`. Reasons:
+                    #  1) This is a cross-account command, and python_exe may be in a user-specific venv
                     #  2) This test is, generally, intended to be run in a docker container where the system
                     #     python is the correct version that we want to run under.
                     "python",
@@ -467,8 +471,8 @@ class TestScriptRunnerBase:
             # WHEN
             runner._run(
                 [
-                    # Note: Intentionally not `sys.executable`. Reasons:
-                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    # Note: Intentionally not `python_exe`. Reasons:
+                    #  1) This is a cross-account command, and python_exe may be in a user-specific venv
                     #  2) This test is, generally, intended to be run in a docker container where the system
                     #     python is the correct version that we want to run under.
                     "python",
@@ -518,8 +522,8 @@ class TestScriptRunnerBase:
             # WHEN
             runner._run(
                 [
-                    # Note: Intentionally not `sys.executable`. Reasons:
-                    #  1) This is a cross-account command, and sys.executable may be in a user-specific venv
+                    # Note: Intentionally not `python_exe`. Reasons:
+                    #  1) This is a cross-account command, and python_exe may be in a user-specific venv
                     #  2) This test is, generally, intended to be run in a docker container where the system
                     #     python is the correct version that we want to run under.
                     "python",
@@ -571,7 +575,7 @@ class TestScriptRunnerBase:
             # WHEN
             py_script = f"import os; v=os.environ.get('{var_name}'); print('NOT_PRESENT' if v is None else v)"
             # Use the default 'python' rather than 'sys.executable' since we typically do not have access to
-            # sys.executable when running with impersonation since it's in a hatch environment for the local user.
+            # python_exe when running with impersonation since it's in a hatch environment for the local user.
             runner._run(["python", "-c", py_script])
 
             # THEN
@@ -588,7 +592,7 @@ class TestScriptRunnerBase:
         assert os.environ[var_name] not in messages
         assert "NOT_PRESENT" in messages
 
-    def test_cannot_run_twice(self, tmp_path: Path) -> None:
+    def test_cannot_run_twice(self, tmp_path: Path, python_exe: str) -> None:
         # Run a simple command with no timeout and check the state during and
         # after the run.
 
@@ -598,11 +602,11 @@ class TestScriptRunnerBase:
             logger=MagicMock(), session_working_directory=tmp_path, callback=callback
         ) as runner:
             # WHEN
-            runner._run([sys.executable, "-c", "print('hello')"])
+            runner._run([python_exe, "-c", "print('hello')"])
 
             # THEN
             with pytest.raises(RuntimeError):
-                runner._run([sys.executable, "-c", "print('hello')"])
+                runner._run([python_exe, "-c", "print('hello')"])
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action(
@@ -610,6 +614,7 @@ class TestScriptRunnerBase:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Run a test of the _run_action method that makes sure that the action runs
         # and the format strings are evaluated.
@@ -623,7 +628,7 @@ class TestScriptRunnerBase:
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
             source={
-                "Task.PythonInterpreter": sys.executable,
+                "Task.PythonInterpreter": python_exe,
                 "Task.ScriptFile": str(python_app_loc),
             }
         )
@@ -660,6 +665,7 @@ class TestScriptRunnerBase:
         queue_handler: QueueHandler,
         default_timeout_seconds: Optional[int],
         action_timeout_seconds: Optional[int],
+        python_exe: str,
     ) -> None:
         # Tests that the effective timeout is applied correctly given a supplied default timeout
         # and an optional timeout defined on the action
@@ -683,7 +689,7 @@ class TestScriptRunnerBase:
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
             source={
-                "Task.PythonInterpreter": sys.executable,
+                "Task.PythonInterpreter": python_exe,
                 "Task.ScriptFile": str(python_app_loc),
             }
         )
@@ -744,6 +750,7 @@ class TestScriptRunnerBase:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that the subprocess is terminated when doing a TERMINATE style
         # cancelation
@@ -755,7 +762,7 @@ class TestScriptRunnerBase:
             logger=logger, session_working_directory=tmp_path, callback=callback
         ) as runner:
             python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-            runner._run([sys.executable, str(python_app_loc)])
+            runner._run([python_exe, str(python_app_loc)])
 
             # WHEN
             runner.cancel()
@@ -779,6 +786,7 @@ class TestScriptRunnerBase:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that the subprocess is terminated when doing a TERMINATE style
         # cancelation
@@ -789,7 +797,7 @@ class TestScriptRunnerBase:
             python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
 
             # WHEN
-            runner._run([sys.executable, str(python_app_loc)], time_limit=timedelta(seconds=1))
+            runner._run([python_exe, str(python_app_loc)], time_limit=timedelta(seconds=1))
 
             # THEN
             # Wait until the process exits. We'll be in CANCELING state between when the timeout is reached
@@ -809,6 +817,7 @@ class TestScriptRunnerBase:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that NOTIFY_THEN_CANCEL first signals a SIGTERM and then a SIGKILL
 
@@ -818,7 +827,7 @@ class TestScriptRunnerBase:
             python_app_loc = (
                 Path(__file__).parent / "support_files" / "app_20s_run_ignore_signal.py"
             ).resolve()
-            runner._run([sys.executable, str(python_app_loc)])
+            runner._run([python_exe, str(python_app_loc)])
 
             # WHEN
             secs = 2 if not is_windows() else 5
@@ -961,6 +970,7 @@ class TestScriptRunnerBase:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that NOTIFY_THEN_CANCEL can be called twice, and the second time will
         # shrink the grace period
@@ -971,7 +981,7 @@ class TestScriptRunnerBase:
             python_app_loc = (
                 Path(__file__).parent / "support_files" / "app_20s_run_ignore_signal.py"
             ).resolve()
-            runner._run([sys.executable, str(python_app_loc)])
+            runner._run([python_exe, str(python_app_loc)])
 
             # WHEN
             secs = 2 if not is_windows() else 5

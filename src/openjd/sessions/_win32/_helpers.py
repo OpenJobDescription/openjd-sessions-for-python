@@ -25,6 +25,8 @@ from ._api import (
     # Constants
     LOGON32_LOGON_INTERACTIVE,
     LOGON32_PROVIDER_DEFAULT,
+    PI_NOUI,
+    PROFILEINFO,
     # Functions
     CloseHandle,
     CreateEnvironmentBlock,
@@ -32,6 +34,8 @@ from ._api import (
     GetCurrentProcessId,
     LogonUserW,
     ProcessIdToSessionId,
+    LoadUserProfileW,
+    UnloadUserProfile,
 )
 
 
@@ -166,3 +170,33 @@ def environment_block_from_dict(env: dict[str, str]) -> c_wchar_p:
     env_block_str = null_delimited + "\0"
 
     return c_wchar_p(env_block_str)
+
+
+def load_user_profile(token: HANDLE, username: str) -> PROFILEINFO:
+    """
+    Load the user profile for the given logon token and user name
+
+    NOTE: The caller *MUST* call unload_user_profile when finished with the user profile
+
+    See: https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-loaduserprofilew
+    """
+    profile_info = PROFILEINFO()
+    profile_info.dwSize = sizeof(PROFILEINFO)
+    profile_info.lpUserName = username
+    profile_info.dwFlags = PI_NOUI
+    profile_info.lpProfilePath = None
+
+    if not LoadUserProfileW(token, byref(profile_info)):
+        raise WinError()
+
+    return profile_info
+
+
+def unload_user_profile(token: HANDLE, profile_info: PROFILEINFO) -> None:
+    """
+    Unload the user profile for the given token and profile.
+
+    See: https://learn.microsoft.com/en-us/windows/win32/api/userenv/nf-userenv-unloaduserprofile
+    """
+    if not UnloadUserProfile(token, profile_info.hProfile):
+        raise WinError()
