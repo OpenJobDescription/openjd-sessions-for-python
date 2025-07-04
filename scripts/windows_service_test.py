@@ -8,13 +8,13 @@ from typing import Optional
 import win32serviceutil
 import win32service
 import servicemanager
-import subprocess
 import sys
 import os
 import argparse
 import shlex
 import win32con
 import win32api
+import pytest
 from getpass import getpass
 
 
@@ -54,32 +54,20 @@ class OpenJDSessionsForPythonTestService(win32serviceutil.ServiceFramework):
         )
         code_location = os.environ["CODE_LOCATION"]
         pytest_args = os.environ.get("PYTEST_ARGS", None)
+        log_file_name = os.path.join(code_location, "test.log")
 
-        args = ["pytest", os.path.join(code_location, "test")]
+        # We need to disable xdist as it runs each test in a Python
+        # subprocess, which results in the tests not running as a
+        # service as we want.
+        args = [os.path.join(code_location, "test"), "--numprocesses=0"]
 
         if pytest_args:
             args.extend(shlex.split(pytest_args, posix=False))
+        with open(log_file_name, mode="w") as f:
+            sys.stdout = f
+            sys.stderr = f
 
-        logging.basicConfig(
-            filename=os.path.join(code_location, "test.log"),
-            encoding="utf-8",
-            level=logging.INFO,
-            filemode="w",
-        )
-        process = subprocess.Popen(
-            args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            cwd=code_location,
-        )
-
-        while True:
-            output = process.stdout.readline()
-            if not output and process.poll() is not None:
-                break
-
-            logger.info(output.strip())
+            pytest.main(args)
 
         servicemanager.LogMsg(
             servicemanager.EVENTLOG_INFORMATION_TYPE,

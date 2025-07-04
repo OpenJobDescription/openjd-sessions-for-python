@@ -41,14 +41,14 @@ class TestLoggingSubprocessSameUser:
         with pytest.raises(ValueError):
             LoggingSubprocess(logger=logger, args=[])
 
-    def test_getters_return_none(self, queue_handler: QueueHandler) -> None:
+    def test_getters_return_none(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # Check that the getters all return None if the subprocess hasn't run yet.
 
         # GIVEN
         logger = build_logger(queue_handler)
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, "-c", 'print("Test")'],
+            args=[python_exe, "-c", 'print("Test")'],
         )
 
         # THEN
@@ -58,7 +58,11 @@ class TestLoggingSubprocessSameUser:
 
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation(
-        self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
+        self,
+        exitcode: int,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Can we run a process, capture its output, and discover its return code?
 
@@ -67,7 +71,7 @@ class TestLoggingSubprocessSameUser:
         message = "this is 'output'"
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            args=[python_exe, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
         )
 
         # WHEN
@@ -85,7 +89,11 @@ class TestLoggingSubprocessSameUser:
     @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
     @pytest.mark.parametrize("exitcode", [0, 1])
     def test_basic_operation_with_sameuser(
-        self, exitcode: int, message_queue: SimpleQueue, queue_handler: QueueHandler
+        self,
+        exitcode: int,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # If the SessionUser is the process owner, then do we still run correctly.
         # Note: PosixSessionUser autopopulates the group if it's not given.
@@ -98,7 +106,7 @@ class TestLoggingSubprocessSameUser:
         message = "this is output"
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
+            args=[python_exe, "-c", f'import sys; print("{message}"); sys.exit({exitcode})'],
             user=user,
         )
 
@@ -161,7 +169,9 @@ class TestLoggingSubprocessSameUser:
         assert not subproc.is_running
         callback_mock.assert_called_once()
 
-    def test_captures_stderr(self, message_queue: SimpleQueue, queue_handler: QueueHandler) -> None:
+    def test_captures_stderr(
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
+    ) -> None:
         # Ensure that messages sent to stderr are logged
 
         # GIVEN
@@ -169,7 +179,7 @@ class TestLoggingSubprocessSameUser:
         message = "this is output"
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, "-c", f'import sys; print("{message}", file=sys.stderr)'],
+            args=[python_exe, "-c", f'import sys; print("{message}", file=sys.stderr)'],
         )
 
         # WHEN
@@ -179,14 +189,14 @@ class TestLoggingSubprocessSameUser:
         messages = collect_queue_messages(message_queue)
         assert message in messages
 
-    def test_cannot_run_twice(self, queue_handler: QueueHandler) -> None:
+    def test_cannot_run_twice(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # We should fail if we try to run a LoggingSubprocess twice
 
         # GIVEN
         logger = build_logger(queue_handler)
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, "-c", "print('Test')"],
+            args=[python_exe, "-c", "print('Test')"],
         )
 
         # WHEN
@@ -196,7 +206,7 @@ class TestLoggingSubprocessSameUser:
         with pytest.raises(RuntimeError):
             subproc.run()
 
-    def test_invokes_callback(self, queue_handler: QueueHandler) -> None:
+    def test_invokes_callback(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # Make sure that the given callback is invoked when the process exits.
 
         # GIVEN
@@ -205,7 +215,7 @@ class TestLoggingSubprocessSameUser:
         subproc = LoggingSubprocess(
             logger=logger,
             args=[
-                sys.executable,
+                python_exe,
                 "-c",
                 "print('This is just a test')",
             ],
@@ -219,7 +229,7 @@ class TestLoggingSubprocessSameUser:
         callback_mock.assert_called_once()
 
     def test_notify_ends_process(
-        self, message_queue: SimpleQueue, queue_handler: QueueHandler
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
     ) -> None:
         # Make sure that process is sent a notification signal
 
@@ -228,7 +238,7 @@ class TestLoggingSubprocessSameUser:
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, str(python_app_loc)],
+            args=[python_exe, str(python_app_loc)],
         )
         all_messages = []
 
@@ -260,7 +270,7 @@ class TestLoggingSubprocessSameUser:
         assert subproc.exit_code != 0
 
     def test_terminate_ends_process(
-        self, message_queue: SimpleQueue, queue_handler: QueueHandler
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
     ) -> None:
         # Make sure that the subprocess is forcefully killed when terminated
 
@@ -269,7 +279,7 @@ class TestLoggingSubprocessSameUser:
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         subproc = LoggingSubprocess(
             logger=logger,
-            args=[sys.executable, str(python_app_loc)],
+            args=[python_exe, str(python_app_loc)],
         )
         all_messages = []
 
@@ -309,6 +319,7 @@ class TestLoggingSubprocessSameUser:
         self,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Make sure that the subprocess and all of its children are forcefully killed when terminated
         from psutil import Process, NoSuchProcess, STATUS_ZOMBIE
@@ -316,14 +327,14 @@ class TestLoggingSubprocessSameUser:
         # GIVEN
         logger = build_logger(queue_handler)
         script_loc = (Path(__file__).parent / "support_files" / "run_app_20s_run.py").resolve()
-        args = [sys.executable, str(script_loc)]
+        args = [python_exe, str(script_loc)]
         subproc = LoggingSubprocess(logger=logger, args=args)
         children = []
         all_messages = []
         # Note: This is the number of *CHILD* processes of the main process that we start.
         #  The total number of processes in flight will be this plus one.
 
-        # On Posix and on Windows not in a virutal environment:
+        # On Posix and on Windows not in a virtual environment:
         # Process tree: python -> python
         # Children: python
         expected_num_child_procs = 1
@@ -334,6 +345,11 @@ class TestLoggingSubprocessSameUser:
             # Process tree: conhost -> python -> python -> python
             # Children: python, python, python
             expected_num_child_procs = 3
+        elif is_windows() and are_tests_in_windows_session_0():
+            # When running as a service there's an additional process that gets added
+            # Process tree: conhost -> python -> python
+            # Children: python, python
+            expected_num_child_procs = 2
 
         def end_proc():
             subproc.wait_until_started()
@@ -387,6 +403,7 @@ class TestLoggingSubprocessSameUser:
         self,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Make sure the run method reads up to a max line length
 
@@ -396,7 +413,7 @@ class TestLoggingSubprocessSameUser:
         subproc = LoggingSubprocess(
             logger=logger,
             args=[
-                sys.executable,
+                python_exe,
                 "-c",
                 f"""import sys
 print("a" * {expected_max_line_length}, end="")
@@ -453,6 +470,7 @@ sys.exit(0)
         queue_handler: QueueHandler,
         command: str,
         expected_message_indices: list[int],
+        python_exe: str,
     ) -> None:
         # Make sure that the run command ends when the main subprocess ends
         # GIVEN
@@ -460,7 +478,7 @@ sys.exit(0)
         subproc = LoggingSubprocess(
             logger=logger,
             args=[
-                sys.executable,
+                python_exe,
                 "-c",
                 f'import subprocess;process = subprocess.Popen({command}, encoding="utf-8")',
             ],
@@ -896,7 +914,6 @@ foreach ($envVar in $allEnvVars) {
         windows_user: WindowsSessionUser,
     ) -> None:
         # Make sure that process is sent a notification signal
-
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
@@ -1005,10 +1022,6 @@ foreach ($envVar in $allEnvVars) {
         all_messages = []
         # conhost, python
         expected_num_child_procs: int = 2
-        if are_tests_in_windows_session_0():
-            # Session 0 doesn't get the conhost process, so just:
-            # python
-            expected_num_child_procs = 1
 
         def end_proc():
             subproc.wait_until_started()

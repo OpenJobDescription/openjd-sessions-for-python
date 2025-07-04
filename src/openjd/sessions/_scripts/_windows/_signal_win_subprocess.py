@@ -55,11 +55,6 @@ def signal_process(pgid: int):
     if not kernel32.GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pgid):
         raise ctypes.WinError()
 
-    if not kernel32.FreeConsole():
-        raise ctypes.WinError()
-    if not kernel32.AttachConsole(ATTACH_PARENT_PROCESS):
-        raise ctypes.WinError()
-
 
 if __name__ == "__main__":
     signal_process(int(sys.argv[1]))

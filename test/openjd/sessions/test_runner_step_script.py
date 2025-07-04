@@ -1,6 +1,5 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-import sys
 import time
 from datetime import timedelta
 from logging.handlers import QueueHandler
@@ -62,6 +61,7 @@ class TestStepScriptRunner:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that run of an action with no embedded files works as expected.
 
@@ -74,7 +74,7 @@ class TestStepScriptRunner:
                 )
             )
         )
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         logger = build_logger(queue_handler)
         runner = StepScriptRunner(
             logger=logger,
@@ -99,6 +99,7 @@ class TestStepScriptRunner:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that that en embedded file is properly materialized and can be used in the action
 
@@ -118,7 +119,7 @@ class TestStepScriptRunner:
                 )
             ],
         )
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         logger = build_logger(queue_handler)
         runner = StepScriptRunner(
             logger=logger,
@@ -243,6 +244,7 @@ class TestStepScriptRunner:
             ]
         ],
         expected: CancelMethod,
+        python_exe: str,
     ) -> None:
         # Test that cancel invokes the base class' cancel with the appropriate arguments.
 
@@ -262,7 +264,7 @@ class TestStepScriptRunner:
                         )
                     )
                 )
-                symtab = SymbolTable(source={"Task.Command": sys.executable})
+                symtab = SymbolTable(source={"Task.Command": python_exe})
                 runner = StepScriptRunner(
                     logger=MagicMock(),
                     session_working_directory=tmp_path,

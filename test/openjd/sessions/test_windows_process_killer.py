@@ -1,7 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import subprocess
-import sys
 import time
 from pathlib import Path
 import psutil
@@ -20,11 +19,11 @@ from subprocess import Popen
 
 @pytest.mark.usefixtures("message_queue", "queue_handler")
 class TestWindowsProcessKiller:
-    def test_suspend_process_tree(self, queue_handler: QueueHandler) -> None:
+    def test_suspend_process_tree(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-        process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
+        process = Popen([python_exe, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
         # Give a few seconds for running the python script
@@ -38,11 +37,11 @@ class TestWindowsProcessKiller:
         finally:
             proc.kill()
 
-    def test_suspend_process(self, queue_handler: QueueHandler) -> None:
+    def test_suspend_process(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-        process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
+        process = Popen([python_exe, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
         # Give a few seconds for running the python script
@@ -57,11 +56,11 @@ class TestWindowsProcessKiller:
         finally:
             proc.kill()
 
-    def test_kill_processes(self, queue_handler: QueueHandler) -> None:
+    def test_kill_processes(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-        process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
+        process = Popen([python_exe, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
         # Give a few seconds for running the python script
@@ -72,11 +71,11 @@ class TestWindowsProcessKiller:
         # Then
         assert not psutil.pid_exists(process.pid)
 
-    def test_kill_windows_process_tree(self, queue_handler: QueueHandler) -> None:
+    def test_kill_windows_process_tree(self, queue_handler: QueueHandler, python_exe: str) -> None:
         # GIVEN
         logger = build_logger(queue_handler)
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
-        process = Popen([sys.executable, python_app_loc], stdout=subprocess.PIPE, text=True)
+        process = Popen([python_exe, python_app_loc], stdout=subprocess.PIPE, text=True)
 
         # When
         # Give a few seconds for running the python script

@@ -666,11 +666,11 @@ class TestSessionRunTask_2023_09:  # noqa: N801
 
     @staticmethod
     @pytest.fixture
-    def fix_basic_task_script() -> StepScript_2023_09:
+    def fix_basic_task_script(python_exe: str) -> StepScript_2023_09:
         return StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -740,12 +740,14 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             # THEN
             assert "--------- Running Task" not in caplog.messages
 
-    def test_run_task_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_run_task_with_env_vars(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         # GIVEN
         step_script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -793,7 +795,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             if state != SessionState.READY
         ],
     )
-    def test_cannot_run_not_ready(self, state: SessionState) -> None:
+    def test_cannot_run_not_ready(self, state: SessionState, python_exe: str) -> None:
         # This is checking that we cannot run a task unless the Session is READY
 
         # GIVEN
@@ -802,7 +804,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                 )
             ),
@@ -818,7 +820,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             with pytest.raises(RuntimeError):
                 session.run_task(step_script=script, task_parameter_values=task_params)
 
-    def test_run_task_fail_early(self) -> None:
+    def test_run_task_fail_early(self, python_exe: str) -> None:
         # Testing a task that fails before running.
         # This'll fail because we're referencing a Task parameter that doesn't exist.
 
@@ -829,7 +831,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
         step_script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -854,14 +856,14 @@ class TestSessionRunTask_2023_09:  # noqa: N801
                 fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
-    def test_run_task_fail_run(self) -> None:
+    def test_run_task_fail_run(self, python_exe: str) -> None:
         # Testing a task that fails while running
 
         # GIVEN
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -931,14 +933,14 @@ class TestSessionRunTask_2023_09:  # noqa: N801
 class TestSessionCancel:
     """Test that cancelation will cancel the currently running Script."""
 
-    def test_cancel(self) -> None:
+    def test_cancel(self, python_exe: str) -> None:
         # Testing a task that fails while running
 
         # GIVEN
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -994,7 +996,7 @@ class TestSessionCancel:
             )
         ),
     )
-    def test_cancel_time_limit(self, time_limit: Optional[timedelta]) -> None:
+    def test_cancel_time_limit(self, time_limit: Optional[timedelta], python_exe: str) -> None:
         # Testing that the time_limit argument is forwarded to the runner
 
         # GIVEN
@@ -1002,7 +1004,7 @@ class TestSessionCancel:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -1049,13 +1051,14 @@ def _make_environment(
     exit_script: bool = False,
     variables: Optional[dict[str, EnvironmentVariableValueString_2023_09]] = None,
     name: Optional[str] = None,
+    python_exe: str = sys.executable,
 ) -> Environment_2023_09:
     script = (
         EnvironmentScript_2023_09(
             actions=EnvironmentActions_2023_09(
                 onEnter=(
                     Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                     if enter_script
@@ -1063,7 +1066,7 @@ def _make_environment(
                 ),
                 onExit=(
                     Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                     if exit_script
@@ -1091,7 +1094,9 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
     """Testing running tasks with the 2023-09 schema."""
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_enter_environment_basic(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_enter_environment_basic(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         # GIVEN
         # Crafting a EnvironmentScript that ensures that references to Job parameters.
         # This ensures that we are correctly constructing the symbol table for the run.
@@ -1099,7 +1104,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1133,7 +1138,9 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert "Jvalue Jvalue" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_enter_environment_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_enter_environment_with_env_vars(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         # GIVEN
         # Crafting a EnvironmentScript that ensures that references to Job parameters.
         # This ensures that we are correctly constructing the symbol table for the run.
@@ -1141,7 +1148,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1188,7 +1195,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             if state != SessionState.READY
         ],
     )
-    def test_cannot_enter_when_not_ready(self, state: SessionState) -> None:
+    def test_cannot_enter_when_not_ready(self, state: SessionState, python_exe: str) -> None:
         # This is checking that we cannot enter an environment unless the Session
         # is in READY state
 
@@ -1199,7 +1206,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                     )
                 ),
@@ -1215,7 +1222,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             with pytest.raises(RuntimeError):
                 session.enter_environment(environment=environment)
 
-    def test_enter_two_environments(self) -> None:
+    def test_enter_two_environments(self, python_exe: str) -> None:
         # This is checking that we construct the list of entered environments
         # correctly (i.e. the order of identifiers in the list is the order in which
         # they were entered)
@@ -1226,7 +1233,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
         script = EnvironmentScript_2023_09(
             actions=EnvironmentActions_2023_09(
                 onEnter=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                 )
             ),
@@ -1249,7 +1256,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.environments_entered == (identifier1, identifier2)
 
-    def test_cannot_enter_same_environment_twice(self) -> None:
+    def test_cannot_enter_same_environment_twice(self, python_exe: str) -> None:
         # This is checking that we cannot enter the same environment twice, as defined by its
         # identifier
 
@@ -1260,7 +1267,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                     )
                 ),
@@ -1279,7 +1286,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             with pytest.raises(RuntimeError):
                 session.enter_environment(environment=environment, identifier=identifier1)
 
-    def test_enter_environment_fail_early(self) -> None:
+    def test_enter_environment_fail_early(self, python_exe: str) -> None:
         # Testing an environment that fails before running.
         # This'll fail because we're referencing a Task parameter that doesn't exist.
 
@@ -1288,7 +1295,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1316,7 +1323,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
                 fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
-    def test_enter_environment_fail_run(self) -> None:
+    def test_enter_environment_fail_run(self, python_exe: str) -> None:
         # Testing an Environment enter that fails while running
 
         # GIVEN
@@ -1324,7 +1331,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1350,7 +1357,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             assert session.action_status == ActionStatus(state=ActionState.FAILED, exit_code=1)
 
-    def test_enter_no_action(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_enter_no_action(self, caplog: pytest.LogCaptureFixture, python_exe: str) -> None:
         # Testing an environment enter where the given environment has no
         # onEnter action defined.
 
@@ -1359,7 +1366,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                     )
                 ),
@@ -1375,7 +1382,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS)
 
-    def test_enter_environment_with_variables(self) -> None:
+    def test_enter_environment_with_variables(self, python_exe: str) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
         job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
@@ -1385,7 +1392,9 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             session.enter_environment(
-                environment=_make_environment(enter_script=True, variables=variables)
+                environment=_make_environment(
+                    enter_script=True, variables=variables, python_exe=python_exe
+                )
             )
             # Wait for the process to exit
             while session.state == SessionState.RUNNING:
@@ -1396,7 +1405,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_enter_environment_with_resolved_variables(
-        self, caplog: pytest.LogCaptureFixture
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
     ) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
@@ -1409,7 +1418,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1435,7 +1444,7 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
             assert session._runner is not None
             assert "Jvalue" in caplog.messages
 
-    def test_enter_two_environments_with_variables(self) -> None:
+    def test_enter_two_environments_with_variables(self, python_exe: str) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
         job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
@@ -1447,11 +1456,15 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
         }
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session.enter_environment(environment=_make_environment(variables=variables1))
+            session.enter_environment(
+                environment=_make_environment(variables=variables1, python_exe=python_exe)
+            )
             assert session.state == SessionState.READY
 
             session.enter_environment(
-                environment=_make_environment(enter_script=True, variables=variables2)
+                environment=_make_environment(
+                    enter_script=True, variables=variables2, python_exe=python_exe
+                )
             )
             # Wait for the process to exit
             while session.state == SessionState.RUNNING:
@@ -1465,7 +1478,9 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
     """Testing running tasks with the 2023-09 schema."""
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_exit_environment_basic(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_exit_environment_basic(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         # GIVEN
         # Crafting a EnvironmentScript that ensures that references to Job parameters.
         # This ensures that we are correctly constructing the symbol table for the run.
@@ -1473,7 +1488,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1509,7 +1524,9 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert "Jvalue Jvalue" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_exit_environment_with_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_exit_environment_with_env_vars(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         # GIVEN
         # Crafting a EnvironmentScript that ensures that references to Job parameters.
         # This ensures that we are correctly constructing the symbol table for the run.
@@ -1517,7 +1534,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1564,7 +1581,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             if state not in (SessionState.READY, SessionState.READY_ENDING)
         ],
     )
-    def test_cannot_exit_when_not_ready(self, state: SessionState) -> None:
+    def test_cannot_exit_when_not_ready(self, state: SessionState, python_exe: str) -> None:
         # This is checking that we cannot exit an environment unless the Session
         # is in READY or READY_ENDING state
 
@@ -1573,7 +1590,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                     )
                 ),
@@ -1591,7 +1608,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             with pytest.raises(RuntimeError):
                 session.exit_environment(identifier=identifier)
 
-    def test_exit_with_two_environments(self) -> None:
+    def test_exit_with_two_environments(self, python_exe: str) -> None:
         # This is checking that we can only exit the most recently entered environment
 
         # GIVEN
@@ -1601,7 +1618,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                     )
                 ),
@@ -1618,7 +1635,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             with pytest.raises(RuntimeError):
                 session.exit_environment(identifier=identifier1)
 
-    def test_exit_environment_fail_early(self) -> None:
+    def test_exit_environment_fail_early(self, python_exe: str) -> None:
         # Testing an environment that fails before running.
         # This'll fail because we're referencing a Task parameter that doesn't exist.
 
@@ -1627,7 +1644,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1657,7 +1674,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
                 fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
-    def test_exit_environment_fail_run(self) -> None:
+    def test_exit_environment_fail_run(self, python_exe: str) -> None:
         # Testing an Environment enter that fails while running
 
         # GIVEN
@@ -1665,7 +1682,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Foo }}")],
                     )
                 ),
@@ -1693,7 +1710,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             assert session.action_status == ActionStatus(state=ActionState.FAILED, exit_code=1)
 
-    def test_exit_no_action(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_exit_no_action(self, caplog: pytest.LogCaptureFixture, python_exe: str) -> None:
         # Testing an environment exit where the given environment has no
         # onExit action defined.
 
@@ -1702,7 +1719,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
                     )
                 ),
@@ -1723,14 +1740,16 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session.state == SessionState.READY_ENDING
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS)
 
-    def test_exit_environment_with_variables(self) -> None:
+    def test_exit_environment_with_variables(self, python_exe: str) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
         job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
         variables = {
             "FOO": EnvironmentVariableValueString_2023_09("bar"),
         }
-        environment = _make_environment(enter_script=False, exit_script=True, variables=variables)
+        environment = _make_environment(
+            enter_script=False, exit_script=True, variables=variables, python_exe=python_exe
+        )
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier = session.enter_environment(environment=environment)
@@ -1746,7 +1765,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session._runner is not None
             assert session._runner._os_env_vars == dict(variables)
 
-    def test_exit_two_environments_with_variables(self) -> None:
+    def test_exit_two_environments_with_variables(self, python_exe: str) -> None:
         # GIVEN
         session_id = uuid.uuid4().hex
         job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
@@ -1757,8 +1776,12 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             "FOO": EnvironmentVariableValueString_2023_09("corge"),
             "BAZ": EnvironmentVariableValueString_2023_09("QUX"),
         }
-        environment1 = _make_environment(enter_script=False, exit_script=True, variables=variables1)
-        environment2 = _make_environment(enter_script=False, exit_script=True, variables=variables2)
+        environment1 = _make_environment(
+            enter_script=False, exit_script=True, variables=variables1, python_exe=python_exe
+        )
+        environment2 = _make_environment(
+            enter_script=False, exit_script=True, variables=variables2, python_exe=python_exe
+        )
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
             identifier1 = session.enter_environment(environment=environment1)
@@ -1787,7 +1810,7 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             assert session._runner is not None
             assert session._runner._os_env_vars == dict(variables1)
 
-    def test_run_task_after_env_exit(self) -> None:
+    def test_run_task_after_env_exit(self, python_exe: str) -> None:
         # By default, tasks can't run after an environment exit. The exit_environment call
         # can override that, however, and allow it.
 
@@ -1797,11 +1820,13 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             "FOO": EnvironmentVariableValueString_2023_09("corge"),
             "BAZ": EnvironmentVariableValueString_2023_09("QUX"),
         }
-        environment = _make_environment(enter_script=False, exit_script=False, variables=variables)
+        environment = _make_environment(
+            enter_script=False, exit_script=False, variables=variables, python_exe=python_exe
+        )
         step_script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Foo }}")],
                 )
             ),
@@ -2019,7 +2044,9 @@ class TestPathMapping_v2023_09:  # noqa: N801
             assert contents == expected_json
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_run_task(self, caplog: pytest.LogCaptureFixture, session_id: str) -> None:
+    def test_run_task(
+        self, caplog: pytest.LogCaptureFixture, session_id: str, python_exe: str
+    ) -> None:
         # Test that path mapping rules are passed through to a running Task.
         # i.e. that run_task hooks _materialize_path_mapping() up correctly.
 
@@ -2031,7 +2058,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Script }}")],
                 )
             ),
@@ -2068,7 +2095,9 @@ class TestPathMapping_v2023_09:  # noqa: N801
             assert "Has: true" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_enter_environment(self, caplog: pytest.LogCaptureFixture, session_id: str) -> None:
+    def test_enter_environment(
+        self, caplog: pytest.LogCaptureFixture, session_id: str, python_exe: str
+    ) -> None:
         # Test that path mapping rules are passed through to a running environment-enter.
         # i.e. that enter_environment hooks _materialize_path_mapping() up correctly.
 
@@ -2081,7 +2110,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Script }}")],
                     )
                 ),
@@ -2118,7 +2147,9 @@ class TestPathMapping_v2023_09:  # noqa: N801
             assert "Has: true" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_exit_environment(self, caplog: pytest.LogCaptureFixture, session_id: str) -> None:
+    def test_exit_environment(
+        self, caplog: pytest.LogCaptureFixture, session_id: str, python_exe: str
+    ) -> None:
         # Test that path mapping rules are passed through to a running environment-exit.
         # i.e. that exit_environment hooks _materialize_path_mapping() up correctly.
 
@@ -2131,7 +2162,7 @@ class TestPathMapping_v2023_09:  # noqa: N801
             EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Script }}")],
                     )
                 ),
@@ -2497,7 +2528,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @staticmethod
     @pytest.fixture
-    def step_script_definition() -> StepScript_2023_09:
+    def step_script_definition(python_exe: str) -> StepScript_2023_09:
         return StepScript_2023_09(
             embeddedFiles=[
                 EmbeddedFileText_2023_09(
@@ -2511,7 +2542,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             ],
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[ArgString_2023_09("{{ Task.File.Run }}")],
                 )
             ),
@@ -2593,7 +2624,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_redefinition_exit(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when one environement redefines an env var that a previous one defined,
         # and then we exit that environment then the running task gets the values from the
@@ -2619,7 +2653,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
                 ],
                 actions=EnvironmentActions_2023_09(
                     onExit=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[ArgString_2023_09("{{ Env.File.Run }}")],
                     )
                 ),
@@ -2652,7 +2686,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables via a stdout handler then the variable
         # is available in the Task.
@@ -2663,7 +2700,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_env: FOO=FOO-value')"),
@@ -2694,7 +2731,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_multi_line_nonvalid_json_stdout(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables via a stdout handler
         # as a multiline json it is processed properly
@@ -2705,7 +2745,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("import json; print('openjd_env: \"FOO=12\\\\n34')"),
@@ -2728,8 +2768,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_multi_line_stdout(
-        self,
-        caplog: pytest.LogCaptureFixture,
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
     ) -> None:
         # Test that when an environment defines variables via a stdout handler
         # as a multiline json it is processed properly
@@ -2740,7 +2779,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_env: \"FOO=12\\\\n34\"')"),
@@ -2753,7 +2792,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[
                         ArgString_2023_09("-c"),
                         ArgString_2023_09(
@@ -2785,7 +2824,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_overrides_direct(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables directly, and then redefines them via a stdout
         # handler then the variable from the stdout handler takes precidence.
@@ -2796,7 +2838,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_env: FOO=FOO-value')"),
@@ -2830,7 +2872,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_set_empty_json(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables directly and as empty json it is processed properly
 
@@ -2840,7 +2885,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_env: \"FOO=\"')"),
@@ -2869,7 +2914,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_set_empty(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables directly and as empty string it is processed properly
 
@@ -2879,7 +2927,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_env: FOO=')"),
@@ -2908,7 +2956,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_fails_session_action_on_error(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables that are malformed then session fails
 
@@ -2918,7 +2969,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_env: FOO')"),
@@ -2974,7 +3025,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_undef_via_stdout(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment unsets an environment variable that it is actually not defined in
         # the task that's run.
@@ -2992,7 +3046,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_unset_env: FOO')"),
@@ -3023,7 +3077,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_redacted_env_stdout(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables via a stdout handler with openjd_redacted_env
         # the variable is set correctly but the value is redacted in logs
@@ -3034,7 +3091,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_redacted_env: PASSWORD=secret123')"),
@@ -3048,7 +3105,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[
                         ArgString_2023_09("-c"),
                         ArgString_2023_09(
@@ -3087,7 +3144,10 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_redacted_env_json_stdout(
-        self, caplog: pytest.LogCaptureFixture, step_script_definition: StepScript_2023_09
+        self,
+        caplog: pytest.LogCaptureFixture,
+        step_script_definition: StepScript_2023_09,
+        python_exe: str,
     ) -> None:
         # Test that when an environment defines variables via a stdout handler with openjd_redacted_env
         # using JSON format, the variable is set correctly but the value is redacted in logs
@@ -3098,7 +3158,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_redacted_env: API_KEY=abc123def456')"),
@@ -3112,7 +3172,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[
                         ArgString_2023_09("-c"),
                         ArgString_2023_09("import os; print(f'API_KEY={os.environ[\"API_KEY\"]}')"),
@@ -3185,7 +3245,9 @@ class TestEnvironmentVariablesInTasks_2023_09:
             assert session.get_enabled_extensions() == []
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_def_via_redacted_env_with_variables(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_def_via_redacted_env_with_variables(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         """Test that redacted env vars override directly defined variables."""
         # GIVEN
         environment = Environment_2023_09(
@@ -3193,7 +3255,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_redacted_env: TOKEN=secret-token')"),
@@ -3208,7 +3270,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[
                         ArgString_2023_09("-c"),
                         ArgString_2023_09("import os; print(f'TOKEN={os.environ[\"TOKEN\"]}')"),
@@ -3246,7 +3308,9 @@ class TestEnvironmentVariablesInTasks_2023_09:
             assert "Setting: TOKEN=public-token" in caplog.messages
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_def_via_redacted_env_with_extension(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_def_via_redacted_env_with_extension(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         """Test that redacted env vars are set when the extension is enabled."""
         # GIVEN
         environment = Environment_2023_09(
@@ -3254,7 +3318,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09("print('openjd_redacted_env: PASSWORD=secret123')"),
@@ -3268,7 +3332,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[
                         ArgString_2023_09("-c"),
                         ArgString_2023_09(
@@ -3312,7 +3376,9 @@ class TestEnvironmentVariablesInTasks_2023_09:
             assert "secret123" not in "\n".join(caplog.messages)
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
-    def test_multiple_different_redacted_env_vars(self, caplog: pytest.LogCaptureFixture) -> None:
+    def test_multiple_different_redacted_env_vars(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
         """Test that multiple redacted env vars with similar but different values are handled correctly."""
         # GIVEN
         # Create an environment that sets two similar but different redacted env vars
@@ -3321,7 +3387,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
             script=EnvironmentScript_2023_09(
                 actions=EnvironmentActions_2023_09(
                     onEnter=Action_2023_09(
-                        command=CommandString_2023_09(sys.executable),
+                        command=CommandString_2023_09(python_exe),
                         args=[
                             ArgString_2023_09("-c"),
                             ArgString_2023_09(
@@ -3337,7 +3403,7 @@ class TestEnvironmentVariablesInTasks_2023_09:
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
-                    command=CommandString_2023_09(sys.executable),
+                    command=CommandString_2023_09(python_exe),
                     args=[
                         ArgString_2023_09("-c"),
                         ArgString_2023_09(

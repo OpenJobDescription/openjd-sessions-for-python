@@ -1,6 +1,5 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
-import sys
 import time
 from datetime import timedelta
 from logging.handlers import QueueHandler
@@ -79,12 +78,13 @@ class TestEnvironmentScriptRunner:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that run of an onEnter action with no embedded files works as expected.
 
         # GIVEN
         script = EnvironmentScript_2023_09(actions=env_actions)
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         logger = build_logger(queue_handler)
         runner = EnvironmentScriptRunner(
             logger=logger,
@@ -135,6 +135,7 @@ class TestEnvironmentScriptRunner:
         env_actions: EnvironmentActions_2023_09,
         tmp_path: Path,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that when given an environment that doesn't have the corresponding
         # action defined we:
@@ -144,7 +145,7 @@ class TestEnvironmentScriptRunner:
 
         # GIVEN
         script = EnvironmentScript_2023_09(actions=env_actions)
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         logger = build_logger(queue_handler)
         callback = MagicMock()
         runner = EnvironmentScriptRunner(
@@ -170,12 +171,13 @@ class TestEnvironmentScriptRunner:
         self,
         tmp_path: Path,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that when given an environment that doesn't have a script we:
         # a) Don't explode;
         # b) Don't run anything; and
         # c) Invoke the callback
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         logger = build_logger(queue_handler)
         callbackOnEnter = MagicMock()
         callbackOnExit = MagicMock()
@@ -235,6 +237,7 @@ class TestEnvironmentScriptRunner:
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
+        python_exe: str,
     ) -> None:
         # Test that run of an action with embedded files works as expected.
 
@@ -249,7 +252,7 @@ class TestEnvironmentScriptRunner:
                 )
             ],
         )
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         logger = build_logger(queue_handler)
         runner = EnvironmentScriptRunner(
             logger=logger,
@@ -300,6 +303,7 @@ class TestEnvironmentScriptRunner:
         self,
         env_actions: EnvironmentActions_2023_09,
         tmp_path: Path,
+        python_exe: str,
     ) -> None:
         # Test that run of an action with embedded files that cannot be materialized to
         # disk:
@@ -319,7 +323,7 @@ class TestEnvironmentScriptRunner:
                 )
             ],
         )
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         callback = MagicMock()
         runner = EnvironmentScriptRunner(
             logger=MagicMock(),
@@ -375,6 +379,7 @@ class TestEnvironmentScriptRunner:
             ]
         ],
         expected: CancelMethod,
+        python_exe: str,
     ) -> None:
         # Test that cancel invokes the base class' cancel with the appropriate arguments.
 
@@ -395,7 +400,7 @@ class TestEnvironmentScriptRunner:
                     )
                 )
 
-                symtab = SymbolTable(source={"Task.Command": sys.executable})
+                symtab = SymbolTable(source={"Task.Command": python_exe})
                 runner = EnvironmentScriptRunner(
                     logger=MagicMock(),
                     session_working_directory=tmp_path,
@@ -427,6 +432,7 @@ class TestEnvironmentScriptRunner:
         self,
         tmp_path: Path,
         default_timeout: Optional[timedelta],
+        python_exe: str,
     ) -> None:
         # GIVEN
         action = Action_2023_09(
@@ -439,7 +445,7 @@ class TestEnvironmentScriptRunner:
             )
         )
 
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         runner = EnvironmentScriptRunner(
             logger=MagicMock(),
             session_working_directory=tmp_path,
@@ -467,6 +473,7 @@ class TestEnvironmentScriptRunner:
     def test_exit_uses_default_timeout(
         self,
         tmp_path: Path,
+        python_exe: str,
     ):
         # GIVEN
         # An "onExit" action with no defined timeout
@@ -481,7 +488,7 @@ class TestEnvironmentScriptRunner:
             )
         )
 
-        symtab = SymbolTable(source={"Task.Command": sys.executable})
+        symtab = SymbolTable(source={"Task.Command": python_exe})
         runner = EnvironmentScriptRunner(
             logger=MagicMock(),
             session_working_directory=tmp_path,
