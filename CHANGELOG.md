@@ -1,3 +1,10 @@
+## 0.10.4 (2025-07-22)
+
+
+
+### Bug Fixes
+* notify and cancel windows (#245) ([`77e5e2b`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/77e5e2bdaaba464610df521cb7846cdd1f5a333d))
+
 ## 0.10.3 (2025-06-05)
 
 
