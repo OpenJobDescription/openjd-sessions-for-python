@@ -862,8 +862,9 @@ class TestScriptRunnerBase:
         assert len(notification_data) == 1
         assert "NotifyEnd" in notification_data
         assert notification_data["NotifyEnd"][-1] == "Z"
-        time_end = datetime.fromisoformat(notification_data["NotifyEnd"][:-1]).astimezone(
-            timezone.utc
+        # Stripping the Z removes timezone information. Need to ensure it's not interpreted as local
+        time_end = datetime.fromisoformat(notification_data["NotifyEnd"][:-1]).replace(
+            tzinfo=timezone.utc
         )
         # Timestamp should be around 2s from cancel signal, but give a 1s window
         # for timing differences.
