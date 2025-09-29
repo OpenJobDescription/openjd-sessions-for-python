@@ -31,7 +31,7 @@ classifiers = [
 dependencies = [
   "openjd-model >= 0.8,< 0.9",
   "pywin32 >= 307; platform_system == 'Windows'",
-  "psutil >= 5.9,< 7.1; platform_system == 'Windows'",
+  "psutil >= 5.9,< 7.2; platform_system == 'Windows'",
 ]
 
 [project.urls]
