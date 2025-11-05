@@ -27,6 +27,13 @@ from openjd.model import (
 )
 from openjd.model import version as model_version
 from openjd.model.v2023_09 import (
+    Action as Action_2023_09,
+    ArgString as ArgString_2023_09,
+    CancelationMethodTerminate as CancelationMethodTerminate_2023_09,
+    CancelationMode as CancelationMode_2023_09,
+    CommandString as CommandString_2023_09,
+    StepActions as StepActions_2023_09,
+    StepScript as StepScript_2023_09,
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
 )
 from ._action_filter import ActionMessageKind, ActionMonitoringFilter
@@ -891,6 +898,122 @@ class Session(object):
             symtab=symtab,
             session_files_directory=self.files_directory,
         )
+        # Sets the subprocess running.
+        # Returns immediately after it has started, or is running
+        self._action_state = ActionState.RUNNING
+        self._state = SessionState.RUNNING
+        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
+        # so it's important to set the action_state to RUNNING before calling run(), rather
+        # than after -- run() itself may end up setting the action state to FAILED.
+        self._runner.run()
+
+    def run_subprocess(
+        self,
+        *,
+        command: str,
+        args: Optional[list[str]] = None,
+        timeout: Optional[int] = None,
+        os_env_vars: Optional[dict[str, str]] = None,
+        use_session_env_vars: bool = True,
+        log_banner_message: Optional[str] = None,
+    ) -> None:
+        """Run an ad-hoc subprocess within the Session.
+
+        This method is non-blocking; it will exit when the subprocess is either
+        confirmed to have started running, or has failed to be started.
+
+        Arguments:
+            command (str): The command/executable to run. Used exactly as provided
+                without format string substitution.
+            args (Optional[list[str]]): Arguments to pass to the command. Used exactly
+                as provided without format string substitution. Defaults to None.
+            timeout (Optional[int]): Maximum allowed runtime of the subprocess in seconds.
+                Must be a positive integer if provided. If None, the subprocess can run
+                indefinitely. Defaults to None.
+            os_env_vars (Optional[dict[str, str]]): Additional OS environment variables
+                to inject into the subprocess. Values provided override original process
+                environment variables and are overridden by environment-defined variables.
+            use_session_env_vars (bool): If True, includes environment variables from
+                the session and entered environments. If False, only uses os_env_vars
+                and original process environment variables. Defaults to True.
+            log_banner_message (Optional[str]): Custom message to display in a banner
+                before running the subprocess. If provided, logs a banner with this message.
+                If None, no banner is logged. Defaults to None.
+
+        Raises:
+            RuntimeError: If the Session is not in the READY state.
+            ValueError: If timeout is provided and is not a positive integer, or if command is empty.
+        """
+        # State validation
+        if self.state != SessionState.READY:
+            raise RuntimeError(
+                f"Session must be in the READY state to run a subprocess. "
+                f"Current state: {self.state.value}"
+            )
+
+        # Parameter validation
+        if timeout is not None and timeout <= 0:
+            raise ValueError("timeout must be a positive integer")
+
+        if not command or not command.strip():
+            raise ValueError("command must be a non-empty string")
+
+        # Log banner if requested
+        if log_banner_message:
+            log_section_banner(self._logger, log_banner_message)
+
+        # Reset action state
+        self._reset_action_state()
+
+        # Construct Action model
+        cancelation = CancelationMethodTerminate_2023_09(mode=CancelationMode_2023_09.TERMINATE)
+
+        action_command = CommandString_2023_09(command)
+        action_args = [ArgString_2023_09(arg) for arg in args] if args else None
+
+        action = Action_2023_09(
+            command=action_command,
+            args=action_args,
+            timeout=timeout,
+            cancelation=cancelation,
+        )
+
+        # Construct StepScript model
+        step_actions = StepActions_2023_09(onRun=action)
+
+        step_script = StepScript_2023_09(
+            actions=step_actions,
+            embeddedFiles=None,
+        )
+
+        # Create empty symbol table (no format string substitution for ad-hoc subprocesses)
+        symtab = SymbolTable()
+
+        # Evaluate environment variables
+        if use_session_env_vars:
+            action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
+        else:
+            action_env_vars = dict[str, Optional[str]](self._process_env)  # Make a copy
+            if os_env_vars:
+                action_env_vars.update(**os_env_vars)
+
+        # Note: Path mapping is not materialized for ad-hoc subprocesses since it's only
+        # accessible via template variable substitution (e.g., {{Session.PathMappingRulesFile}}),
+        # which is explicitly disabled for run_subprocess to ensure predictable behavior.
+
+        # Create and start StepScriptRunner
+        self._runner = StepScriptRunner(
+            logger=self._logger,
+            user=self._user,
+            os_env_vars=action_env_vars,
+            session_working_directory=self.working_directory,
+            startup_directory=self.working_directory,
+            callback=self._action_callback,
+            script=step_script,
+            symtab=symtab,
+            session_files_directory=self.files_directory,
+        )
+
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
         self._action_state = ActionState.RUNNING
