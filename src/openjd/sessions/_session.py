@@ -843,6 +843,63 @@ class Session(object):
         # than after -- run() itself may end up setting the action state to FAILED.
         self._runner.run()
 
+    def _run_task_without_session_env(
+        self,
+        *,
+        step_script: StepScriptModel,
+        task_parameter_values: TaskParameterSet,
+        os_env_vars: Optional[dict[str, str]] = None,
+        log_task_banner: bool = True,
+    ) -> None:
+        """Private API to run a task within the session.
+        This method directly use os_env_vars passed in without applying additional session env setup.
+        """
+        if self.state != SessionState.READY:
+            raise RuntimeError("Session must be in the READY state to run a task.")
+
+        if log_task_banner:
+            log_section_banner(self._logger, "Running Task")
+
+        if task_parameter_values:
+            self._logger.info(
+                "Parameter values:",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
+            )
+            for name, value in task_parameter_values.items():
+                self._logger.info(
+                    f"{name}({str(value.type.value)}) = {value.value}",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
+                )
+
+        self._reset_action_state()
+        symtab = self._symbol_table(step_script.revision, task_parameter_values)
+
+        # Evaluate environment variables
+        action_env_vars = dict[str, Optional[str]](self._process_env)  # Make a copy
+        if os_env_vars:
+            action_env_vars.update(**os_env_vars)
+
+        self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        self._runner = StepScriptRunner(
+            logger=self._logger,
+            user=self._user,
+            os_env_vars=action_env_vars,
+            session_working_directory=self.working_directory,
+            startup_directory=self.working_directory,
+            callback=self._action_callback,
+            script=step_script,
+            symtab=symtab,
+            session_files_directory=self.files_directory,
+        )
+        # Sets the subprocess running.
+        # Returns immediately after it has started, or is running
+        self._action_state = ActionState.RUNNING
+        self._state = SessionState.RUNNING
+        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
+        # so it's important to set the action_state to RUNNING before calling run(), rather
+        # than after -- run() itself may end up setting the action state to FAILED.
+        self._runner.run()
+
     # =========================
     #  Helpers
 
