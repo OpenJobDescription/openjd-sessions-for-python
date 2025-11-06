@@ -843,35 +843,16 @@ class Session(object):
         # than after -- run() itself may end up setting the action state to FAILED.
         self._runner.run()
 
-    def _run_task_with_optional_session_env(
+    def _run_task_without_session_env(
         self,
         *,
         step_script: StepScriptModel,
         task_parameter_values: TaskParameterSet,
         os_env_vars: Optional[dict[str, str]] = None,
-        use_session_env_vars: Optional[bool] = True,
         log_task_banner: bool = True,
     ) -> None:
-        """Run a Task within the Session.
-        This method is non-blocking; it will exit when the subprocess is either confirmed to have
-        started running, or has failed to be started.
-
-        Arguments:
-            step_script (StepScriptModel): The Step Script that the Task will be running.
-            task_parameter_values (TaskParameterSet): Values of the Task parameters that define the
-                specific Task. This is a dictionary where the keys are parameter names, and the values
-                are instances of ParameterValue (a dataclass containing the type and value of the parameter)
-            os_env_vars (Optional[dict[str,str]): Definitions for additional OS Environment
-                Variables that should be injected into the process that is run for this action.
-                Values provided override values provided to the Session constructor, and are overriden
-                by values defined in Environments.
-                    Key: Environment variable name
-                    Value: Value for the environment variable.
-            use_session_env_vars (Optional[bool]): Whether to apply environment variable changes from
-                entered environments. When True (default), applies changes from all entered environments
-                in order. When False, only uses base session and os_env_vars.
-            log_task_banner (bool): Whether to log a banner before running the Task.
-                Default: True
+        """Private API to run a task within the session.
+        This method directly use os_env_vars passed in without applying additional session env setup.
         """
         if self.state != SessionState.READY:
             raise RuntimeError("Session must be in the READY state to run a task.")
@@ -894,12 +875,9 @@ class Session(object):
         symtab = self._symbol_table(step_script.revision, task_parameter_values)
 
         # Evaluate environment variables
-        if use_session_env_vars:
-            action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
-        else:
-            action_env_vars = dict[str, Optional[str]](self._process_env)  # Make a copy
-            if os_env_vars:
-                action_env_vars.update(**os_env_vars)
+        action_env_vars = dict[str, Optional[str]](self._process_env)  # Make a copy
+        if os_env_vars:
+            action_env_vars.update(**os_env_vars)
 
         self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
         self._runner = StepScriptRunner(

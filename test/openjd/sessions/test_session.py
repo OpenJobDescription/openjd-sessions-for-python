@@ -3461,8 +3461,8 @@ class TestEnvironmentVariablesInTasks_2023_09:
             assert "mysecret123" not in log_content
 
 
-class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
-    """Testing running tasks with the 2023-09 schema."""
+class TestSessionRunTaskWithoutSessionEnv_2023_09:  # noqa: N801
+    """Testing running tasks without session environment variables with the 2023-09 schema."""
 
     @staticmethod
     @pytest.fixture
@@ -3496,7 +3496,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             },
         )
 
-    def test_run_task_with_optional_session_env(
+    def test_run_task_without_session_env(
         self, caplog: pytest.LogCaptureFixture, fix_basic_task_script: StepScript_2023_09
     ) -> None:
         # GIVEN
@@ -3507,7 +3507,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_session_env(
+            session._run_task_without_session_env(
                 step_script=fix_basic_task_script, task_parameter_values=task_params
             )
 
@@ -3523,7 +3523,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             assert "Pvalue Pvalue" in caplog.messages
             assert "--------- Running Task" in caplog.messages
 
-    def test_run_task_with_optional_session_env_no_log_banners(
+    def test_run_task_without_session_env_no_log_banners(
         self, caplog: pytest.LogCaptureFixture, fix_basic_task_script: StepScript_2023_09
     ) -> None:
         # GIVEN
@@ -3533,7 +3533,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_session_env(
+            session._run_task_without_session_env(
                 step_script=fix_basic_task_script,
                 task_parameter_values=task_params,
                 log_task_banner=False,
@@ -3542,7 +3542,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             # THEN
             assert "--------- Running Task" not in caplog.messages
 
-    def test_run_task_with_optional_session_env_with_env_vars(
+    def test_run_task_without_session_env_with_env_vars(
         self, caplog: pytest.LogCaptureFixture, python_exe: str
     ) -> None:
         # GIVEN
@@ -3573,7 +3573,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             session_id=session_id, job_parameter_values=job_params, os_env_vars=session_env_vars
         ) as session:
             # WHEN
-            session._run_task_with_optional_session_env(
+            session._run_task_without_session_env(
                 step_script=step_script,
                 task_parameter_values=task_params,
                 os_env_vars=action_env_vars,
@@ -3620,11 +3620,11 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
 
             # THEN
             with pytest.raises(RuntimeError):
-                session._run_task_with_optional_session_env(
+                session._run_task_without_session_env(
                     step_script=script, task_parameter_values=task_params
                 )
 
-    def test_run_task_with_optional_session_env_fail_early(self, python_exe: str) -> None:
+    def test_run_task_without_session_env_fail_early(self, python_exe: str) -> None:
         # Testing a task that fails before running.
         # This'll fail because we're referencing a Task parameter that doesn't exist.
 
@@ -3651,7 +3651,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         )
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_session_env(
+            session._run_task_without_session_env(
                 step_script=step_script, task_parameter_values=task_params
             )
 
@@ -3662,7 +3662,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                 fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
-    def test_run_task_with_optional_session_env_fail_run(self, python_exe: str) -> None:
+    def test_run_task_without_session_env_fail_run(self, python_exe: str) -> None:
         # Testing a task that fails while running
 
         # GIVEN
@@ -3686,7 +3686,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_session_env(
+            session._run_task_without_session_env(
                 step_script=script, task_parameter_values=task_params
             )
             # Wait for the process to exit
@@ -3711,121 +3711,40 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
 
             # THEN
             with pytest.raises(RuntimeError):
-                session._run_task_with_optional_session_env(
+                session._run_task_without_session_env(
                     step_script=fix_basic_task_script, task_parameter_values=task_params
                 )
 
-    def test_run_task_with_optional_session_env_with_variables(
-        self,
-        fix_basic_task_script: StepScript_2023_09,
-        fix_foo_baz_environment: Environment_2023_09,
-    ) -> None:
-        # GIVEN
-        session_id = uuid.uuid4().hex
-        job_params = {"J": ParameterValue(type=ParameterValueType.STRING, value="Jvalue")}
-        task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
-        with Session(session_id=session_id, job_parameter_values=job_params) as session:
-            # WHEN
-            session.enter_environment(environment=fix_foo_baz_environment)
-            assert session.state == SessionState.READY
-            session._run_task_with_optional_session_env(
-                step_script=fix_basic_task_script, task_parameter_values=task_params
-            )
-            # Wait for the process to exit
-            while session.state == SessionState.RUNNING:
-                time.sleep(0.1)
-            # THEN
-            assert session._runner is not None
-            assert fix_foo_baz_environment.variables is not None
-            assert session._runner._os_env_vars == dict(fix_foo_baz_environment.variables)
-
-    # Additional tests for use_session_env_vars functionality
+    # Testing os_env_vars behaviour which is different from run_task
     @pytest.mark.parametrize(
-        "use_session_env_vars,expected_foo,expected_baz",
+        "os_env_vars,expected_foo,expected_baz,expected_custom",
         [
-            (True, "bar", "qux"),  # Environment vars should be available
-            (False, "NOT_SET", "NOT_SET"),  # Environment vars should be ignored
-        ],
-    )
-    def test_run_task_with_optional_session_env_use_session_env_vars(
-        self,
-        caplog: pytest.LogCaptureFixture,
-        python_exe: str,
-        fix_foo_baz_environment: Environment_2023_09,
-        use_session_env_vars: bool,
-        expected_foo: str,
-        expected_baz: str,
-    ) -> None:
-        """Test use_session_env_vars parameter behavior with entered environments."""
-        # GIVEN
-        script = StepScript_2023_09(
-            actions=StepActions_2023_09(
-                onRun=Action_2023_09(
-                    command=CommandString_2023_09(python_exe),
-                    args=[ArgString_2023_09("{{ Task.File.Foo }}")],
-                )
-            ),
-            embeddedFiles=[
-                EmbeddedFileText_2023_09(
-                    name="Foo",
-                    type=EmbeddedFileTypes_2023_09.TEXT,
-                    data=DataString_2023_09(
-                        "import os; print(f\"FOO={os.environ.get('FOO', 'NOT_SET')}\"); print(f\"BAZ={os.environ.get('BAZ', 'NOT_SET')}\")"
-                    ),
-                )
-            ],
-        )
-
-        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
-            session.enter_environment(environment=fix_foo_baz_environment)
-            while session.state == SessionState.RUNNING:
-                time.sleep(0.1)
-
-            # WHEN
-            session._run_task_with_optional_session_env(
-                step_script=script,
-                task_parameter_values={},
-                use_session_env_vars=use_session_env_vars,
-            )
-            while session.state == SessionState.RUNNING:
-                time.sleep(0.1)
-
-            # THEN
-            assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
-            assert f"FOO={expected_foo}" in caplog.messages
-            assert f"BAZ={expected_baz}" in caplog.messages
-
-    @pytest.mark.parametrize(
-        "use_session_env_vars,os_env_vars,expected_foo,expected_baz,expected_new_var",
-        [
+            (None, "NOT_SET", "NOT_SET", "NOT_SET"),  # No os_env_vars, entered env ignored
             (
-                True,
-                {"FOO": "overridden_value", "NEW_VAR": "new_value"},
-                "bar",
-                "qux",
-                "new_value",
-            ),  # env overrides os_env_vars
+                {"CUSTOM": "custom_value"},
+                "NOT_SET",
+                "NOT_SET",
+                "custom_value",
+            ),  # Only os_env_vars used
             (
-                False,
-                {"FOO": "os_value", "NEW_VAR": "new_value"},
+                {"FOO": "os_value", "CUSTOM": "custom_value"},
                 "os_value",
                 "NOT_SET",
-                "new_value",
-            ),  # only os_env_vars
+                "custom_value",
+            ),  # os_env_vars override
         ],
     )
-    def test_run_task_with_optional_session_env_use_session_env_vars_with_os_env_vars(
+    def test_run_task_without_session_env_ignores_entered_environments(
         self,
         caplog: pytest.LogCaptureFixture,
         python_exe: str,
         fix_foo_baz_environment: Environment_2023_09,
-        use_session_env_vars: bool,
-        os_env_vars: dict,
+        os_env_vars: Optional[dict[str, str]],
         expected_foo: str,
         expected_baz: str,
-        expected_new_var: str,
+        expected_custom: str,
     ) -> None:
-        """Test interaction between use_session_env_vars and os_env_vars parameters."""
+        """Test that entered environment variables are ignored and only os_env_vars are used."""
         # GIVEN
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
@@ -3839,7 +3758,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                     name="Foo",
                     type=EmbeddedFileTypes_2023_09.TEXT,
                     data=DataString_2023_09(
-                        "import os; print(f\"FOO={os.environ.get('FOO', 'NOT_SET')}\"); print(f\"BAZ={os.environ.get('BAZ', 'NOT_SET')}\"); print(f\"NEW_VAR={os.environ.get('NEW_VAR', 'NOT_SET')}\")"
+                        "import os; print(f\"FOO={os.environ.get('FOO', 'NOT_SET')}\"); print(f\"BAZ={os.environ.get('BAZ', 'NOT_SET')}\"); print(f\"CUSTOM={os.environ.get('CUSTOM', 'NOT_SET')}\")"
                     ),
                 )
             ],
@@ -3851,10 +3770,9 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                 time.sleep(0.1)
 
             # WHEN
-            session._run_task_with_optional_session_env(
+            session._run_task_without_session_env(
                 step_script=script,
                 task_parameter_values={},
-                use_session_env_vars=use_session_env_vars,
                 os_env_vars=os_env_vars,
             )
             while session.state == SessionState.RUNNING:
@@ -3864,128 +3782,85 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert f"FOO={expected_foo}" in caplog.messages
             assert f"BAZ={expected_baz}" in caplog.messages
-            assert f"NEW_VAR={expected_new_var}" in caplog.messages
+            assert f"CUSTOM={expected_custom}" in caplog.messages
 
-    def test_run_task_with_optional_session_env_session_constructor_env_vars_always_applied(
+    def test_run_task_without_session_env_includes_constructor_env_vars(
         self, caplog: pytest.LogCaptureFixture, python_exe: str
     ) -> None:
-        """Test that session constructor env vars are always included regardless of use_session_env_vars."""
+        """Test that session constructor env vars are always included in the base process environment."""
         # GIVEN
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
                     command=CommandString_2023_09(python_exe),
-                    args=[ArgString_2023_09("{{ Task.File.Foo }}")],
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09(
+                            "import os; print(f\"CONSTRUCTOR_VAR={os.environ.get('CONSTRUCTOR_VAR', 'NOT_SET')}\")"
+                        ),
+                    ],
                 )
             ),
-            embeddedFiles=[
-                EmbeddedFileText_2023_09(
-                    name="Foo",
-                    type=EmbeddedFileTypes_2023_09.TEXT,
-                    data=DataString_2023_09(
-                        "import os; print(f\"SESSION_VAR={os.environ.get('SESSION_VAR', 'NOT_SET')}\"); print(f\"CONSTRUCTOR_VAR={os.environ.get('CONSTRUCTOR_VAR', 'NOT_SET')}\")"
-                    ),
-                )
-            ],
         )
 
-        session_env_vars = {"SESSION_VAR": "session_value", "CONSTRUCTOR_VAR": "constructor_value"}
-
         with Session(
-            session_id=uuid.uuid4().hex, job_parameter_values={}, os_env_vars=session_env_vars
+            session_id=uuid.uuid4().hex,
+            job_parameter_values={},
+            os_env_vars={"CONSTRUCTOR_VAR": "constructor_value"},
         ) as session:
             # WHEN
-            session._run_task_with_optional_session_env(
-                step_script=script,
-                task_parameter_values={},
-                use_session_env_vars=False,
-            )
+            session._run_task_without_session_env(step_script=script, task_parameter_values={})
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
 
             # THEN
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
-            assert "SESSION_VAR=session_value" in caplog.messages
             assert "CONSTRUCTOR_VAR=constructor_value" in caplog.messages
 
-    @pytest.mark.parametrize(
-        "use_session_env_vars,expected_foo,expected_env1_var,expected_env2_var",
-        [
-            (
-                True,
-                "second_value",
-                "env1_value",
-                "env2_value",
-            ),  # All env vars available, env2 overrides env1
-            (False, "NOT_SET", "NOT_SET", "NOT_SET"),  # All env vars ignored
-        ],
-    )
-    def test_run_task_with_optional_session_env_multiple_environments(
+    def test_run_task_without_session_env_ignores_multiple_environments(
         self,
         caplog: pytest.LogCaptureFixture,
         python_exe: str,
-        use_session_env_vars: bool,
-        expected_foo: str,
-        expected_env1_var: str,
-        expected_env2_var: str,
     ) -> None:
-        """Test use_session_env_vars behavior with multiple entered environments."""
-        # GIVEN
-        # Create test environments
-        env1 = Environment_2023_09(
-            name="FirstEnvironment",
-            variables={
-                "FOO": EnvironmentVariableValueString_2023_09("first_value"),
-                "ENV1_VAR": EnvironmentVariableValueString_2023_09("env1_value"),
-            },
-        )
-        env2 = Environment_2023_09(
-            name="SecondEnvironment",
-            variables={
-                "FOO": EnvironmentVariableValueString_2023_09(
-                    "second_value"
-                ),  # Should override env1
-                "ENV2_VAR": EnvironmentVariableValueString_2023_09("env2_value"),
-            },
-        )
+        """Test that multiple entered environments are ignored."""
+        # GIVEN - Create environments with overlapping variables
+        environments = [
+            Environment_2023_09(
+                name="FirstEnvironment",
+                variables={"FOO": EnvironmentVariableValueString_2023_09("first_value")},
+            ),
+            Environment_2023_09(
+                name="SecondEnvironment",
+                variables={"FOO": EnvironmentVariableValueString_2023_09("second_value")},
+            ),
+        ]
 
-        # Create test script
         script = StepScript_2023_09(
             actions=StepActions_2023_09(
                 onRun=Action_2023_09(
                     command=CommandString_2023_09(python_exe),
-                    args=[ArgString_2023_09("{{ Task.File.Foo }}")],
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09(
+                            "import os; print(f\"FOO={os.environ.get('FOO', 'NOT_SET')}\")"
+                        ),
+                    ],
                 )
             ),
-            embeddedFiles=[
-                EmbeddedFileText_2023_09(
-                    name="Foo",
-                    type=EmbeddedFileTypes_2023_09.TEXT,
-                    data=DataString_2023_09(
-                        "import os; print(f\"FOO={os.environ.get('FOO', 'NOT_SET')}\"); print(f\"ENV1_VAR={os.environ.get('ENV1_VAR', 'NOT_SET')}\"); print(f\"ENV2_VAR={os.environ.get('ENV2_VAR', 'NOT_SET')}\")"
-                    ),
-                )
-            ],
         )
 
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             # Enter multiple environments
-            for env in [env1, env2]:
+            for env in environments:
                 session.enter_environment(environment=env)
                 while session.state == SessionState.RUNNING:
                     time.sleep(0.1)
 
             # WHEN
-            session._run_task_with_optional_session_env(
-                step_script=script,
-                task_parameter_values={},
-                use_session_env_vars=use_session_env_vars,
-            )
+            session._run_task_without_session_env(step_script=script, task_parameter_values={})
             while session.state == SessionState.RUNNING:
                 time.sleep(0.1)
 
-            # THEN
+            # THEN - All entered environment variables should be ignored
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
-            assert f"FOO={expected_foo}" in caplog.messages
-            assert f"ENV1_VAR={expected_env1_var}" in caplog.messages
-            assert f"ENV2_VAR={expected_env2_var}" in caplog.messages
+            assert "FOO=NOT_SET" in caplog.messages
