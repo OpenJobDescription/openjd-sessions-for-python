@@ -3496,7 +3496,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             },
         )
 
-    def test_run_task_with_optional_env(
+    def test_run_task_with_optional_session_env(
         self, caplog: pytest.LogCaptureFixture, fix_basic_task_script: StepScript_2023_09
     ) -> None:
         # GIVEN
@@ -3507,7 +3507,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=fix_basic_task_script, task_parameter_values=task_params
             )
 
@@ -3523,7 +3523,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             assert "Pvalue Pvalue" in caplog.messages
             assert "--------- Running Task" in caplog.messages
 
-    def test_run_task_with_optional_env_no_log_banners(
+    def test_run_task_with_optional_session_env_no_log_banners(
         self, caplog: pytest.LogCaptureFixture, fix_basic_task_script: StepScript_2023_09
     ) -> None:
         # GIVEN
@@ -3533,7 +3533,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         task_params = {"P": ParameterValue(type=ParameterValueType.STRING, value="Pvalue")}
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=fix_basic_task_script,
                 task_parameter_values=task_params,
                 log_task_banner=False,
@@ -3542,7 +3542,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             # THEN
             assert "--------- Running Task" not in caplog.messages
 
-    def test_run_task_with_optional_env_with_env_vars(
+    def test_run_task_with_optional_session_env_with_env_vars(
         self, caplog: pytest.LogCaptureFixture, python_exe: str
     ) -> None:
         # GIVEN
@@ -3573,7 +3573,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             session_id=session_id, job_parameter_values=job_params, os_env_vars=session_env_vars
         ) as session:
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=step_script,
                 task_parameter_values=task_params,
                 os_env_vars=action_env_vars,
@@ -3620,11 +3620,11 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
 
             # THEN
             with pytest.raises(RuntimeError):
-                session._run_task_with_optional_env(
+                session._run_task_with_optional_session_env(
                     step_script=script, task_parameter_values=task_params
                 )
 
-    def test_run_task_with_optional_env_fail_early(self, python_exe: str) -> None:
+    def test_run_task_with_optional_session_env_fail_early(self, python_exe: str) -> None:
         # Testing a task that fails before running.
         # This'll fail because we're referencing a Task parameter that doesn't exist.
 
@@ -3651,7 +3651,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         )
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=step_script, task_parameter_values=task_params
             )
 
@@ -3662,7 +3662,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                 fail_message="Error resolving format string: Failed to parse interpolation expression at [37, 55]. Expression:  Task.Param.P . Reason: Expression failed validation: Task.Param.P has no value.",
             )
 
-    def test_run_task_with_optional_env_fail_run(self, python_exe: str) -> None:
+    def test_run_task_with_optional_session_env_fail_run(self, python_exe: str) -> None:
         # Testing a task that fails while running
 
         # GIVEN
@@ -3686,7 +3686,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
         task_params = dict[str, ParameterValue]()
         with Session(session_id=session_id, job_parameter_values=job_params) as session:
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=script, task_parameter_values=task_params
             )
             # Wait for the process to exit
@@ -3711,11 +3711,11 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
 
             # THEN
             with pytest.raises(RuntimeError):
-                session._run_task_with_optional_env(
+                session._run_task_with_optional_session_env(
                     step_script=fix_basic_task_script, task_parameter_values=task_params
                 )
 
-    def test_run_task_with_optional_env_with_variables(
+    def test_run_task_with_optional_session_env_with_variables(
         self,
         fix_basic_task_script: StepScript_2023_09,
         fix_foo_baz_environment: Environment_2023_09,
@@ -3728,7 +3728,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             # WHEN
             session.enter_environment(environment=fix_foo_baz_environment)
             assert session.state == SessionState.READY
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=fix_basic_task_script, task_parameter_values=task_params
             )
             # Wait for the process to exit
@@ -3747,7 +3747,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             (False, "NOT_SET", "NOT_SET"),  # Environment vars should be ignored
         ],
     )
-    def test_run_task_with_optional_env_use_session_env_vars(
+    def test_run_task_with_optional_session_env_use_session_env_vars(
         self,
         caplog: pytest.LogCaptureFixture,
         python_exe: str,
@@ -3782,7 +3782,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                 time.sleep(0.1)
 
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=script,
                 task_parameter_values={},
                 use_session_env_vars=use_session_env_vars,
@@ -3814,7 +3814,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             ),  # only os_env_vars
         ],
     )
-    def test_run_task_with_optional_env_use_session_env_vars_with_os_env_vars(
+    def test_run_task_with_optional_session_env_use_session_env_vars_with_os_env_vars(
         self,
         caplog: pytest.LogCaptureFixture,
         python_exe: str,
@@ -3851,7 +3851,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                 time.sleep(0.1)
 
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=script,
                 task_parameter_values={},
                 use_session_env_vars=use_session_env_vars,
@@ -3866,7 +3866,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             assert f"BAZ={expected_baz}" in caplog.messages
             assert f"NEW_VAR={expected_new_var}" in caplog.messages
 
-    def test_run_task_with_optional_env_session_constructor_env_vars_always_applied(
+    def test_run_task_with_optional_session_env_session_constructor_env_vars_always_applied(
         self, caplog: pytest.LogCaptureFixture, python_exe: str
     ) -> None:
         """Test that session constructor env vars are always included regardless of use_session_env_vars."""
@@ -3895,7 +3895,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             session_id=uuid.uuid4().hex, job_parameter_values={}, os_env_vars=session_env_vars
         ) as session:
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=script,
                 task_parameter_values={},
                 use_session_env_vars=False,
@@ -3920,7 +3920,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
             (False, "NOT_SET", "NOT_SET", "NOT_SET"),  # All env vars ignored
         ],
     )
-    def test_run_task_with_optional_env_multiple_environments(
+    def test_run_task_with_optional_session_env_multiple_environments(
         self,
         caplog: pytest.LogCaptureFixture,
         python_exe: str,
@@ -3976,7 +3976,7 @@ class TestSessionRunTaskWithOptionalEnv_2023_09:  # noqa: N801
                     time.sleep(0.1)
 
             # WHEN
-            session._run_task_with_optional_env(
+            session._run_task_with_optional_session_env(
                 step_script=script,
                 task_parameter_values={},
                 use_session_env_vars=use_session_env_vars,

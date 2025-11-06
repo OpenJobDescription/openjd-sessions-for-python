@@ -843,7 +843,7 @@ class Session(object):
         # than after -- run() itself may end up setting the action state to FAILED.
         self._runner.run()
 
-    def _run_task_with_optional_env(
+    def _run_task_with_optional_session_env(
         self,
         *,
         step_script: StepScriptModel,
