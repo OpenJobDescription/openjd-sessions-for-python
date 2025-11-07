@@ -1,3 +1,7 @@
+## 0.10.5 (2025-11-07)
+
+* Dependencies update, and other non-functional updates
+
 ## 0.10.4 (2025-07-22)
 
 
