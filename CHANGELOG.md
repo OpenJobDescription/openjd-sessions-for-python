@@ -1,3 +1,11 @@
+## 0.10.6 (2025-12-08)
+
+
+### Features
+* Add run_subprocess function to the Session class ([`80026e9`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/80026e95c940a530c10e45f1631aaea0d81e9dfe))
+
+
+
 ## 0.10.5 (2025-11-07)
 
 * Dependencies update, and other non-functional updates
