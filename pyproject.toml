@@ -146,7 +146,9 @@ addopts = [
     "--cov-report=xml:build/coverage/coverage.xml",
     "--cov-report=term-missing",
     "--numprocesses=auto",
-    "--timeout=30"
+    "--timeout=30",
+    "--log-format=%(asctime)s.%(msecs)03d %(levelname)s %(filename)20s:%(lineno)-3s %(message)s",
+    "--log-date-format=%H:%M:%S"
 ]
 markers = [
   "requires_cap_kill: tests that require CAP_KILL Linux capability",
