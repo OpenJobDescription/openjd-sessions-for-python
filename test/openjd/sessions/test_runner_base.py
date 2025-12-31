@@ -822,6 +822,7 @@ class TestScriptRunnerBase:
         # Test that NOTIFY_THEN_CANCEL first signals a SIGTERM and then a SIGKILL
 
         # GIVEN
+        proc_id: Optional[int] = None
         logger = build_logger(queue_handler)
         with NotifyingRunner(logger=logger, session_working_directory=tmp_path) as runner:
             python_app_loc = (
@@ -833,6 +834,11 @@ class TestScriptRunnerBase:
             secs = 2 if not is_windows() else 5
             time.sleep(secs)  # Give the process a little time to do something
             now = datetime.now(timezone.utc)
+
+            assert runner._process is not None
+            assert runner._process._pid is not None
+            proc_id = runner._process._pid
+
             runner.cancel(time_limit=timedelta(seconds=2))
 
             # THEN
@@ -849,9 +855,12 @@ class TestScriptRunnerBase:
         messages = collect_queue_messages(message_queue)
         assert "Trapped" in messages
         trapped_idx = messages.index("Trapped")
+        process_exit_idx = messages.index(
+            f"Process pid {proc_id} exited with code: {runner.exit_code} (unsigned) / {hex(runner.exit_code)} (hex)"
+        )
         # Should be at least one more number printed after the Trapped
         # to indicate that we didn't immediately terminate the script.
-        assert messages[trapped_idx + 1].isdigit()
+        assert any(msg.isdigit() for msg in messages[trapped_idx + 1 : process_exit_idx])
         # Didn't get to the end
         assert "Log from test 9" not in messages
         # Notification file exists
