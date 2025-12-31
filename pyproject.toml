@@ -137,6 +137,9 @@ line-length = 100
 
 [tool.pytest.ini_options]
 xfail_strict = false
+testpaths = [
+    "test"
+]
 addopts = [
     "-rfEx",
     "--durations=5",
