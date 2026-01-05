@@ -2954,9 +2954,11 @@ class TestEnvironmentVariablesInTasks_2023_09:
             # THEN
             assert "FOO=" in caplog.messages
 
+    @pytest.mark.parametrize("iteration", range(1000))
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_def_via_stdout_fails_session_action_on_error(
         self,
+        iteration: int,  # unused but needed for parametrize
         caplog: pytest.LogCaptureFixture,
         step_script_definition: StepScript_2023_09,
         python_exe: str,
