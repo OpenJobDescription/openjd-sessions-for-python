@@ -1,6 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
+import re
 import stat
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -37,8 +38,40 @@ def _open_context(*args: Any, **kwargs: Any) -> Generator[int, None, None]:
         os.close(fd)
 
 
+# Regex to match LF not preceded by CR (for CRLF conversion)
+_LF_NOT_CRLF = re.compile(r"(?<!\r)\n")
+
+
+def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
+    """Convert line endings based on the specified mode.
+
+    Args:
+        data: The string data to convert
+        end_of_line: One of None, "AUTO", "LF", or "CRLF"
+
+    Returns:
+        The data with converted line endings
+    """
+    if end_of_line is None or end_of_line == "AUTO":
+        # AUTO: use OS native line endings
+        if os.name == "nt":
+            # Windows: ensure CRLF
+            return _LF_NOT_CRLF.sub("\r\n", data)
+        # POSIX: ensure LF
+        return data.replace("\r\n", "\n")
+    elif end_of_line == "LF":
+        return data.replace("\r\n", "\n")
+    elif end_of_line == "CRLF":
+        return _LF_NOT_CRLF.sub("\r\n", data)
+    return data
+
+
 def write_file_for_user(
-    filename: Path, data: str, user: Optional[SessionUser], additional_permissions: int = 0
+    filename: Path,
+    data: str,
+    user: Optional[SessionUser],
+    additional_permissions: int = 0,
+    end_of_line: Optional[str] = None,
 ) -> None:
     # File should only be r/w by the owner, by default
 
@@ -47,17 +80,22 @@ def write_file_for_user(
     #  O_CREAT - create if it does not exist
     #  O_TRUNC - truncate the file. If we overwrite an existing file, then we
     #            need to clear its contents.
+    #  O_BINARY - (Windows only) prevent automatic \n to \r\n conversion
     #  O_EXCL (intentionally not present) - fail if file exists
     #    - We exclude this 'cause we expect to be writing the same embedded file
     #      into the same location repeatedly with different contents as we run
     #      multiple Tasks in the same Session.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    # On Windows, use O_BINARY to prevent automatic line ending conversion
+    # since we handle line endings explicitly via _convert_line_endings
+    flags |= getattr(os, "O_BINARY", 0)
     # mode:
     #  S_IRUSR - Read by owner
     #  S_IWUSR - Write by owner
     mode = stat.S_IRUSR | stat.S_IWUSR | (additional_permissions & stat.S_IRWXU)
+    converted_data = _convert_line_endings(data, end_of_line)
     with _open_context(filename, flags, mode=mode) as fd:
-        os.write(fd, data.encode("utf-8"))
+        os.write(fd, converted_data.encode("utf-8"))
 
     if os.name == "posix":
         if user is not None:
@@ -227,8 +265,16 @@ class EmbeddedFiles:
             execute_permissions |= stat.S_IXUSR | (stat.S_IXGRP if self._user is not None else 0)
 
         data = file.data.resolve(symtab=symtab)
+        # Get endOfLine setting if present
+        end_of_line = file.endOfLine.value if file.endOfLine else None
         # Create the file as r/w owner, and optionally group
-        write_file_for_user(filename, data, self._user, additional_permissions=execute_permissions)
+        write_file_for_user(
+            filename,
+            data,
+            self._user,
+            additional_permissions=execute_permissions,
+            end_of_line=end_of_line,
+        )
 
         self._logger.info(
             f"Wrote: {file.name} -> {str(filename)}",
