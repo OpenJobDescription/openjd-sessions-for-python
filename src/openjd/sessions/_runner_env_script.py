@@ -207,7 +207,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 method = NotifyCancelMethod(terminate_delay=timedelta(seconds=30))
             else:
                 method = NotifyCancelMethod(
-                    terminate_delay=timedelta(seconds=model_cancel_method.notifyPeriodInSeconds)
+                    terminate_delay=timedelta(seconds=model_cancel_method.notifyPeriodInSeconds)  # type: ignore[arg-type]
                 )
 
         # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.

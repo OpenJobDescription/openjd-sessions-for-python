@@ -5,7 +5,7 @@ import stat
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from openjd.sessions._os_checker import is_posix, is_windows
 import pytest
 
@@ -18,6 +18,9 @@ from openjd.model.v2023_09 import (
 )
 from openjd.model.v2023_09 import (
     EmbeddedFileTypes as EmbeddedFileTypes_2023_09,
+)
+from openjd.model.v2023_09 import (
+    EndOfLine as EndOfLine_2023_09,
 )
 from openjd.sessions._embedded_files import EmbeddedFiles, EmbeddedFilesScope
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
@@ -364,6 +367,119 @@ class TestEmbeddedFiles:
             with open(filename, "r") as file:
                 result_contents = file.read()
             assert result_contents == testdata, "File contents are as expected"
+
+    class TestEndOfLine:
+        """Tests for endOfLine handling in embedded files."""
+
+        @pytest.mark.parametrize(
+            "end_of_line,input_data,expected_bytes",
+            [
+                pytest.param(
+                    EndOfLine_2023_09.LF,
+                    "line1\nline2\nline3",
+                    b"line1\nline2\nline3",
+                    id="LF-only",
+                ),
+                pytest.param(
+                    EndOfLine_2023_09.LF,
+                    "line1\r\nline2\r\nline3",
+                    b"line1\nline2\nline3",
+                    id="LF-converts-CRLF",
+                ),
+                pytest.param(
+                    EndOfLine_2023_09.CRLF,
+                    "line1\nline2\nline3",
+                    b"line1\r\nline2\r\nline3",
+                    id="CRLF-converts-LF",
+                ),
+                pytest.param(
+                    EndOfLine_2023_09.CRLF,
+                    "line1\r\nline2\r\nline3",
+                    b"line1\r\nline2\r\nline3",
+                    id="CRLF-preserves-CRLF",
+                ),
+            ],
+        )
+        def test_end_of_line_conversion(
+            self,
+            tmp_path: Path,
+            end_of_line: EndOfLine_2023_09,
+            input_data: str,
+            expected_bytes: bytes,
+        ) -> None:
+            # Test that endOfLine correctly converts line endings
+
+            # GIVEN
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(), scope=EmbeddedFilesScope.STEP, session_files_directory=tmp_path
+            )
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                data=DataString_2023_09(input_data),
+                endOfLine=end_of_line,
+            )
+            filename = tmp_path / uuid.uuid4().hex
+            symtab = SymbolTable()
+
+            # WHEN
+            test_obj._materialize_file(filename, test_file, symtab)
+
+            # THEN
+            with open(filename, "rb") as file:
+                result_bytes = file.read()
+            assert result_bytes == expected_bytes
+
+        @pytest.mark.skipif(is_windows(), reason="Cannot simulate POSIX file I/O on Windows")
+        def test_auto_uses_lf_on_posix(self, tmp_path: Path) -> None:
+            # Test that AUTO mode uses LF on POSIX systems
+
+            # GIVEN
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(), scope=EmbeddedFilesScope.STEP, session_files_directory=tmp_path
+            )
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                data=DataString_2023_09("line1\r\nline2"),
+                endOfLine=EndOfLine_2023_09.AUTO,
+            )
+            filename = tmp_path / uuid.uuid4().hex
+            symtab = SymbolTable()
+
+            # WHEN
+            test_obj._materialize_file(filename, test_file, symtab)
+
+            # THEN
+            with open(filename, "rb") as file:
+                result_bytes = file.read()
+            assert result_bytes == b"line1\nline2"
+
+        @pytest.mark.skipif(not is_windows(), reason="Windows-specific test")
+        def test_auto_uses_crlf_on_windows(self, tmp_path: Path) -> None:
+            # Test that AUTO mode uses CRLF on Windows systems
+
+            # GIVEN
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(), scope=EmbeddedFilesScope.STEP, session_files_directory=tmp_path
+            )
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                data=DataString_2023_09("line1\nline2"),
+                endOfLine=EndOfLine_2023_09.AUTO,
+            )
+            filename = tmp_path / uuid.uuid4().hex
+            symtab = SymbolTable()
+
+            # WHEN
+            with patch("os.name", "nt"):
+                test_obj._materialize_file(filename, test_file, symtab)
+
+            # THEN
+            with open(filename, "rb") as file:
+                result_bytes = file.read()
+            assert result_bytes == b"line1\r\nline2"
 
     class TestMaterialize:
         """Tests for EmbeddedFiles.materialize()"""
