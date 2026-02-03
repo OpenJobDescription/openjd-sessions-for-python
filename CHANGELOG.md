@@ -2,6 +2,14 @@
 
 
 ### Features
+* Implement FEATURE_BUNDLE_1 RFC 0004 ([`b9f3b8c`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/b9f3b8cd42b5b0be208fa859956dfd8956d72cb8))
+
+
+
+## 0.10.7 (2026-02-03)
+
+
+### Features
 * Implement [FEATURE_BUNDLE_1 RFC 0004](https://github.com/OpenJobDescription/openjd-specifications/blob/mainline/rfcs/0004-enhanced-limits-and-capabilities.md), increasing limits
   for job parameter counts and name lengths, enabling format strings in integer properties, providing control over embedded file line endings, and adding syntax sugar
   to simplify templates that run simple scripts with common interpreters ([`b9f3b8c`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/b9f3b8cd42b5b0be208fa859956dfd8956d72cb8))
