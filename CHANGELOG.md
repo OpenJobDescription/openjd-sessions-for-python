@@ -1,3 +1,11 @@
+## 0.10.7 (2026-02-03)
+
+
+### Features
+* Implement FEATURE_BUNDLE_1 RFC 0004 ([`b9f3b8c`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/b9f3b8cd42b5b0be208fa859956dfd8956d72cb8))
+
+
+
 ## 0.10.6 (2025-12-08)
 
 
