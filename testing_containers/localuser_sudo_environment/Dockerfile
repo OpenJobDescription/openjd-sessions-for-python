@@ -33,7 +33,7 @@ RUN apt-get update && apt-get install -y gcc libcap2-bin psmisc sudo && \
     addgroup ${OPENJD_TEST_SUDO_DISJOINT_GROUP} && \
     useradd -ms /bin/bash -G ${OPENJD_TEST_SUDO_DISJOINT_GROUP} ${OPENJD_TEST_SUDO_DISJOINT_USER} && \
     # Install hatch (for setting up environment and running tests)
-    pip install hatch
+    pip install hatch "virtualenv<21"
 
 USER hostuser
 
