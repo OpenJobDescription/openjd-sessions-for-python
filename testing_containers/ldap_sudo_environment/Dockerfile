@@ -69,7 +69,7 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean && \
     # Install hatch (for setting up environment and running tests)
-    pip install hatch "virtualenv<21"
+    pip install hatch
 
 COPY . /code/
 WORKDIR /code
