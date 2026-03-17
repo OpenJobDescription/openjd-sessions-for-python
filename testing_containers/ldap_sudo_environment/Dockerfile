@@ -69,7 +69,8 @@ RUN apt-get update && export DEBIAN_FRONTEND=noninteractive && \
     rm -rf /var/lib/apt/lists/* && \
     apt-get clean && \
     # Install hatch (for setting up environment and running tests)
-    pip install hatch
+    # Pin virtualenv<21 for Python 3.9 compatibility
+    pip install hatch "virtualenv<21"
 
 COPY . /code/
 WORKDIR /code
