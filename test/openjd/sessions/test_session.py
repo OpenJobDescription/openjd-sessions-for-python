@@ -136,6 +136,23 @@ class TestSessionInitialization:
 
         session.cleanup()
 
+    def test_initialize_sets_working_dir_env_var(self) -> None:
+        # OPENJD_SESSION_WORKING_DIR is part of the public API — removing or renaming it is a breaking change.
+        # This test ensures the env var contract is maintained.
+
+        # GIVEN
+        session_id = uuid.uuid4().hex
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        session = Session(session_id=session_id, job_parameter_values=job_params)
+
+        # THEN
+        assert "OPENJD_SESSION_WORKING_DIR" in session._process_env
+        assert session._process_env["OPENJD_SESSION_WORKING_DIR"] == str(session.working_directory)
+
+        session.cleanup()
+
     @pytest.mark.usefixtures("tmp_path")  # built-in fixture
     def test_initialize_with_root_dir(self, tmp_path: Path) -> None:
         # Test that we create the Session Working Directory in the given directory, if there is one.
@@ -927,7 +944,13 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             # THEN
             assert session._runner is not None
             assert fix_foo_baz_environment.variables is not None
-            assert session._runner._os_env_vars == dict(fix_foo_baz_environment.variables)
+            # Check that environment variables are present (superset check to allow for
+            # session-injected vars like OPENJD_SESSION_WORKING_DIR)
+            assert session._runner._os_env_vars is not None
+            assert (
+                dict(fix_foo_baz_environment.variables).items()
+                <= session._runner._os_env_vars.items()
+            )
 
 
 class TestSessionCancel:
@@ -1401,7 +1424,10 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
                 time.sleep(0.1)
             assert session.state == SessionState.READY
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables)
+            # Check that environment variables are present (superset check to allow for
+            # session-injected vars like OPENJD_SESSION_WORKING_DIR)
+            assert session._runner._os_env_vars is not None
+            assert dict(variables).items() <= session._runner._os_env_vars.items()
 
     @pytest.mark.usefixtures("caplog")  # builtin fixture
     def test_enter_environment_with_resolved_variables(
@@ -1471,7 +1497,10 @@ class TestSessionEnterEnvironment_2023_09:  # noqa: N801
                 time.sleep(0.1)
 
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables2)
+            # Check that environment variables are present (superset check to allow for
+            # session-injected vars like OPENJD_SESSION_WORKING_DIR)
+            assert session._runner._os_env_vars is not None
+            assert dict(variables2).items() <= session._runner._os_env_vars.items()
 
 
 class TestSessionExitEnvironment_2023_09:  # noqa: N801
@@ -1763,7 +1792,9 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.state == SessionState.READY_ENDING
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables)
+            # Check that environment variables are present (superset check to allow for
+            # session-injected vars like OPENJD_SESSION_WORKING_DIR)
+            assert dict(variables).items() <= session._runner._os_env_vars.items()
 
     def test_exit_two_environments_with_variables(self, python_exe: str) -> None:
         # GIVEN
@@ -1798,7 +1829,9 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.state == SessionState.READY_ENDING
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables2)
+            # Check that environment variables are present (superset check to allow for
+            # session-injected vars like OPENJD_SESSION_WORKING_DIR)
+            assert dict(variables2).items() <= session._runner._os_env_vars.items()
 
             session.exit_environment(identifier=identifier1)
             # Wait for the process to exit
@@ -1808,7 +1841,9 @@ class TestSessionExitEnvironment_2023_09:  # noqa: N801
             # THEN
             assert session.state == SessionState.READY_ENDING
             assert session._runner is not None
-            assert session._runner._os_env_vars == dict(variables1)
+            # Check that environment variables are present (superset check to allow for
+            # session-injected vars like OPENJD_SESSION_WORKING_DIR)
+            assert dict(variables1).items() <= session._runner._os_env_vars.items()
 
     def test_run_task_after_env_exit(self, python_exe: str) -> None:
         # By default, tasks can't run after an environment exit. The exit_environment call
