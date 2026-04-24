@@ -452,6 +452,10 @@ class Session(object):
             extra=LogExtraInfo(openjd_log_content=LogContent.FILE_PATH),
         )
 
+        # Expose working directory as env var for nested subprocesses that can't access template variables.
+        # This env var is part of the public API — removing or renaming it is a breaking change.
+        self._process_env["OPENJD_SESSION_WORKING_DIR"] = str(self.working_directory)
+
         self._state = SessionState.READY
 
     def cleanup(self) -> None:
