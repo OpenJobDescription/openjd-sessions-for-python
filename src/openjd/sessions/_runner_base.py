@@ -464,7 +464,7 @@ class ScriptRunnerBase(ABC):
         else:
             time_limit: Optional[timedelta] = default_timeout
             if action.timeout:
-                time_limit = timedelta(seconds=action.timeout)
+                time_limit = timedelta(seconds=action.timeout)  # type: ignore[arg-type]
             self._run(command, time_limit)
 
     def _cancel(
