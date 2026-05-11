@@ -1,3 +1,11 @@
+## 0.10.8 (2026-05-11)
+
+
+### Features
+* Add OPENJD_SESSION_WORKING_DIR environment variable (#309) ([`9e28bc5`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/9e28bc520aa62e325cd74fde596c5acb469de1b5))
+
+
+
 ## 0.10.7 (2026-02-03)
 
 
