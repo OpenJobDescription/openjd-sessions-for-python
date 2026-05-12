@@ -168,10 +168,16 @@ class PopenWindowsAsUser(Popen):
                     else:
                         env_block = env_ptr
 
+                # Parse domain from username for CreateProcessWithLogonW
+                _logon_user = self.user.user
+                _logon_domain = None
+                if "\\" in self.user.user:
+                    _logon_domain, _logon_user = self.user.user.split("\\", 1)
+
                 # https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-createprocesswithlogonw
                 if not CreateProcessWithLogonW(
-                    self.user.user,
-                    None,  # TODO: Domains not yet supported
+                    _logon_user,
+                    _logon_domain,
                     self.user.password,
                     LOGON_WITH_PROFILE,
                     executable,
