@@ -1,6 +1,8 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 import os
+import sys
+from functools import lru_cache
 from typing import Optional
 from abc import ABC, abstractmethod
 from ctypes.wintypes import HANDLE
@@ -40,6 +42,13 @@ class BadCredentialsException(Exception):
     pass
 
 
+@lru_cache(maxsize=1)
+def _get_process_user_sid():
+    """Returns the SID of the current process user. Cached since it never changes."""
+    sid, _, _ = win32security.LookupAccountName(None, get_process_user())
+    return sid
+
+
 class SessionUser(ABC):
     """Base class for holding information on the specific os-user identity to run
     a Session as.
@@ -62,7 +71,16 @@ class SessionUser(ABC):
         """
         Returns True if the session user is the user running the current process, else False.
 
+        On Windows, this uses SID comparison to correctly handle different username formats
+        (e.g. UPN "user@domain.com" vs DDL "DOMAIN\\user") that refer to the same account.
         """
+        if sys.platform == "win32":
+            try:
+                user_sid, _, _ = win32security.LookupAccountName(None, self.user)
+                return user_sid == _get_process_user_sid()
+            except pywintypes.error:
+                # Fall back to string comparison if SID lookup fails
+                return self.user == self._get_process_user()
         return self.user == self._get_process_user()
 
 
