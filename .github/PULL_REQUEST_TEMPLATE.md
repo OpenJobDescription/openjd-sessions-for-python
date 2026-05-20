@@ -29,6 +29,17 @@ If so, then please describe the changes that users of this package must make to 
 - Does the change need to be threat modeled? For example, does it create or modify files/directories that must only be readable by the process owner?
     - If so, then please label this pull request with the "security" label. We'll work with you to analyze the threats.
 
+### Cross-port to openjd-rs
+
+This package is being migrated to Rust in [`openjd-rs/crates/openjd-sessions`](https://github.com/OpenJobDescription/openjd-rs/tree/main/crates/openjd-sessions).
+Behavioral changes made here should be replicated there to keep the two
+implementations in sync until the migration is complete.
+
+- [ ] This change does not affect runtime behavior (docs / tests / tooling only), **or**
+- [ ] A matching change has been opened in `openjd-rs` (link the PR here): *<insert link>*, **or**
+- [ ] A tracking issue has been filed in `openjd-rs` to port this change (link here): *<insert link>*, **or**
+- [ ] Cross-porting is not applicable for this change because: *<reason>*
+
 ----
 
 *By submitting this pull request, I confirm that you can use, modify, copy, and redistribute this contribution, under the terms of your choice.*
