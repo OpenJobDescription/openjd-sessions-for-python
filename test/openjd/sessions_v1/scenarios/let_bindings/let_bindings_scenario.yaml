@@ -1,0 +1,77 @@
+name: "Let bindings comprehensive test"
+description: "Verifies step-level and script-level let bindings with various types and chaining"
+
+run_on: all
+
+job_template_file: "let_bindings_template.yaml"
+
+job_parameters:
+  BaseInt: 10
+  BaseFloat: 2.5
+  BasePath: "/input/scene.exr"
+  BaseString: "hello"
+  Items: [1, 2, 3, 4, 5]
+  FrameRange: "1-10"
+  Tags: ["alpha", "beta", "gamma"]
+  InputFiles: ["/data/file1.exr", "/data/file2.exr", "/data/file3.exr"]
+
+expect:
+  success: true
+  output_contains:
+    # Job environment let bindings
+    - "job_env_enter_msg=JobEnv onEnter: hello"
+    - "job_env_exit_msg=JobEnv onExit: hello_done"
+    - "job_env_computed=110"
+    # Step environment let bindings
+    - "step_env_enter_msg=StepEnv onEnter: hello"
+    - "step_env_exit_msg=StepEnv onExit: hello_done"
+    - "step_env_doubled=20"
+    # Embedded file with let bindings (frame 1)
+    - "output_name=hello_world_1.exr"
+    - "combined_value=21"
+    # Embedded file with let bindings (frame 2)
+    - "output_name=hello_world_2.exr"
+    - "combined_value=22"
+    # Step-level bindings (BaseInt=10, so step_int=20)
+    - "step_int=20"
+    - "step_float=3.0"
+    - "step_string=hello_world"
+    - "step_list_sum=15"
+    - "step_chained=25"
+    - "step_conditional=big"
+    - "step_path_stem=scene"
+    - "step_list_len=5"
+    - "step_min=1"
+    - "step_max=5"
+    # Boolean and comparison operations
+    - "step_bool_and=true"
+    - "step_bool_or=true"
+    - "step_comparison=true"
+    - "step_chained_compare=true"
+    # List comprehension
+    - "step_doubled=[2, 4, 6, 8, 10]"
+    # Nested path operations
+    - "step_path_suffix=.exr"
+    # RANGE_EXPR bindings
+    - "step_range_len=10"
+    # LIST[STRING] bindings
+    - "step_tags_len=3"
+    - "step_first_tag=alpha"
+    - 'step_tags_upper=["alpha_TAG", "beta_TAG", "gamma_TAG"]'
+    # LIST[PATH] bindings
+    - "step_files_len=3"
+    - "step_first_file_stem=file1"
+    - 'step_file_stems=["file1", "file2", "file3"]'
+    # Task-level bindings for frame 1 (step_int//10 = 2, so frames 1-2)
+    - "task_frame=1"
+    - "task_combined=21"
+    - "task_output_name=hello_world_1.exr"
+    - "task_msg=Frame 1 of 2"
+    # Task-level bindings for frame 2
+    - "task_frame=2"
+    - "task_combined=22"
+    - "task_output_name=hello_world_2.exr"
+    - "task_msg=Frame 2 of 2"
+    # Direct param access
+    - "Param.BaseInt=10"
+    - "Param.BasePath.stem=scene"

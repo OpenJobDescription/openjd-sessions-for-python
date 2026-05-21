@@ -1,0 +1,32 @@
+name: "PATH task parameter from LIST[PATH] job parameter"
+description: "Verifies PATH task parameters derived from LIST[PATH] job parameter with path mapping"
+
+run_on: posix
+
+job_template_file: "task_path_from_list_path_template.yaml"
+
+job_parameters:
+  InputDirs:
+    - "C:\\Projects\\shot01"
+    - "C:\\Projects\\shot02"
+
+path_mapping_rules:
+  - source_path_format: windows
+    source_path: "C:\\Projects"
+    destination_path: "/mnt/projects"
+
+expect:
+  success: true
+  output_contains:
+    # First task - shot01/contents.json with path mapping
+    - "Processing directory based on metadata"
+    - "Task.Param.MetadataFile=/mnt/projects/shot01/contents.json"
+    - "Task.RawParam.MetadataFile=C:\\Projects\\shot01/contents.json"
+    - "Task.Param.MetadataFile.parent=/mnt/projects/shot01"
+    # Verify Task.RawParam is string type (has .upper())
+    - "Task.RawParam.MetadataFile.upper=C:\\PROJECTS\\SHOT01/CONTENTS.JSON"
+    # Second task - shot02/contents.json with path mapping
+    - "Task.Param.MetadataFile=/mnt/projects/shot02/contents.json"
+    - "Task.RawParam.MetadataFile=C:\\Projects\\shot02/contents.json"
+    - "Task.Param.MetadataFile.parent=/mnt/projects/shot02"
+    - "Task.RawParam.MetadataFile.upper=C:\\PROJECTS\\SHOT02/CONTENTS.JSON"

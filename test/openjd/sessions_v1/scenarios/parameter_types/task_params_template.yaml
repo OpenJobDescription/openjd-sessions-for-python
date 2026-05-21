@@ -1,0 +1,26 @@
+# Standalone template - run with: openjd run task_params_template.yaml
+specificationVersion: jobtemplate-2023-09
+name: Task Parameters Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: Prefix
+    type: STRING
+    default: "frame"
+steps:
+  - name: RenderFrames
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-3"
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo "Task.Param.Frame={{Task.Param.Frame}}"
+              echo "Param.Prefix={{Param.Prefix}}"
+              echo "Output={{(Param.Prefix + '_####').with_number(Task.Param.Frame)}}"

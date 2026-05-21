@@ -1,0 +1,56 @@
+specificationVersion: jobtemplate-2023-09
+name: Step Let Bindings in Step Environments
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: BaseValue
+    type: INT
+    default: 42
+steps:
+  - name: TestStep
+    let:
+      - base = Param.BaseValue
+      - doubled = base * 2
+      - label = "step_" + string(base)
+    stepEnvironments:
+      - name: TestEnv
+        script:
+          actions:
+            onEnter:
+              command: bash
+              args:
+                - "-c"
+                - |
+                  echo "enter_base={{base}}"
+                  echo "enter_doubled={{doubled}}"
+                  echo "enter_label={{label}}"
+            onExit:
+              command: bash
+              args:
+                - "-c"
+                - |
+                  echo "exit_base={{base}}"
+                  echo "exit_doubled={{doubled}}"
+                  echo "exit_label={{label}}"
+      - name: VarEnv
+        variables:
+          MY_BASE: "{{ base }}"
+          MY_DOUBLED: "{{ doubled }}"
+          MY_LABEL: "{{ label }}"
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo "task_base={{base}}"
+              echo "task_doubled={{doubled}}"
+              echo "env_MY_BASE=$MY_BASE"
+              echo "env_MY_DOUBLED=$MY_DOUBLED"
+              echo "env_MY_LABEL=$MY_LABEL"
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: [1]

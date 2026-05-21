@@ -1,0 +1,20 @@
+name: "Task parameter iteration"
+description: "Verifies task parameters work with parameter space iteration"
+
+run_on: all
+
+job_template_file: "task_params_template.yaml"
+
+job_parameters:
+  Prefix: "render"
+
+expect:
+  success: true
+  output_contains:
+    - "Task.Param.Frame=1"
+    - "Task.Param.Frame=2"
+    - "Task.Param.Frame=3"
+    - "Param.Prefix=render"
+    - "Output=render_0001"
+    - "Output=render_0002"
+    - "Output=render_0003"

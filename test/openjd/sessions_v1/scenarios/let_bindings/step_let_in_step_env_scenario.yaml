@@ -1,0 +1,30 @@
+name: "Step-level let bindings available in stepEnvironments"
+description: >
+  Verifies that step-level let bindings are available in stepEnvironment
+  variables, onEnter scripts, and onExit scripts.
+
+run_on: posix
+
+job_template_file: "step_let_in_step_env_template.yaml"
+
+job_parameters:
+  BaseValue: 42
+
+expect:
+  success: true
+  output_contains:
+    # onEnter sees step-level let bindings
+    - "enter_base=42"
+    - "enter_doubled=84"
+    - "enter_label=step_42"
+    # onExit sees step-level let bindings
+    - "exit_base=42"
+    - "exit_doubled=84"
+    - "exit_label=step_42"
+    # Environment variables resolved from step-level let bindings
+    - "env_MY_BASE=42"
+    - "env_MY_DOUBLED=84"
+    - "env_MY_LABEL=step_42"
+    # Task also sees step-level let bindings
+    - "task_base=42"
+    - "task_doubled=84"

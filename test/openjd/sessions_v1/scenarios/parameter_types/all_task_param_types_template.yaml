@@ -1,0 +1,61 @@
+# Tests all task parameter types with expressions
+specificationVersion: jobtemplate-2023-09
+name: All Task Parameter Types Test
+extensions:
+  - EXPR
+  - TASK_CHUNKING
+parameterDefinitions:
+  - name: Multiplier
+    type: INT
+    default: 10
+steps:
+  - name: TestAllTypes
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: IntParam
+          type: INT
+          range: "1-2"
+        - name: FloatParam
+          type: FLOAT
+          range: [1.5, 2.5]
+        - name: StringParam
+          type: STRING
+          range: ["alpha", "beta"]
+        - name: PathParam
+          type: PATH
+          range: ["/tmp/a.txt", "/tmp/b.txt"]
+      combination: "(IntParam, FloatParam, StringParam, PathParam)"
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo INT: {{repr_sh(string(Task.Param.IntParam))}} x {{repr_sh(string(Param.Multiplier))}} = {{repr_sh(string(Task.Param.IntParam * Param.Multiplier))}}
+              echo FLOAT: {{repr_sh(string(Task.Param.FloatParam))}}
+              echo STRING: {{repr_sh(Task.Param.StringParam.upper())}}
+              echo PATH: {{repr_sh(Task.Param.PathParam)}}
+              echo PATH.stem: {{repr_sh(Task.Param.PathParam.stem)}}
+
+  - name: TestChunkInt
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: CHUNK[INT]
+          range: "1-10"
+          chunks:
+            defaultTaskCount: 5
+            rangeConstraint: CONTIGUOUS
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo CHUNK-INT range: {{repr_sh(string(Task.Param.Frame))}}
+              echo CHUNK-INT as list: {{repr_sh(string(list(Task.Param.Frame)))}}
+              echo CHUNK-INT count: {{repr_sh(string(len(Task.Param.Frame)))}}
+              echo CHUNK-INT first: {{repr_sh(string(list(Task.Param.Frame)[0]))}}
+              echo CHUNK-INT sum: {{repr_sh(string(sum(list(Task.Param.Frame))))}}

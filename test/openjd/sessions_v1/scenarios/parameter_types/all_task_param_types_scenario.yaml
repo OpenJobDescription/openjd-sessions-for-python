@@ -1,0 +1,26 @@
+name: "CHUNK[INT] task parameter with expressions"
+description: "Verifies CHUNK[INT] task parameters work correctly with list(), len(), and sum() expressions"
+
+run_on: all
+
+job_template_file: "all_task_param_types_template.yaml"
+
+job_parameters:
+  Multiplier: 10
+
+# Only run the CHUNK[INT] step to keep test focused
+step: TestChunkInt
+
+expect:
+  success: true
+  output_contains:
+    # Verify CHUNK[INT] works with list() conversion
+    - "CHUNK-INT as list: [1, 2, 3, 4, 5]"
+    - "CHUNK-INT count: 5"
+    - "CHUNK-INT first: 1"
+    - "CHUNK-INT sum: 15"
+    # Second chunk
+    - "CHUNK-INT as list: [6, 7, 8, 9, 10]"
+    - "CHUNK-INT count: 5"
+    - "CHUNK-INT first: 6"
+    - "CHUNK-INT sum: 40"

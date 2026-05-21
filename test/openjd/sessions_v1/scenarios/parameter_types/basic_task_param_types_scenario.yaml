@@ -1,0 +1,35 @@
+name: "Basic task parameter types with expressions"
+description: "Verifies INT, FLOAT, STRING, and PATH task parameters work correctly with expressions"
+
+run_on: all
+
+job_template_file: "all_task_param_types_template.yaml"
+
+job_parameters:
+  Multiplier: 10
+
+step: TestAllTypes
+
+expect:
+  success: true
+  output_contains:
+    # First task: IntParam=1, FloatParam=1.5, StringParam=alpha, PathParam=/tmp/a.txt
+    - "INT: 1 x 10 = 10"
+    - "FLOAT: 1.5"
+    - "STRING: ALPHA"
+    - "PATH.stem: a"
+    # Second task: IntParam=2, FloatParam=2.5, StringParam=beta, PathParam=/tmp/b.txt
+    - "INT: 2 x 10 = 20"
+    - "FLOAT: 2.5"
+    - "STRING: BETA"
+    - "PATH.stem: b"
+
+expect_posix:
+  output_contains:
+    - "PATH: /tmp/a.txt"
+    - "PATH: /tmp/b.txt"
+
+expect_windows:
+  output_contains:
+    - "PATH: \\tmp\\a.txt"
+    - "PATH: \\tmp\\b.txt"

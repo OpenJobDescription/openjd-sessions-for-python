@@ -1,0 +1,45 @@
+specificationVersion: jobtemplate-2023-09
+name: Env File Let Bindings Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: Greeting
+    type: STRING
+    default: "hello"
+jobEnvironments:
+  - name: TestEnv
+    script:
+      embeddedFiles:
+        - name: config
+          type: TEXT
+          data: "greeting={{Param.Greeting}}"
+      let:
+        - "cfg = Env.File.config"
+        - "cfg_has_parent = len(string(cfg.parent)) > 0"
+      actions:
+        onEnter:
+          command: python
+          args:
+            - "-c"
+            - |
+              import os
+              path = r'{{ cfg }}'
+              exists = os.path.isfile(path)
+              content = open(path).read() if exists else ''
+              print(f'env_file_exists={exists}')
+              print(f'env_file_content={content}')
+              print(r'env_file_has_parent={{ cfg_has_parent }}')
+        onExit:
+          command: python
+          args:
+            - "-c"
+            - "print('env_exit=ok')"
+steps:
+  - name: Step1
+    script:
+      actions:
+        onRun:
+          command: python
+          args:
+            - "-c"
+            - "print('task_ran=ok')"

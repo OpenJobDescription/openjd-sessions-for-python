@@ -1,0 +1,21 @@
+name: "Env.File.* available in environment script let bindings"
+description: >
+  Verifies that Env.File.* symbols are available in EnvironmentScript let bindings,
+  allowing let bindings to coerce the file path to a path type and access its properties.
+  The embedded file content should also be written correctly using the full symbol table.
+
+run_on: all
+
+job_template_file: "env_file_let_bindings_template.yaml"
+
+job_parameters:
+  Greeting: "world"
+
+expect:
+  success: true
+  output_contains:
+    - "env_file_exists=True"
+    - "env_file_content=greeting=world"
+    - "env_file_has_parent=true"
+    - "env_exit=ok"
+    - "task_ran=ok"

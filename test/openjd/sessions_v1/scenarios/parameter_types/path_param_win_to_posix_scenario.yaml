@@ -1,0 +1,22 @@
+name: "PATH parameter with path mapping"
+description: "Verifies Param.X has path type with mapping applied, RawParam.X is unmapped string"
+
+run_on: posix
+
+job_template_file: "path_param_win_to_posix_template.yaml"
+
+job_parameters:
+  InputPath: "C:\\Users\\test\\file.txt"
+
+path_mapping_rules:
+  - source_path_format: windows
+    source_path: "C:\\Users"
+    destination_path: "/home"
+
+expect:
+  success: true
+  output_contains:
+    - 'Param.InputPath="/home/test/file.txt"'
+    - 'RawParam.InputPath="C:\\Users\\test\\file.txt"'
+    - 'Param.InputPath.name="file.txt"'
+    - 'RawParam.InputPath.upper()="C:\\USERS\\TEST\\FILE.TXT"'

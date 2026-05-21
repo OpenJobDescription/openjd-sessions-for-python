@@ -1,0 +1,17 @@
+name: "Let bindings with host-context symbols"
+description: "Verifies that let bindings in script, environment, and simple action contexts can reference Session.*, Task.Param.*, and other host-context symbols"
+
+run_on: posix
+
+job_template_file: "let_host_context_template.yaml"
+
+job_parameters:
+  OutputDir: "/renders"
+
+expect:
+  success: true
+  output_contains:
+    - "ENV_WORK_OK=true"
+    - "WORK_OUT_OK=true"
+    - "FRAME_PATH=/renders/1"
+    - "FRAME_PATH=/renders/2"
