@@ -1,3 +1,11 @@
+## 0.10.9 (2026-05-25)
+
+
+### Features
+* add support for domain users (#311) ([`5da7006`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/5da7006f50630a90bb57b44b7bfc17ce9a1f5956))
+
+
+
 ## 0.10.8 (2026-05-11)
 
 
