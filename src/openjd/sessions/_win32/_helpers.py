@@ -70,10 +70,16 @@ def logon_user(username: str, password: str) -> HANDLE:
     Raises:
         OSError - If an error is encountered.
     """
+    domain: Optional[str] = None
+    user = username
+    if "\\" in username:
+        domain, user = username.split("\\", 1)
+    # For UPN (user@domain) and local users, domain stays None — Windows resolves automatically
+
     hToken = HANDLE(0)
     if not LogonUserW(
-        username,
-        None,  # TODO - domain handling??
+        user,
+        domain,
         password,
         LOGON32_LOGON_INTERACTIVE,
         LOGON32_PROVIDER_DEFAULT,
