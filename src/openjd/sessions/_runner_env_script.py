@@ -142,6 +142,31 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         self._action = action
         self._run_action(self._action, symtab, default_timeout=default_timeout)
 
+    def run_wrap_action(
+        self,
+        action: ActionModel,
+        *,
+        default_timeout: Optional[timedelta] = None,
+    ) -> None:
+        """Run a caller-supplied wrap action (RFC 0008) against this runner's
+        prepared symbol table.
+
+        This is the low-level entry point used by the Session's WRAP_ACTIONS
+        dispatch: the Session chooses the action (an outer environment's
+        ``onWrapEnvEnter`` / ``onWrapEnvExit``) and seeds the symbol table with
+        ``WrappedAction.*`` / ``WrappedEnv.*`` before calling.
+
+        Unlike :meth:`enter` / :meth:`exit`, this does NOT materialize any
+        embedded files or evaluate let bindings — the caller is responsible for
+        preparing the symbol table. This mirrors the Rust
+        ``EnvironmentScriptRunner::run_wrap_action`` first-cut behavior.
+        """
+        if self.state != ScriptRunnerState.READY:
+            raise RuntimeError("This cannot be used to run a second subprocess.")
+        log_subsection_banner(self._logger, "Phase: Setup")
+        self._action = action
+        self._run_action(action, self._symtab, default_timeout=default_timeout)
+
     def enter(self) -> None:
         """Run the Environment's onEnter action."""
         if self.state != ScriptRunnerState.READY:

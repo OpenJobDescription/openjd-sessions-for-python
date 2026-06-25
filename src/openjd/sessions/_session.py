@@ -48,6 +48,7 @@ from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
 from ._tempdir import TempDir, custom_gettempdir
 from ._types import (
+    ActionModel,
     ActionState,
     EnvironmentIdentifier,
     EnvironmentModel,
@@ -682,6 +683,24 @@ class Session(object):
 
         self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
 
+        # RFC 0008 WRAP_ACTIONS: if an outer active wrap environment (excluding
+        # this one, which is never wrapped by its own hooks) defines
+        # onWrapEnvEnter and this environment has an onEnter, the wrap action
+        # runs in place of the inner onEnter. We seed WrappedAction.* /
+        # WrappedEnv.Name from the inner onEnter before running the wrap action.
+        wrap_action: Optional[ActionModel] = None
+        if environment.script is not None and environment.script.actions.onEnter is not None:
+            wrap_env = self._wrap_env_excluding(identifier)
+            if wrap_env is not None and wrap_env.script is not None:
+                on_wrap_enter = wrap_env.script.actions.onWrapEnvEnter
+                if on_wrap_enter is not None:
+                    self._seed_wrapped_action_symbols(
+                        symtab,
+                        inner_action=environment.script.actions.onEnter,
+                        wrapped_env_name=environment.name,
+                    )
+                    wrap_action = on_wrap_enter
+
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
         self._action_state = ActionState.RUNNING
@@ -701,7 +720,10 @@ class Session(object):
             symtab=symtab,
             session_files_directory=self.files_directory,
         )
-        self._runner.enter()
+        if wrap_action is not None:
+            self._runner.run_wrap_action(wrap_action)
+        else:
+            self._runner.enter()
 
         return identifier
 
@@ -766,6 +788,24 @@ class Session(object):
 
         symtab = self._symbol_table(environment.revision)
         self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+
+        # RFC 0008 WRAP_ACTIONS: the environment being exited has already been
+        # popped above, so _active_wrap_env() returns the remaining outer wrap
+        # environment (if any). If it defines onWrapEnvExit and this environment
+        # has an onExit, the wrap action runs in place of the inner onExit.
+        wrap_action: Optional[ActionModel] = None
+        if environment.script is not None and environment.script.actions.onExit is not None:
+            wrap_env = self._active_wrap_env()
+            if wrap_env is not None and wrap_env.script is not None:
+                on_wrap_exit = wrap_env.script.actions.onWrapEnvExit
+                if on_wrap_exit is not None:
+                    self._seed_wrapped_action_symbols(
+                        symtab,
+                        inner_action=environment.script.actions.onExit,
+                        wrapped_env_name=environment.name,
+                    )
+                    wrap_action = on_wrap_exit
+
         # Sets the subprocess running.
         # Returns immediately after it has started, or is running
         self._action_state = ActionState.RUNNING
@@ -785,7 +825,10 @@ class Session(object):
             symtab=symtab,
             session_files_directory=self.files_directory,
         )
-        self._runner.exit()
+        if wrap_action is not None:
+            self._runner.run_wrap_action(wrap_action)
+        else:
+            self._runner.exit()
 
     def run_task(
         self,
@@ -794,6 +837,7 @@ class Session(object):
         task_parameter_values: TaskParameterSet,
         os_env_vars: Optional[dict[str, str]] = None,
         log_task_banner: bool = True,
+        step_name: Optional[str] = None,
     ) -> None:
         """Run a Task within the Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -834,6 +878,22 @@ class Session(object):
         symtab = self._symbol_table(step_script.revision, task_parameter_values)
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
         self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+
+        # RFC 0008 WRAP_ACTIONS: if an active wrap environment defines
+        # onWrapTaskRun, the wrap action runs in place of the step's onRun. We
+        # seed WrappedAction.* / WrappedStep.Name from the step's onRun first.
+        wrap_action: Optional[ActionModel] = None
+        wrap_env = self._active_wrap_env()
+        if wrap_env is not None and wrap_env.script is not None:
+            on_wrap_task = wrap_env.script.actions.onWrapTaskRun
+            if on_wrap_task is not None:
+                self._seed_wrapped_action_symbols(
+                    symtab,
+                    inner_action=step_script.actions.onRun,
+                    wrapped_step_name=step_name if step_name is not None else "",
+                )
+                wrap_action = on_wrap_task
+
         self._runner = StepScriptRunner(
             logger=self._logger,
             user=self._user,
@@ -852,7 +912,10 @@ class Session(object):
         # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
         # so it's important to set the action_state to RUNNING before calling run(), rather
         # than after -- run() itself may end up setting the action state to FAILED.
-        self._runner.run()
+        if wrap_action is not None:
+            self._runner.run_wrap_action(wrap_action)
+        else:
+            self._runner.run()
 
     def _run_task_without_session_env(
         self,
@@ -1316,3 +1379,128 @@ class Session(object):
             if identifier in self._created_env_vars:
                 self._created_env_vars[identifier].apply_to_environment(result)
         return result
+
+    # =========================
+    #  WRAP_ACTIONS (RFC 0008)
+
+    @staticmethod
+    def _env_has_any_wrap_hook(environment: EnvironmentModel) -> bool:
+        """Return True iff the environment defines any RFC 0008 wrap hook
+        (onWrapEnvEnter / onWrapTaskRun / onWrapEnvExit).
+        """
+        script = environment.script
+        if script is None:
+            return False
+        actions = script.actions
+        return (
+            actions.onWrapEnvEnter is not None
+            or actions.onWrapTaskRun is not None
+            or actions.onWrapEnvExit is not None
+        )
+
+    def _active_wrap_env(self) -> Optional[EnvironmentModel]:
+        """Return the innermost currently-active environment that defines any
+        wrap hook, or None.
+
+        The model validator rejects templates with more than one wrap layer in
+        a single session, so this is effectively "the wrap environment" at
+        runtime. The innermost-wins traversal mirrors openjd-rs and keeps
+        dispatch deterministic.
+        """
+        for identifier in reversed(self._environments_entered):
+            environment = self._environments.get(identifier)
+            if environment is not None and self._env_has_any_wrap_hook(environment):
+                return environment
+        return None
+
+    def _wrap_env_excluding(self, self_id: EnvironmentIdentifier) -> Optional[EnvironmentModel]:
+        """Like :meth:`_active_wrap_env`, but excludes ``self_id``.
+
+        An environment's own lifecycle actions (onEnter/onExit) are never
+        wrapped by its own wrap hooks (RFC 0008). This is what the onEnter
+        dispatch needs.
+        """
+        for identifier in reversed(self._environments_entered):
+            if identifier == self_id:
+                continue
+            environment = self._environments.get(identifier)
+            if environment is not None and self._env_has_any_wrap_hook(environment):
+                return environment
+        return None
+
+    def _openjd_defined_env(self) -> dict[str, str]:
+        """The cumulative OpenJD-defined environment variables (Environment
+        "variables" declarations plus openjd_env/openjd_unset_env directives)
+        across all currently-entered environments.
+
+        Host-inherited variables are intentionally excluded, per RFC 0008 for
+        WrappedAction.Environment.
+        """
+        env: dict[str, Optional[str]] = {}
+        for identifier in self._environments_entered:
+            changes = self._created_env_vars.get(identifier)
+            if changes is not None:
+                changes.apply_to_environment(env)
+        return {name: value for name, value in env.items() if value is not None}
+
+    def _seed_wrapped_action_symbols(
+        self,
+        symtab: SymbolTable,
+        *,
+        inner_action: ActionModel,
+        wrapped_env_name: Optional[str] = None,
+        wrapped_step_name: Optional[str] = None,
+    ) -> None:
+        """Seed the RFC 0008 ``WrappedAction.*`` symbols (and the companion
+        ``WrappedEnv.Name`` / ``WrappedStep.Name``) onto ``symtab`` from the
+        wrapped (inner) action.
+
+        The wrapped action's command/args/timeout are resolved through the same
+        Rust-backed EXPR engine the rest of the model uses, and the resulting
+        typed values are recorded in ``symtab.expr_types`` so the engine coerces
+        them correctly when the wrap action's own format strings reference them.
+
+        First-cut limitation (consistent with openjd-rs): the inner action's
+        command/args are resolved against the symbol table built so far, which
+        does not yet include the wrapped environment's embedded files
+        (``Env.File.*``) — those are materialized inside the runner.
+        """
+        command = inner_action.command.resolve(symtab=symtab)
+        args: list[str] = []
+        if inner_action.args is not None:
+            for arg in inner_action.args:
+                value = arg.resolve(symtab=symtab)
+                if value is None:
+                    continue
+                if isinstance(value, (list, tuple)):
+                    args.extend(str(element) for element in value)
+                else:
+                    args.append(str(value))
+
+        wrapped_env = [f"{name}={value}" for name, value in self._openjd_defined_env().items()]
+
+        # WrappedAction.Timeout carries the ORIGINAL wrapped action's timeout in
+        # seconds (RFC 0008); 0 means unset.
+        timeout = int(inner_action.timeout) if inner_action.timeout else 0
+
+        symtab["WrappedAction.Command"] = command
+        symtab["WrappedAction.Args"] = args
+        symtab["WrappedAction.Environment"] = wrapped_env
+        symtab["WrappedAction.Timeout"] = timeout
+
+        # Record EXPR types so the (Rust) build_symbol_table coercion produces
+        # the right typed values for these symbols.
+        expr_types: dict[str, str] = dict(getattr(symtab, "expr_types", None) or {})
+        expr_types["WrappedAction.Command"] = "STRING"
+        expr_types["WrappedAction.Args"] = "LIST[STRING]"
+        expr_types["WrappedAction.Environment"] = "LIST[STRING]"
+        expr_types["WrappedAction.Timeout"] = "INT"
+
+        if wrapped_env_name is not None:
+            symtab["WrappedEnv.Name"] = wrapped_env_name
+            expr_types["WrappedEnv.Name"] = "STRING"
+        if wrapped_step_name is not None:
+            symtab["WrappedStep.Name"] = wrapped_step_name
+            expr_types["WrappedStep.Name"] = "STRING"
+
+        symtab.expr_types = expr_types  # type: ignore[attr-defined]

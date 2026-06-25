@@ -31,7 +31,11 @@ classifiers = [
   "Topic :: Software Development :: Libraries"
 ]
 dependencies = [
-  "openjd-model >= 0.9,< 0.10",
+  # Requires the openjd-model release that ships the EXPR + WRAP_ACTIONS
+  # bindings (build_symbol_table, job_parameter_type_expr_spec) and the
+  # wrap-hook model. Those are added by feat: commits on top of model 0.10.0,
+  # which the model's conventional-commits release tooling bumps to 0.11.0.
+  "openjd-model >= 0.11,< 0.12",
   "pywin32 >= 307; platform_system == 'Windows'",
   "psutil >= 5.9,< 7.3; platform_system == 'Windows'",
 ]

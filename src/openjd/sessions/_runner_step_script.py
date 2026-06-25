@@ -21,7 +21,7 @@ from ._runner_base import (
     TerminateCancelMethod,
 )
 from ._session_user import SessionUser
-from ._types import ActionState, StepScriptModel
+from ._types import ActionModel, ActionState, StepScriptModel
 
 __all__ = ("StepScriptRunner",)
 
@@ -94,6 +94,29 @@ class StepScriptRunner(ScriptRunnerBase):
 
         if not isinstance(self._script, StepScript_2023_09):
             raise NotImplementedError("Unknown model type")
+
+    def run_wrap_action(
+        self,
+        action: ActionModel,
+        *,
+        default_timeout: Optional[timedelta] = None,
+    ) -> None:
+        """Run a caller-supplied wrap action (RFC 0008) against this runner's
+        prepared symbol table.
+
+        Used by the Session's WRAP_ACTIONS dispatch when an active wrap
+        environment defines ``onWrapTaskRun``: the Session seeds the symbol
+        table with ``WrappedAction.*`` / ``WrappedStep.Name`` and supplies the
+        wrap action here, which runs instead of the step's own ``onRun``.
+
+        Unlike :meth:`run`, this does NOT materialize the step's embedded files
+        or evaluate let bindings — the caller prepares the symbol table. This
+        mirrors the Rust ``run_wrap_action`` first-cut behavior.
+        """
+        if self.state != ScriptRunnerState.READY:
+            raise RuntimeError("This cannot be used to run a second subprocess.")
+        log_subsection_banner(self._logger, "Phase: Setup")
+        self._run_action(action, self._symtab, default_timeout=default_timeout)
 
     def run(self) -> None:
         """Run the Step Script's onRun Action."""
