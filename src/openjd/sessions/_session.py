@@ -32,6 +32,7 @@ from openjd.model.v2023_09 import (
     CancelationMethodTerminate as CancelationMethodTerminate_2023_09,
     CancelationMode as CancelationMode_2023_09,
     CommandString as CommandString_2023_09,
+    ModelParsingContext as ModelParsingContext_2023_09,
     StepActions as StepActions_2023_09,
     StepScript as StepScript_2023_09,
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
@@ -652,6 +653,16 @@ class Session(object):
 
         symtab = self._symbol_table(environment.revision)
 
+        # EXPR `let` bindings (RFC 0007) on the environment script are evaluated
+        # into the symbol table before resolving environment variables or the
+        # action, so both can reference them.
+        env_script = environment.script
+        self._apply_let_bindings(
+            symtab,
+            getattr(env_script, "let", None) if env_script is not None else None,
+            environment.revision,
+        )
+
         if environment.variables is not None:
             # We must process the current environment's variables
             # before we call _evaluate_current_session_env_vars()
@@ -789,6 +800,15 @@ class Session(object):
         symtab = self._symbol_table(environment.revision)
         self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
 
+        # EXPR `let` bindings (RFC 0007) on the environment script are evaluated
+        # into the symbol table before resolving the onExit / wrap action.
+        exit_env_script = environment.script
+        self._apply_let_bindings(
+            symtab,
+            getattr(exit_env_script, "let", None) if exit_env_script is not None else None,
+            environment.revision,
+        )
+
         # RFC 0008 WRAP_ACTIONS: the environment being exited has already been
         # popped above, so _active_wrap_env() returns the remaining outer wrap
         # environment (if any). If it defines onWrapEnvExit and this environment
@@ -878,6 +898,12 @@ class Session(object):
         symtab = self._symbol_table(step_script.revision, task_parameter_values)
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
         self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+
+        # EXPR `let` bindings (RFC 0007) on the step script are evaluated into
+        # the symbol table before resolving the action, so the action's
+        # `{{ }}` expressions (and any wrap-action seeding below) can reference
+        # them.
+        self._apply_let_bindings(symtab, getattr(step_script, "let", None), step_script.revision)
 
         # RFC 0008 WRAP_ACTIONS: if an active wrap environment defines
         # onWrapTaskRun, the wrap action runs in place of the step's onRun. We
@@ -1154,6 +1180,59 @@ class Session(object):
             return symtab
         else:
             raise NotImplementedError(f"Schema version {str(version.value)} is not supported.")
+
+    def _apply_let_bindings(
+        self,
+        symtab: SymbolTable,
+        let_bindings: Optional[list[str]],
+        version: SpecificationRevision,
+        *,
+        path_format: Optional[Any] = None,
+    ) -> None:
+        """Evaluate EXPR ``let`` bindings (RFC 0007) and add them to ``symtab``.
+
+        ``let_bindings`` is the script's/environment's ``let`` field: an ordered
+        list of ``"name = expression"`` strings. Each RHS is an EXPR expression
+        evaluated against the symbol table built so far (so later bindings can
+        reference earlier ones), and its native typed result (int/list/str/...) is
+        stored under the bound name so the action's own ``{{ }}`` expressions can
+        reference it. Bindings are only present when the template declared the
+        EXPR extension, so EXPR parsing is forced for the RHS regardless of the
+        session's configured extension set.
+
+        First-cut limitation (mirrors the wrap-action seeding): bindings are
+        resolved before the runner materializes embedded files, so a binding RHS
+        cannot reference ``Env.File.*`` / ``Task.File.*``.
+        """
+        if not let_bindings:
+            return
+        if version != SpecificationRevision.v2023_09:
+            raise NotImplementedError(f"Schema version {str(version.value)} is not supported.")
+
+        # `let` only appears under the EXPR extension; force it on for parsing
+        # the RHS even if the Session was constructed without it in its set.
+        context = ModelParsingContext_2023_09(
+            supported_extensions=list(set(self.get_enabled_extensions()) | {"EXPR"})
+        )
+        context.extensions = set(self.get_enabled_extensions()) | {"EXPR"}
+
+        for binding in let_bindings:
+            name, sep, rhs = binding.partition("=")
+            name = name.strip()
+            rhs = rhs.strip()
+            if not sep or not name or not rhs:
+                # Malformed bindings are rejected by the model's `let` validator
+                # at decode time; skip defensively here.
+                continue
+            # Parse the RHS as a standalone EXPR expression and evaluate it
+            # against the current symbol table to obtain its native typed value.
+            arg = ArgString_2023_09("{{ " + rhs + " }}", context=context)
+            expressions = arg.expressions
+            if not expressions or expressions[0].expression is None:
+                continue
+            symtab[name] = expressions[0].expression.evaluate(
+                symtab=symtab, path_format=path_format
+            )
 
     def _openjd_session_root_dir(self) -> Path:
         """
