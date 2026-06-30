@@ -1,0 +1,27 @@
+name: "PATH task parameter with path mapping"
+description: "Verifies PATH task parameters have path mapping rules applied"
+
+run_on: posix
+
+job_template_file: "task_path_param_mapping_template.yaml"
+
+path_mapping_rules:
+  - source_path_format: windows
+    source_path: "C:\\Projects"
+    destination_path: "/mnt/projects"
+
+expect:
+  success: true
+  output_contains:
+    # First task - path mapping applied to Task.Param, raw preserved in Task.RawParam
+    - 'Task.Param.InputFile=/mnt/projects/render/frame001.exr'
+    - 'Task.RawParam.InputFile=C:\Projects\render\frame001.exr'
+    - 'Task.Param.InputFile.parent=/mnt/projects/render'
+    - 'Task.Param.InputFile.name=frame001.exr'
+    # Verify Task.RawParam is string type (has .upper(), path type does not)
+    - 'Task.RawParam.InputFile.upper=C:\PROJECTS\RENDER\FRAME001.EXR'
+    # Second task
+    - 'Task.Param.InputFile=/mnt/projects/render/frame002.exr'
+    - 'Task.RawParam.InputFile=C:\Projects\render\frame002.exr'
+    - 'Task.Param.InputFile.name=frame002.exr'
+    - 'Task.RawParam.InputFile.upper=C:\PROJECTS\RENDER\FRAME002.EXR'

@@ -1,0 +1,26 @@
+name: "apply_path_mapping posix-to-windows on RawParam produces Param"
+description: "Verifies apply_path_mapping(RawParam.X) equals Param.X with posix-to-windows mapping"
+
+run_on: windows
+
+job_template_file: "apply_path_mapping_win_to_posix_template.yaml"
+
+job_parameters:
+  InputPath: "/home/test/file.txt"
+
+path_mapping_rules:
+  - source_path_format: posix
+    source_path: "/home"
+    destination_path: "C:\\Users"
+
+expect:
+  success: true
+  output_contains:
+    - 'Param.InputPath="C:\Users\test\file.txt"'
+    - 'RawParam.InputPath="/home/test/file.txt"'
+    - 'apply_path_mapping(RawParam.InputPath)="C:\Users\test\file.txt"'
+    - 'RawParam.InputPath.apply_path_mapping()="C:\Users\test\file.txt"'
+    - 'Param.InputPath.parent="C:\Users\test"'
+    - 'apply_path_mapping(RawParam.InputPath).parent="C:\Users\test"'
+    - 'Param.InputPath.name="file.txt"'
+    - 'apply_path_mapping(RawParam.InputPath).name="file.txt"'

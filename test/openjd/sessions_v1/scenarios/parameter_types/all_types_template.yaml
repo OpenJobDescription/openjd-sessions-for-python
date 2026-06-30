@@ -1,0 +1,70 @@
+# Standalone template - run with: openjd run all_types_template.yaml
+specificationVersion: jobtemplate-2023-09
+name: All Parameter Types Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: StringParam
+    type: STRING
+    default: "hello"
+  - name: IntParam
+    type: INT
+    default: 42
+  - name: FloatParam
+    type: FLOAT
+    default: 3.14
+  - name: PathParam
+    type: PATH
+    default: "default/path"
+  - name: BoolParam
+    type: BOOL
+    default: true
+  - name: RangeExprParam
+    type: RANGE_EXPR
+    default: "1-5"
+  - name: ListStringParam
+    type: LIST[STRING]
+    default: ["a", "b", "c"]
+  - name: ListIntParam
+    type: LIST[INT]
+    default: [1, 2, 3]
+  - name: ListFloatParam
+    type: LIST[FLOAT]
+    default: [1.1, 2.2]
+  - name: ListPathParam
+    type: LIST[PATH]
+    default: ["path/one", "path/two"]
+  - name: ListBoolParam
+    type: LIST[BOOL]
+    default: [true, false]
+  - name: ListListIntParam
+    type: LIST[LIST[INT]]
+    default: [[1, 2], [3, 4]]
+steps:
+  - name: TestAllTypes
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo StringParam={{repr_sh(Param.StringParam)}}
+              echo IntParam={{repr_sh(string(Param.IntParam))}}
+              echo IntParam+1={{repr_sh(string(Param.IntParam + 1))}}
+              echo FloatParam={{repr_sh(string(Param.FloatParam))}}
+              echo PathParam={{repr_sh(Param.PathParam)}}
+              echo PathParam.name={{repr_sh(Param.PathParam.name)}}
+              echo BoolParam={{repr_sh(string(Param.BoolParam))}}
+              echo RangeExprParam={{repr_sh(Param.RangeExprParam)}}
+              echo len-RangeExprParam={{repr_sh(string(len(Param.RangeExprParam)))}}
+              echo ListStringParam={{repr_sh(string(Param.ListStringParam))}}
+              echo ListStringParam-0={{repr_sh(Param.ListStringParam[0])}}
+              echo ListIntParam={{repr_sh(string(Param.ListIntParam))}}
+              echo sum-ListIntParam={{repr_sh(string(sum(Param.ListIntParam)))}}
+              echo ListFloatParam={{repr_sh(string(Param.ListFloatParam))}}
+              echo ListPathParam={{repr_sh(string(Param.ListPathParam))}}
+              echo ListPathParam-0-name={{repr_sh(Param.ListPathParam[0].name)}}
+              echo ListBoolParam={{repr_sh(string(Param.ListBoolParam))}}
+              echo ListListIntParam={{repr_sh(string(Param.ListListIntParam))}}
+              echo ListListIntParam-0-1={{repr_sh(string(Param.ListListIntParam[0][1]))}}

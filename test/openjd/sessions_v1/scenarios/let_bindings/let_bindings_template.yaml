@@ -1,0 +1,183 @@
+# Standalone template - run with: openjd run let_bindings_template.yaml
+specificationVersion: jobtemplate-2023-09
+name: Let Bindings Comprehensive Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: BaseInt
+    type: INT
+    default: 10
+  - name: BaseFloat
+    type: FLOAT
+    default: 2.5
+  - name: BasePath
+    type: PATH
+    default: "/input/scene.exr"
+  - name: BaseString
+    type: STRING
+    default: "hello"
+  - name: Items
+    type: LIST[INT]
+    default: [1, 2, 3, 4, 5]
+  - name: FrameRange
+    type: RANGE_EXPR
+    default: "1-10"
+  - name: Tags
+    type: LIST[STRING]
+    default: ["alpha", "beta", "gamma"]
+  - name: InputFiles
+    type: LIST[PATH]
+    default: ["/data/file1.exr", "/data/file2.exr", "/data/file3.exr"]
+
+# Job-level environment with let bindings
+jobEnvironments:
+  - name: JobEnv
+    script:
+      let:
+        - 'job_env_enter_msg = "JobEnv onEnter: " + Param.BaseString'
+        - 'job_env_exit_msg = "JobEnv onExit: " + Param.BaseString + "_done"'
+        - job_env_computed = Param.BaseInt + 100
+      actions:
+        onEnter:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo "=== Job Environment onEnter ==="
+              echo "job_env_enter_msg={{job_env_enter_msg}}"
+              echo "job_env_computed={{job_env_computed}}"
+        onExit:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo "=== Job Environment onExit ==="
+              echo "job_env_exit_msg={{job_env_exit_msg}}"
+
+steps:
+  - name: TestLetBindings
+    # Step-level environment with let bindings
+    stepEnvironments:
+      - name: StepEnv
+        script:
+          let:
+            - 'step_env_enter_msg = "StepEnv onEnter: " + Param.BaseString'
+            - 'step_env_exit_msg = "StepEnv onExit: " + Param.BaseString + "_done"'
+            - step_env_doubled = Param.BaseInt * 2
+          actions:
+            onEnter:
+              command: bash
+              args:
+                - "-c"
+                - |
+                  echo "=== Step Environment onEnter ==="
+                  echo "step_env_enter_msg={{step_env_enter_msg}}"
+                  echo "step_env_doubled={{step_env_doubled}}"
+            onExit:
+              command: bash
+              args:
+                - "-c"
+                - |
+                  echo "=== Step Environment onExit ==="
+                  echo "step_env_exit_msg={{step_env_exit_msg}}"
+    # Step-level let bindings - evaluated once per step at job creation
+    let:
+      - step_int = Param.BaseInt * 2
+      - step_float = Param.BaseFloat + 0.5
+      - step_string = Param.BaseString + "_world"
+      - step_list_sum = sum(Param.Items)
+      - step_chained = step_int + 5
+      - step_conditional = "big" if step_int > 15 else "small"
+      - step_list_len = len(Param.Items)
+      - step_min = min(Param.Items)
+      - step_max = max(Param.Items)
+      # Boolean and comparison operations
+      - step_bool_and = step_int > 10 and step_float > 2.0
+      - step_bool_or = step_int < 10 or step_float > 2.0
+      - step_comparison = step_int == 20
+      - step_chained_compare = 0 < step_min <= step_max < 10
+      # List comprehension
+      - step_doubled = [x * 2 for x in Param.Items]
+      # RANGE_EXPR operations - can be used in range expressions
+      - step_range_len = len(Param.FrameRange)
+      # LIST[STRING] operations
+      - step_tags_len = len(Param.Tags)
+      - step_first_tag = Param.Tags[0]
+      - step_tags_upper = [t + "_TAG" for t in Param.Tags]
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-{{ step_int // 10 }}"
+    script:
+      # Script-level let bindings - evaluated at task runtime, can use Task.Param
+      # PATH and LIST[PATH] ``Param.*`` are also visible here (task scope);
+      # they're NOT visible in step-level let bindings (template scope), so
+      # bindings that touch PATH-typed parameters live here even though the
+      # asserted output names are ``step_*``.
+      let:
+        - task_frame = Task.Param.Frame
+        - task_combined = step_int + Task.Param.Frame
+        - task_output_name = step_string + "_" + string(Task.Param.Frame) + ".exr"
+        - task_msg = "Frame " + string(Task.Param.Frame) + " of " + string(step_int // 10)
+        # PATH operations on Param.BasePath (PATH-typed; task scope only).
+        - step_path = Param.BasePath.parent / "output"
+        - step_path_stem = Param.BasePath.stem
+        - step_path_suffix = Param.BasePath.suffix
+        # LIST[PATH] operations on Param.InputFiles (LIST_PATH; task scope only).
+        - step_files_len = len(Param.InputFiles)
+        - step_first_file_stem = Param.InputFiles[0].stem
+        - step_file_stems = [f.stem for f in Param.InputFiles]
+      # Embedded file using let binding values
+      embeddedFiles:
+        - name: config
+          type: TEXT
+          filename: "config_{{task_frame}}.txt"
+          data: |
+            # Config for frame {{task_frame}}
+            output_name={{task_output_name}}
+            combined_value={{task_combined}}
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo "=== Embedded file content ==="
+              cat {{repr_sh(Task.File.config)}}
+              echo "=== Step-level bindings ==="
+              echo step_int={{repr_sh(string(step_int))}}
+              echo step_float={{repr_sh(string(step_float))}}
+              echo step_path={{repr_sh(step_path)}}
+              echo step_string={{repr_sh(step_string)}}
+              echo step_list_sum={{repr_sh(string(step_list_sum))}}
+              echo step_chained={{repr_sh(string(step_chained))}}
+              echo step_conditional={{repr_sh(step_conditional)}}
+              echo step_path_stem={{repr_sh(step_path_stem)}}
+              echo step_list_len={{repr_sh(string(step_list_len))}}
+              echo step_min={{repr_sh(string(step_min))}}
+              echo step_max={{repr_sh(string(step_max))}}
+              echo step_bool_and={{repr_sh(string(step_bool_and))}}
+              echo step_bool_or={{repr_sh(string(step_bool_or))}}
+              echo step_comparison={{repr_sh(string(step_comparison))}}
+              echo step_chained_compare={{repr_sh(string(step_chained_compare))}}
+              echo step_doubled={{repr_sh(string(step_doubled))}}
+              echo step_path_suffix={{repr_sh(step_path_suffix)}}
+              echo "=== RANGE_EXPR bindings ==="
+              echo step_range_len={{repr_sh(string(step_range_len))}}
+              echo "=== LIST[STRING] bindings ==="
+              echo step_tags_len={{repr_sh(string(step_tags_len))}}
+              echo step_first_tag={{repr_sh(step_first_tag)}}
+              echo step_tags_upper={{repr_sh(string(step_tags_upper))}}
+              echo "=== LIST[PATH] bindings ==="
+              echo step_files_len={{repr_sh(string(step_files_len))}}
+              echo step_first_file_stem={{repr_sh(step_first_file_stem)}}
+              echo step_file_stems={{repr_sh(string(step_file_stems))}}
+              echo "=== Task-level bindings ==="
+              echo task_frame={{repr_sh(string(task_frame))}}
+              echo task_combined={{repr_sh(string(task_combined))}}
+              echo task_output_name={{repr_sh(task_output_name)}}
+              echo task_msg={{repr_sh(task_msg)}}
+              echo "=== Direct param access ==="
+              echo Param.BaseInt={{repr_sh(string(Param.BaseInt))}}
+              echo Param.BasePath.stem={{repr_sh(Param.BasePath.stem)}}

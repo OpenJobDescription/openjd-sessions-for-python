@@ -1,0 +1,26 @@
+# Standalone template - run with: openjd run list_path_param_mapping_template.yaml
+specificationVersion: jobtemplate-2023-09
+name: LIST[PATH] Parameter Mapping Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: InputPaths
+    type: LIST[PATH]
+    default:
+      - "default/path/one"
+      - "default/path/two"
+steps:
+  - name: TestListPathMapping
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo 'Param.InputPaths={{repr_json(Param.InputPaths)}}'
+              echo 'RawParam.InputPaths={{repr_json(RawParam.InputPaths)}}'
+              echo 'Param.InputPaths[0]={{repr_json(Param.InputPaths[0])}}'
+              echo 'RawParam.InputPaths[0]={{repr_json(RawParam.InputPaths[0])}}'
+              echo 'Param.InputPaths[0].name={{repr_json(Param.InputPaths[0].name)}}'
+              echo 'RawParam.InputPaths[0].upper()={{repr_json(RawParam.InputPaths[0].upper())}}'

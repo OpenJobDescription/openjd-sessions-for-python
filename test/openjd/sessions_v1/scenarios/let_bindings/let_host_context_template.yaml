@@ -1,0 +1,53 @@
+specificationVersion: jobtemplate-2023-09
+name: Let Bindings Host Context Symbols
+extensions:
+  - EXPR
+  - FEATURE_BUNDLE_1
+parameterDefinitions:
+  - name: OutputDir
+    type: PATH
+    default: "/renders"
+steps:
+  - name: ScriptLetWithSession
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: Frame
+          type: INT
+          range: "1-2"
+    stepEnvironments:
+      - name: Setup
+        script:
+          let:
+            - env_work = Session.WorkingDirectory / 'env_output'
+          actions:
+            onEnter:
+              command: python
+              args:
+                - "-c"
+                - |
+                  import os
+                  p = r'{{env_work}}'
+                  assert p.endswith('env_output'), f'bad env_work: {p}'
+                  print(f'ENV_WORK_OK=true')
+    script:
+      let:
+        - work_out = Session.WorkingDirectory / 'output'
+        - frame_path = Param.OutputDir / string(Task.Param.Frame)
+      actions:
+        onRun:
+          command: python
+          args:
+            - "-c"
+            - |
+              import os
+              w = r'{{work_out}}'
+              assert w.endswith('output'), f'bad work_out: {w}'
+              print(f'WORK_OUT_OK=true')
+              print(f'FRAME_PATH={{frame_path}}')
+
+  - name: SimpleActionLetWithSession
+    bash:
+      let:
+        - sa_work = Session.WorkingDirectory / 'simple'
+      script: |
+        echo "SA_WORK_ENDS=$(echo {{repr_sh(sa_work)}} | grep -c 'simple')"

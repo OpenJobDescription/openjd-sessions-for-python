@@ -1,0 +1,22 @@
+# Standalone template - run with: openjd run path_param_mapping_template.yaml -p InputPath=/some/path
+specificationVersion: jobtemplate-2023-09
+name: PATH Parameter Mapping Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: InputPath
+    type: PATH
+    default: "default/input/path"
+steps:
+  - name: TestPathMapping
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo 'Param.InputPath={{repr_json(Param.InputPath)}}'
+              echo 'RawParam.InputPath={{repr_json(RawParam.InputPath)}}'
+              echo 'Param.InputPath.name={{repr_json(Param.InputPath.name)}}'
+              echo 'RawParam.InputPath.upper()={{repr_json(RawParam.InputPath.upper())}}'

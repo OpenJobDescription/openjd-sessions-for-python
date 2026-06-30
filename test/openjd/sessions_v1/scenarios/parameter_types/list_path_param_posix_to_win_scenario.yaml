@@ -1,0 +1,26 @@
+name: "LIST[PATH] parameter with posix-to-windows path mapping"
+description: "Verifies Param.X is list[path] with mapping, RawParam.X is list[string] unmapped"
+
+run_on: windows
+
+job_template_file: "list_path_param_win_to_posix_template.yaml"
+
+job_parameters:
+  InputPaths:
+    - "/home/test/file1.txt"
+    - "/home/test/file2.txt"
+
+path_mapping_rules:
+  - source_path_format: posix
+    source_path: "/home"
+    destination_path: "C:\\Users"
+
+expect:
+  success: true
+  output_contains:
+    - 'Param.InputPaths=["C:\Users\test\file1.txt", "C:\Users\test\file2.txt"]'
+    - 'RawParam.InputPaths=["/home/test/file1.txt", "/home/test/file2.txt"]'
+    - 'Param.InputPaths[0]="C:\Users\test\file1.txt"'
+    - 'RawParam.InputPaths[0]="/home/test/file1.txt"'
+    - 'Param.InputPaths[0].name="file1.txt"'
+    - 'RawParam.InputPaths[0].upper()="/HOME/TEST/FILE1.TXT"'

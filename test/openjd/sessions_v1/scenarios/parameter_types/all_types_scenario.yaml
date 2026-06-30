@@ -1,0 +1,44 @@
+name: "All parameter types basic test"
+description: "Verifies all parameter types work correctly in expressions"
+
+run_on: all
+
+job_template_file: "all_types_template.yaml"
+
+job_parameters:
+  StringParam: "world"
+  IntParam: 100
+  FloatParam: 2.5
+  PathParam: "/test/path/file.txt"
+  BoolParam: false
+  RangeExprParam: "10-15"
+  ListStringParam: ["x", "y", "z"]
+  ListIntParam: [10, 20, 30]
+  ListFloatParam: [1.5, 2.5]
+  ListPathParam: ["/path/a.txt", "/path/b.txt"]
+  ListBoolParam: [false, true]
+  ListListIntParam: [[5, 6], [7, 8, 9]]
+
+expect:
+  success: true
+  output_contains:
+    - "StringParam=world"
+    - "IntParam=100"
+    - "IntParam+1=101"
+    - "FloatParam=2.5"
+    - "PathParam.name=file.txt"
+    - "BoolParam=false"
+    - "RangeExprParam=10-15"
+    - "len-RangeExprParam=6"
+    - "ListStringParam-0=x"
+    - "sum-ListIntParam=60"
+    - "ListPathParam-0-name=a.txt"
+    - "ListListIntParam-0-1=6"
+
+expect_posix:
+  output_contains:
+    - "PathParam=/test/path/file.txt"
+
+expect_windows:
+  output_contains:
+    - "PathParam=\\test\\path\\file.txt"

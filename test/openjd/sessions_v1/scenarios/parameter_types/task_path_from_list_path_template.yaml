@@ -1,0 +1,29 @@
+# Tests PATH task parameter derived from LIST[PATH] job parameter
+specificationVersion: jobtemplate-2023-09
+name: Task Path From List Path Job Param Test
+extensions:
+  - EXPR
+parameterDefinitions:
+  - name: InputDirs
+    type: LIST[PATH]
+    objectType: DIRECTORY
+    dataFlow: IN
+steps:
+  - name: ProcessDirectories
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: MetadataFile
+          type: PATH
+          range: "{{[dir + '/contents.json' for dir in RawParam.InputDirs]}}"
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo Processing directory based on metadata
+              echo Task.Param.MetadataFile={{repr_sh(Task.Param.MetadataFile)}}
+              echo Task.RawParam.MetadataFile={{repr_sh(Task.RawParam.MetadataFile)}}
+              echo Task.Param.MetadataFile.parent={{repr_sh(Task.Param.MetadataFile.parent)}}
+              echo Task.RawParam.MetadataFile.upper={{repr_sh(Task.RawParam.MetadataFile.upper())}}

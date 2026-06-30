@@ -1,0 +1,24 @@
+# Tests PATH task parameter with path mapping rules applied
+specificationVersion: jobtemplate-2023-09
+name: Task Path Parameter Path Mapping Test
+extensions:
+  - EXPR
+steps:
+  - name: TestPathMapping
+    parameterSpace:
+      taskParameterDefinitions:
+        - name: InputFile
+          type: PATH
+          range: ["C:\\Projects\\render\\frame001.exr", "C:\\Projects\\render\\frame002.exr"]
+    script:
+      actions:
+        onRun:
+          command: bash
+          args:
+            - "-c"
+            - |
+              echo Task.Param.InputFile={{repr_sh(Task.Param.InputFile)}}
+              echo Task.RawParam.InputFile={{repr_sh(Task.RawParam.InputFile)}}
+              echo Task.Param.InputFile.parent={{repr_sh(Task.Param.InputFile.parent)}}
+              echo Task.Param.InputFile.name={{repr_sh(Task.Param.InputFile.name)}}
+              echo Task.RawParam.InputFile.upper={{repr_sh(Task.RawParam.InputFile.upper())}}
