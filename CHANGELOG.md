@@ -1,3 +1,13 @@
+## 0.10.10 (2026-07-02)
+
+
+### Features
+* **sessions**: Rust-backed openjd.sessions._v1 via PyO3 (#316) ([`06c30f1`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/06c30f15c43ade9ccd8ecbc6f8883bf010fcd2c9))
+* **sessions-v1**: add Session context-manager protocol; port scenario tests to v1 enum API ([`06c30f1`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/06c30f15c43ade9ccd8ecbc6f8883bf010fcd2c9))
+* enable Claude PR review ([`3c135ea`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/3c135ea747d11688bcbb78606dba919f9ce1e45a))
+
+
+
 ## 0.10.9 (2026-05-25)
 
 
