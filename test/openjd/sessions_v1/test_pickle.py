@@ -19,7 +19,6 @@ import sys
 
 import pytest
 
-
 # ── Group A: enums ───────────────────────────────────────────────
 
 

@@ -19,7 +19,6 @@ from typing import Any, Generator, Optional, Tuple, TYPE_CHECKING
 
 from .._logging import LOG
 
-
 # Capability sets
 CAP_EFFECTIVE = 0
 CAP_PERMITTED = 1

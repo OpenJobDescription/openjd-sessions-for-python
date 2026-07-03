@@ -17,7 +17,6 @@ import win32api
 import pytest
 from getpass import getpass
 
-
 logger = logging.getLogger(__name__)
 
 
