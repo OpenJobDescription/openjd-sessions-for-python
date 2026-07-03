@@ -130,6 +130,7 @@ class TestSessionInitialization:
         assert session._job_parameter_values == job_params
         assert session._job_parameter_values is not job_params
         assert isinstance(session._logger, LoggerAdapter)
+        assert session._logger.extra is not None
         assert "session_id" in session._logger.extra
         assert session._logger.extra["session_id"] == session_id
         assert session._log_filter in LOG.filters
