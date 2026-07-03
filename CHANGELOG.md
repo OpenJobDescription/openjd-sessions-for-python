@@ -1,3 +1,13 @@
+## 0.10.10 (2026-07-03)
+
+
+### Features
+* **sessions**: Rust-backed openjd.sessions._v1 via PyO3 (#316) ([`06c30f1`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/06c30f15c43ade9ccd8ecbc6f8883bf010fcd2c9))
+
+### Bug Fixes
+* only allow basenames for embedded files (#326) ([`0c0bdb5`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/0c0bdb5bbfac1656b9da9b7488877136128cb1b6))
+
+
 ## 0.10.9 (2026-05-25)
 
 
