@@ -74,7 +74,6 @@ from openjd.model._v1.job import (
 )
 from openjd.sessions._v1 import Session, PathMappingRule, SessionState
 
-
 SCENARIOS_DIR = Path(__file__).parent / "scenarios"
 
 
