@@ -66,6 +66,34 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
     return data
 
 
+def _validate_embedded_filename(filename: str) -> None:
+    """Validate that an embedded file's ``filename`` is a single path component
+    (a basename) with no directory pathing, as required by the OpenJD
+    specification (the ``<Filename>`` type).
+
+    This rejects path-traversal vectors -- parent references (``..``), path
+    separators, absolute paths, and (on Windows) drive-letter or UNC prefixes --
+    so that the file is always materialized inside the session directory. The
+    check uses the host operating system's path rules: ``Path(...).name`` is
+    host-flavored, and this runtime always runs on the host that materializes
+    the file. The OS-agnostic, fail-closed check (which cannot know the target
+    fleet's OS) is performed earlier, at job-submission time, by openjd-model;
+    this is the last line of defense before the write.
+
+    Note: pathlib treats ``..`` as a valid single path component (its ``.name``
+    is ``".."``), so it must be rejected explicitly.
+
+    Raises:
+        ValueError: if ``filename`` is not a valid basename.
+    """
+    if not filename or filename in (os.curdir, os.pardir) or Path(filename).name != filename:
+        raise ValueError(
+            f"Embedded file filename {filename!r} must be a basename with no "
+            "directory path components (for example 'script.sh', not "
+            "'dir/script.sh', '../script.sh', or '/abs/script.sh')"
+        )
+
+
 def write_file_for_user(
     filename: Path,
     data: str,
@@ -81,14 +109,25 @@ def write_file_for_user(
     #  O_TRUNC - truncate the file. If we overwrite an existing file, then we
     #            need to clear its contents.
     #  O_BINARY - (Windows only) prevent automatic \n to \r\n conversion
+    #  O_NOFOLLOW - (POSIX only) refuse to open the final path component if it
+    #            is a symbolic link. This prevents a symlink planted at the
+    #            destination (e.g. by the queue-configured job user, which
+    #            shares the session directory) from redirecting this write to a
+    #            file outside the session directory. O_NOFOLLOW only guards the
+    #            final component, so it is paired with the basename validation
+    #            and containment check performed before the write.
     #  O_EXCL (intentionally not present) - fail if file exists
     #    - We exclude this 'cause we expect to be writing the same embedded file
     #      into the same location repeatedly with different contents as we run
     #      multiple Tasks in the same Session.
+    #    - O_NOFOLLOW is used instead of O_EXCL to block symlink redirection
+    #      while still allowing the file to be rewritten across Tasks.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     # On Windows, use O_BINARY to prevent automatic line ending conversion
     # since we handle line endings explicitly via _convert_line_endings
     flags |= getattr(os, "O_BINARY", 0)
+    # O_NOFOLLOW is not defined on Windows; getattr(..., 0) makes this a no-op there.
+    flags |= getattr(os, "O_NOFOLLOW", 0)
     # mode:
     #  S_IRUSR - Read by owner
     #  S_IWUSR - Write by owner
@@ -197,13 +236,15 @@ class EmbeddedFiles:
             for record in records:
                 # Raises: OSError
                 self._materialize_file(record.filename, record.file, symtab)
-        except OSError as err:
-            raise RuntimeError(f"Could not write embedded file: {err}")
         except FormatStringError as err:
             # This should *never* happen. All format string contents are
             # checked when building the Job Template model. If we get here,
             # then something is broken with our model validation.
+            # Note: FormatStringError subclasses ValueError, so it must be
+            # caught before the general (OSError, ValueError) clause below.
             raise RuntimeError(f"Error resolving format string: {str(err)}")
+        except (OSError, ValueError) as err:
+            raise RuntimeError(f"Could not write embedded file: {err}")
 
     def _find_value_prefix(self, file: EmbeddedFileType) -> str:
         """Figure out what prefix to use when referencing the file in format strings.
@@ -245,7 +286,23 @@ class EmbeddedFiles:
             os.close(fd)
             filename = Path(fname)
         else:
+            # Validate that the caller-supplied filename is a basename with no
+            # directory pathing, as required by the OpenJD specification. This
+            # prevents path-traversal writes outside of the session directory
+            # via '..' components, path separators, or absolute/rooted paths.
+            # Raises: ValueError
+            _validate_embedded_filename(file.filename)
             filename = self._target_directory / file.filename
+            # Defense in depth: confirm that the fully-resolved path is still
+            # contained within the target directory. This also rejects the case
+            # where the destination is an existing symlink that resolves to a
+            # location outside of the session directory.
+            # Raises: ValueError, OSError
+            if not filename.resolve().is_relative_to(self._target_directory.resolve()):
+                raise ValueError(
+                    f"Embedded file filename {file.filename!r} resolves to a "
+                    "path outside of the session directory"
+                )
 
         return (f"{self._find_value_prefix(file)}.{file.name}", filename)
 

@@ -22,7 +22,12 @@ from openjd.model.v2023_09 import (
 from openjd.model.v2023_09 import (
     EndOfLine as EndOfLine_2023_09,
 )
-from openjd.sessions._embedded_files import EmbeddedFiles, EmbeddedFilesScope
+from openjd.sessions._embedded_files import (
+    EmbeddedFiles,
+    EmbeddedFilesScope,
+    _validate_embedded_filename,
+    write_file_for_user,
+)
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 
 from .conftest import (
@@ -119,6 +124,115 @@ class TestEmbeddedFiles:
             assert result_symbol == expected_symbol
             assert os.path.exists(result_filename)
             assert result_filename.parent == tmp_path
+
+        def test_allows_dotfile_basename(self, tmp_path: Path) -> None:
+            # A leading-dot basename (e.g. ".bashrc") is a legitimate filename
+            # and must NOT be rejected by the traversal guard.
+
+            # GIVEN
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(),
+                scope=EmbeddedFilesScope.STEP,
+                session_files_directory=tmp_path,
+            )
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                filename=".bashrc",
+                data=DataString_2023_09("some data"),
+            )
+
+            # WHEN
+            _symbol, result_filename = test_obj._get_symtab_entry(test_file)
+
+            # THEN
+            assert result_filename == tmp_path / ".bashrc"
+
+        @pytest.mark.skipif(not is_posix(), reason="symlink semantics are posix-specific")
+        def test_rejects_symlink_escape(self, tmp_path: Path) -> None:
+            # If the destination basename already exists as a symlink that
+            # resolves outside the session directory (e.g. planted by the
+            # queue-configured job user between Tasks), the containment check
+            # must reject it even though the filename itself is a valid basename.
+
+            # GIVEN
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            session_dir = tmp_path / "session"
+            session_dir.mkdir()
+            target = outside / "secret.txt"
+            target.write_text("original")
+            (session_dir / "foo.txt").symlink_to(target)
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(),
+                scope=EmbeddedFilesScope.STEP,
+                session_files_directory=session_dir,
+            )
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                filename="foo.txt",
+                data=DataString_2023_09("some data"),
+            )
+
+            # WHEN / THEN
+            with pytest.raises(ValueError):
+                test_obj._get_symtab_entry(test_file)
+
+        @pytest.mark.skipif(not is_posix(), reason="symlink semantics are posix-specific")
+        def test_materialize_surfaces_rejection_as_runtimeerror(self, tmp_path: Path) -> None:
+            # materialize() must convert the embedded-file ValueError into a
+            # RuntimeError (the contract the script runner catches to fail the
+            # action). Triggered via a model-valid basename ("foo.txt") that is a
+            # symlink escaping the session dir, so it exercises the sessions guard
+            # independently of the openjd-model version, and must not write the
+            # symlink target outside the session directory.
+
+            # GIVEN
+            outside = tmp_path / "outside"
+            outside.mkdir()
+            session_dir = tmp_path / "session"
+            session_dir.mkdir()
+            target = outside / "secret.txt"
+            target.write_text("original")
+            (session_dir / "foo.txt").symlink_to(target)
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(),
+                scope=EmbeddedFilesScope.STEP,
+                session_files_directory=session_dir,
+            )
+            test_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                filename="foo.txt",
+                data=DataString_2023_09("payload"),
+            )
+
+            # WHEN / THEN
+            with pytest.raises(RuntimeError):
+                test_obj.materialize([test_file], SymbolTable())
+            assert target.read_text() == "original"
+
+    @pytest.mark.skipif(not is_posix(), reason="O_NOFOLLOW is posix-specific")
+    class TestWriteFileForUserPosix:
+        """Tests that write_file_for_user() refuses to follow symlinks."""
+
+        def test_refuses_to_follow_symlink(self, tmp_path: Path) -> None:
+            # write_file_for_user must not follow a symlink at the destination
+            # (O_NOFOLLOW), so it cannot be tricked into truncating/overwriting
+            # a file outside the intended location.
+
+            # GIVEN
+            target = tmp_path / "target.txt"
+            target.write_text("original-contents")
+            link = tmp_path / "link.txt"
+            link.symlink_to(target)
+
+            # WHEN / THEN
+            with pytest.raises(OSError):
+                write_file_for_user(link, "overwritten", user=None)
+            # AND the symlink target is untouched
+            assert target.read_text() == "original-contents"
 
     @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
     class TestMaterializeFilePosix:
@@ -777,3 +891,59 @@ class TestEmbeddedFiles:
                 with open(filename, "r") as file:
                     result_contents = file.read()
                 assert result_contents == expected_file_data, "File contents are as expected"
+
+
+class TestValidateEmbeddedFilename:
+    """Unit tests for the _validate_embedded_filename() basename guard.
+
+    The guard is host-flavored, so backslash separators and drive specifiers are
+    only rejected on Windows (a backslash is a legal filename character on
+    POSIX). The OS-agnostic rejection happens earlier, in openjd-model.
+    """
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            pytest.param("foo.txt", id="simple"),
+            pytest.param(".bashrc", id="dotfile"),
+            pytest.param("a_b-c.1", id="punctuation"),
+            pytest.param("café.txt", id="non-ascii"),
+            pytest.param("foo.bar.baz", id="multi-dot"),
+        ],
+    )
+    def test_accepts_valid_basenames(self, filename: str) -> None:
+        # WHEN / THEN (must not raise)
+        _validate_embedded_filename(filename)
+
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            pytest.param("", id="empty"),
+            pytest.param(".", id="dot"),
+            pytest.param("..", id="parent"),
+            pytest.param("../x", id="parent-rel"),
+            pytest.param("a/b", id="sep"),
+            pytest.param("foo/", id="trailing-sep"),
+            pytest.param("/abs", id="absolute"),
+        ],
+    )
+    def test_rejects_non_basenames(self, filename: str) -> None:
+        # WHEN / THEN
+        with pytest.raises(ValueError):
+            _validate_embedded_filename(filename)
+
+    @pytest.mark.skipif(not is_windows(), reason="backslash/drive are separators only on Windows")
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            pytest.param("..\\x", id="windows-parent"),
+            pytest.param("a\\b", id="windows-sep"),
+            pytest.param("C:x", id="drive-relative"),
+            pytest.param("C:\\x", id="drive-absolute"),
+            pytest.param("\\\\srv\\share", id="unc"),
+        ],
+    )
+    def test_rejects_windows_non_basenames(self, filename: str) -> None:
+        # WHEN / THEN
+        with pytest.raises(ValueError):
+            _validate_embedded_filename(filename)
