@@ -1069,3 +1069,211 @@ foreach ($envVar in $allEnvVars) {
             if num_children_running == 0:
                 break
         assert num_children_running == 0
+
+
+@pytest.mark.usefixtures("message_queue", "queue_handler")
+class TestLoggingSubprocessMacOSSetsid:
+    """Tests for the macOS-specific cross-user command construction.
+
+    macOS has no setsid(1), so on darwin the workload is launched under a small
+    pure-Python shim (run via a system-location Python interpreter with -I) that
+    becomes a new session/process-group leader before exec'ing the real command.
+    """
+
+    @pytest.mark.skipif(
+        is_windows(), reason="Constructs a PosixSessionUser, which is rejected on Windows hosts"
+    )
+    def test_builds_setsid_shim_command_on_macos(self, queue_handler: QueueHandler) -> None:
+        # GIVEN
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        logger = build_logger(queue_handler)
+        target_user = MagicMock(spec=PosixSessionUser)
+        target_user.user = "job-user"
+        target_user.is_process_user.return_value = False
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=["/path/to/workload.sh"],
+            user=target_user,
+        )
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod, "is_macos", return_value=True),
+            patch.object(subprocess_mod, "is_posix", return_value=True),
+            patch.object(subprocess_mod, "is_windows", return_value=False),
+            patch.object(
+                subprocess_mod, "_macos_shim_interpreter", return_value="/usr/local/bin/python3"
+            ),
+            patch.object(subprocess_mod, "Popen") as mock_popen,
+        ):
+            subproc._start_subprocess()
+
+        # THEN
+        built_command = mock_popen.call_args.kwargs["args"]
+        assert built_command == [
+            "sudo",
+            "-u",
+            "job-user",
+            "-i",
+            "/usr/local/bin/python3",
+            "-I",
+            "-c",
+            subprocess_mod._MACOS_SETSID_SHIM,
+            "/path/to/workload.sh",
+        ]
+
+    @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
+    def test_setsid_shim_creates_new_process_group(self) -> None:
+        # GIVEN the shim string that macOS uses in place of setsid(1).
+        from subprocess import PIPE, run
+
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        # WHEN we run it (as the current user; no sudo) to report the workload's
+        # process-group id alongside the launching python's own pid.
+        result = run(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                subprocess_mod._MACOS_SETSID_SHIM,
+                "/bin/sh",
+                "-c",
+                "echo $$ $(ps -o pgid= -p $$)",
+            ],
+            stdout=PIPE,
+            text=True,
+            check=True,
+        )
+
+        # THEN the workload is the leader of its own process group (pgid == its pid).
+        workload_pid, workload_pgid = (int(x) for x in result.stdout.split())
+        assert workload_pid == workload_pgid
+
+
+class TestMacOSShimInterpreter:
+    """Tests for _macos_shim_interpreter(), which selects the Python interpreter that runs
+    the setsid shim as the jobRunAsUser, and for the _other_users_can_execute() permission
+    check that backs it."""
+
+    def test_prefers_base_executable(self, tmp_path: Path) -> None:
+        # GIVEN a reachable interpreter behind sys._base_executable
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        interpreter = tmp_path / "python3"
+        interpreter.touch()
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod.sys, "_base_executable", str(interpreter), create=True),
+            patch.object(subprocess_mod, "_other_users_can_execute", return_value=True),
+        ):
+            result = subprocess_mod._macos_shim_interpreter()
+
+        # THEN
+        assert result == str(interpreter.resolve())
+
+    def test_resolves_symlink_to_base_interpreter(self, tmp_path: Path) -> None:
+        # GIVEN _base_executable is a symlink (e.g. a framework/Homebrew shim)
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        real_interpreter = tmp_path / "python3.11"
+        real_interpreter.touch()
+        link = tmp_path / "python3"
+        link.symlink_to(real_interpreter)
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod.sys, "_base_executable", str(link), create=True),
+            patch.object(subprocess_mod, "_other_users_can_execute", return_value=True),
+        ):
+            result = subprocess_mod._macos_shim_interpreter()
+
+        # THEN the symlink is resolved to the real interpreter
+        assert result == str(real_interpreter.resolve())
+
+    def test_uses_sys_executable_when_base_executable_unset(self, tmp_path: Path) -> None:
+        # GIVEN _base_executable is None (not a venv); sys.executable is used instead
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        interpreter = tmp_path / "python3"
+        interpreter.touch()
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod.sys, "_base_executable", None, create=True),
+            patch.object(subprocess_mod.sys, "executable", str(interpreter)),
+            patch.object(subprocess_mod, "_other_users_can_execute", return_value=True),
+        ):
+            result = subprocess_mod._macos_shim_interpreter()
+
+        # THEN
+        assert result == str(interpreter.resolve())
+
+    def test_falls_back_when_base_not_executable_by_others(self, tmp_path: Path) -> None:
+        # GIVEN the base interpreter is not reachable/executable by other users
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        interpreter = tmp_path / "python3"
+        interpreter.touch()
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod.sys, "_base_executable", str(interpreter), create=True),
+            patch.object(subprocess_mod, "_other_users_can_execute", return_value=False),
+        ):
+            result = subprocess_mod._macos_shim_interpreter()
+
+        # THEN
+        assert result == subprocess_mod._MACOS_FALLBACK_SHIM_INTERPRETER
+
+    @pytest.mark.skipif(not is_posix(), reason="POSIX permission-bit semantics")
+    def test_other_users_can_execute_system_binary(self) -> None:
+        # GIVEN a system binary that is world-executable with world-traversable parents
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        # THEN
+        assert subprocess_mod._other_users_can_execute("/bin/sh")
+
+    @pytest.mark.skipif(is_windows(), reason="POSIX permission bits are not honored on Windows")
+    def test_other_users_cannot_execute_without_o_x_bit(self, tmp_path: Path) -> None:
+        # GIVEN a file that other users cannot execute (no o+x bit)
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        interpreter = tmp_path / "python3"
+        interpreter.touch()
+        interpreter.chmod(0o750)
+
+        # THEN
+        assert not subprocess_mod._other_users_can_execute(str(interpreter))
+
+    @pytest.mark.skipif(is_windows(), reason="POSIX permission bits are not honored on Windows")
+    def test_other_users_cannot_execute_behind_private_dir(self, tmp_path: Path) -> None:
+        # GIVEN a world-executable file inside a directory that other users cannot
+        # traverse (e.g. a Python install under a 0o750 home directory)
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        private_dir = tmp_path / "private"
+        private_dir.mkdir()
+        interpreter = private_dir / "python3"
+        interpreter.touch()
+        interpreter.chmod(0o755)
+        private_dir.chmod(0o750)
+
+        # WHEN
+        try:
+            result = subprocess_mod._other_users_can_execute(str(interpreter))
+        finally:
+            # Restore so pytest can clean up tmp_path
+            private_dir.chmod(0o755)
+
+        # THEN
+        assert not result
+
+    def test_other_users_cannot_execute_missing_path(self, tmp_path: Path) -> None:
+        # GIVEN a path that does not exist
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        # THEN
+        assert not subprocess_mod._other_users_can_execute(str(tmp_path / "no-such-python"))

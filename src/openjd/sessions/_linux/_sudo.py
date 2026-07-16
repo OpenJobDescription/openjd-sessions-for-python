@@ -143,6 +143,12 @@ def find_child_process_id_pgrep(
         stdin=DEVNULL,
         text=True,
     )
+    # pgrep exit codes: 0 = one or more processes matched; 1 = no processes matched;
+    # >1 = an actual error (syntax/operational). Exit 1 is NOT an error here -- it just
+    # means sudo has not spawned its child yet, so we return None to let the caller's
+    # retry loop poll again.
+    if pgrep_result.returncode == 1:
+        return None
     if pgrep_result.returncode != 0:
         raise FindSignalTargetError("Unable to query child processes of sudo process")
     results = pgrep_result.stdout.splitlines()

@@ -3,6 +3,7 @@
 import os
 import shlex
 import signal
+import stat
 import sys
 import time
 from contextlib import nullcontext
@@ -16,7 +17,7 @@ from typing import Callable, Literal, Optional, Sequence, cast, Any
 from ._linux._capabilities import try_use_cap_kill
 from ._linux._sudo import find_sudo_child_process_group_id
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
-from ._os_checker import is_linux, is_posix, is_windows
+from ._os_checker import is_linux, is_macos, is_posix, is_windows
 from ._session_user import PosixSessionUser, WindowsSessionUser, SessionUser
 from ._action_filter import redact_openjd_redacted_env_requests
 
@@ -27,6 +28,84 @@ if is_windows():  # pragma: nocover
 
 
 __all__ = ("LoggingSubprocess",)
+
+# macOS has no `setsid(1)` binary (it is a Linux/util-linux tool), yet the new-session
+# behavior it provides is still required: `sudo -u <user> -i <cmd>` places the workload in
+# sudo's own (root-owned) process group, which the jobRunAsUser cannot signal and which
+# openjd must not signal (it would hit the root sudo process). We reproduce `setsid` with a
+# tiny pure-Python shim, run as the workload, that makes the workload a new session/process-
+# group leader and then exec's the real command.
+#
+# Details:
+#   * `os.getpgrp() == os.getpid() or os.setsid()` calls setsid() only when the process is
+#     NOT already a group leader; os.setsid() raises EPERM if the caller already leads a
+#     group, so the short-circuit avoids that. Either way the workload ends up in a process
+#     group distinct from sudo's, which find_sudo_child_process_group_id() then discovers.
+#   * Single line (no newlines) so it passes cleanly through `sudo -i` argv without any
+#     shell-quoting fragility.
+#   * The interpreter that runs the shim is the base interpreter behind the one running this
+#     process (see _macos_shim_interpreter()), falling back to /usr/bin/python3. sys.executable
+#     itself is not used directly because it may live inside a virtual environment that the
+#     jobRunAsUser has no traverse/read permission on.
+#   * `-I` (isolated mode) drops the current working directory from sys.path and ignores
+#     PYTHON* environment variables, so a file such as os.py in the session working directory
+#     cannot be imported ahead of the standard library before os.execvp() runs.
+#
+# Signal-target discovery (find_sudo_child_process_group_id) locates the workload by walking
+# sudo's single child and comparing process groups. This relies on `sudo -i` exec'ing the
+# command into a single child rather than leaving extra long-lived processes in between; the
+# same assumption already holds for the Linux `setsid -w` path.
+_MACOS_SETSID_SHIM = (
+    "import os,sys;os.getpgrp()==os.getpid() or os.setsid();os.execvp(sys.argv[1],sys.argv[1:])"
+)
+_MACOS_FALLBACK_SHIM_INTERPRETER = "/usr/bin/python3"
+
+
+def _other_users_can_execute(path: str) -> bool:
+    """Returns whether an arbitrary other user can execute the file at the given path based
+    on the world (other) permission bits: the file itself must be o+x and every directory on
+    the path must be o+x (traversable). A world-executable file under e.g. a 0o750 home
+    directory is still unreachable, so both checks are required.
+
+    This is a conservative approximation: it ignores group permissions and ACLs that might
+    also grant access, so it can return False for a path some specific user could execute.
+    """
+    try:
+        mode = os.stat(path).st_mode
+        if not (stat.S_ISREG(mode) and mode & stat.S_IXOTH):
+            return False
+        parent = os.path.dirname(path)
+        while True:
+            if not os.stat(parent).st_mode & stat.S_IXOTH:
+                return False
+            next_parent = os.path.dirname(parent)
+            if next_parent == parent:  # reached the filesystem root
+                return True
+            parent = next_parent
+    except OSError:
+        return False
+
+
+def _macos_shim_interpreter() -> str:
+    """Returns the path of the Python interpreter used to run _MACOS_SETSID_SHIM as the
+    jobRunAsUser.
+
+    Prefers the base interpreter behind the one running this process (sys._base_executable;
+    for a virtual environment this is the interpreter the venv was created from, in a system
+    location such as /usr/bin, /opt/homebrew, or a python.org framework install) so that no
+    separate Python installation is required on the host. The venv's own sys.executable is
+    not suitable: the jobRunAsUser typically has no traverse/read permission on the agent's
+    venv directory.
+
+    Falls back to /usr/bin/python3 (the Command Line Tools shim; requires the Command Line
+    Tools or Xcode to be installed) when the base interpreter cannot be determined or is not
+    reachable and executable by other users.
+    """
+    base = os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable)
+    if _other_users_can_execute(base):
+        return base
+    return _MACOS_FALLBACK_SHIM_INTERPRETER
+
 
 # ========================================================================
 # ========================================================================
@@ -257,7 +336,29 @@ class LoggingSubprocess(object):
                         # same process group as the `sudo` command. If that happens, then
                         # we're stuck: 1/ Our user cannot kill processes by the self._user; and
                         # 2/ The self._user cannot kill the root-owned sudo process group.
-                        command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
+                        if is_macos():
+                            # macOS has no setsid(1); use a pure-Python setsid shim (see
+                            # _MACOS_SETSID_SHIM) run as the workload to get the same
+                            # new-session behavior that `setsid -w` provides on Linux.
+                            shim_interpreter = _macos_shim_interpreter()
+                            self._logger.info(
+                                f"Using {shim_interpreter} to run the setsid shim",
+                                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                            )
+                            command.extend(
+                                [
+                                    "sudo",
+                                    "-u",
+                                    user.user,
+                                    "-i",
+                                    shim_interpreter,
+                                    "-I",
+                                    "-c",
+                                    _MACOS_SETSID_SHIM,
+                                ]
+                            )
+                        else:
+                            command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
                 elif is_windows():
                     user = cast(WindowsSessionUser, self._user)  # type: ignore
 

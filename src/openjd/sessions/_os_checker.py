@@ -21,6 +21,10 @@ def is_windows() -> bool:
     return os.name == WINDOWS
 
 
+def is_macos() -> bool:
+    return sys.platform == MACOS
+
+
 def check_os() -> None:
     if not (is_posix() or is_windows()):
         raise NotImplementedError(

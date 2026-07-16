@@ -3,7 +3,7 @@
 import unittest
 from enum import Enum
 from unittest.mock import patch
-from openjd.sessions._os_checker import is_posix, is_windows, check_os
+from openjd.sessions._os_checker import is_macos, is_posix, is_windows, check_os
 
 
 class OSName(str, Enum):
@@ -31,6 +31,16 @@ class TestOSChecker(unittest.TestCase):
     def test_is_not_windows(self, mock_os):
         mock_os.name = OSName.POSIX
         self.assertFalse(is_windows())
+
+    @patch("openjd.sessions._os_checker.sys")
+    def test_is_macos(self, mock_sys):
+        mock_sys.platform = "darwin"
+        self.assertTrue(is_macos())
+
+    @patch("openjd.sessions._os_checker.sys")
+    def test_is_not_macos(self, mock_sys):
+        mock_sys.platform = "linux"
+        self.assertFalse(is_macos())
 
     @patch("openjd.sessions._os_checker.os")
     def test_check_os_posix(self, mock_os):

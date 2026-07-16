@@ -234,6 +234,15 @@ with passwordless `sudo` by, for example, adding a rule like follows to your
 host ALL=(actions) NOPASSWD: ALL
 ```
 
+On MacOS, the impersonated command is launched under a small Python shim because macOS
+lacks the `setsid(1)` utility. The shim runs with the base interpreter behind the Python
+that is running this library (for a virtual environment, the interpreter the venv was
+created from) provided that interpreter is reachable and executable by other users;
+otherwise it falls back to the operating system's `/usr/bin/python3`, which resolves to a
+working interpreter only when the Xcode Command Line Tools (or Xcode) are present
+(`xcode-select --install`). No separate Python installation is required when the base
+interpreter is usable.
+
 #### Impersonating a User: Windows Systems
 
 To run an impersonated Session on Windows Systems modify the "Running a Session" example
