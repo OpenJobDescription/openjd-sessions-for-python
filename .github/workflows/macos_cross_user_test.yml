@@ -1,0 +1,169 @@
+name: macOS Cross-User Tests
+
+# Runs the POSIX user-impersonation tests (which xfail when the OPENJD_TEST_SUDO_*
+# environment variables are unset) on a macOS runner. This exercises the real
+# `sudo -u <user> -i <python> -I -c <setsid shim>` cross-user path end to end:
+# process launch as another user, new-process-group creation, signalling, and
+# process-tree termination.
+#
+# The runner's passwordless sudo is used to provision the same user/group layout
+# that testing_containers/localuser_sudo_environment/Dockerfile creates for Linux:
+#   runner       -- runs the pytests (member of the shared group)
+#   openjd-target -- the impersonated user (member of the shared group)
+#   openjd-disjoint -- a user with no group in common (temp-dir permission tests)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ mainline, release ]
+    paths:
+      - 'src/openjd/sessions/_subprocess.py'
+      - 'src/openjd/sessions/_linux/_sudo.py'
+      - 'src/openjd/sessions/_os_checker.py'
+      - 'src/openjd/sessions/_tempdir.py'
+      - '.github/workflows/macos_cross_user_test.yml'
+
+env:
+  OPENJD_TEST_SUDO_TARGET_USER: openjd-target
+  OPENJD_TEST_SUDO_SHARED_GROUP: openjd-shared
+  OPENJD_TEST_SUDO_DISJOINT_USER: openjd-disjoint
+  OPENJD_TEST_SUDO_DISJOINT_GROUP: openjd-disjointgrp
+  # Hatch's default data dir is under ~/Library, which other users cannot traverse.
+  # The impersonation tests execute the hatch venv's python as the target user, so
+  # the venv must live somewhere world-traversable.
+  HATCH_DATA_DIR: /opt/hatch
+  # macOS's default per-user temp dir (/var/folders/<hash>/T, mode 700) is not
+  # traversable by the impersonated user, and /var is a symlink to /private/var
+  # (which TempDir resolves but gettempdir() does not). Use a dedicated
+  # world-writable, already-resolved temp root instead, which matches the /tmp
+  # semantics the impersonation tests get on Linux. Created during provisioning
+  # owned by runner:staff because BSD filesystems give new files the GROUP OF THE
+  # PARENT DIRECTORY (not the creator's gid), and the same-user TempDir test
+  # asserts the created directory has the creating process's gid.
+  TMPDIR: /private/tmp/openjd-tests
+
+jobs:
+  macos-cross-user:
+    name: Python ${{ matrix.python-version }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Provision test users and groups
+        run: |
+          set -euxo pipefail
+
+          # Groups
+          sudo dseditgroup -o create "${OPENJD_TEST_SUDO_SHARED_GROUP}"
+          sudo dseditgroup -o create "${OPENJD_TEST_SUDO_DISJOINT_GROUP}"
+
+          # Target user: impersonated by the tests; shares a group with runner
+          sudo sysadminctl -addUser "${OPENJD_TEST_SUDO_TARGET_USER}" \
+            -fullName "OpenJD Test Target" -password "OpenJD-ci-test-1!" -shell /bin/zsh
+          sudo createhomedir -c -u "${OPENJD_TEST_SUDO_TARGET_USER}" > /dev/null
+          sudo dseditgroup -o edit -a "${OPENJD_TEST_SUDO_TARGET_USER}" -t user "${OPENJD_TEST_SUDO_SHARED_GROUP}"
+          # Linux useradd gives every user a self-named group, and
+          # test_cleanup_posix_user chowns to "user:user"; macOS does not, so
+          # create the self-named group explicitly. runner must NOT be a member.
+          sudo dseditgroup -o create "${OPENJD_TEST_SUDO_TARGET_USER}"
+          sudo dseditgroup -o edit -a "${OPENJD_TEST_SUDO_TARGET_USER}" -t user "${OPENJD_TEST_SUDO_TARGET_USER}"
+
+          # Disjoint user: NO group in common with runner
+          sudo sysadminctl -addUser "${OPENJD_TEST_SUDO_DISJOINT_USER}" \
+            -fullName "OpenJD Test Disjoint" -password "OpenJD-ci-test-1!" -shell /bin/zsh
+          sudo createhomedir -c -u "${OPENJD_TEST_SUDO_DISJOINT_USER}" > /dev/null
+          sudo dseditgroup -o edit -a "${OPENJD_TEST_SUDO_DISJOINT_USER}" -t user "${OPENJD_TEST_SUDO_DISJOINT_GROUP}"
+
+          # The test-running user joins the shared group (matches the Docker layout)
+          sudo dseditgroup -o edit -a runner -t user "${OPENJD_TEST_SUDO_SHARED_GROUP}"
+
+          # Passwordless sudo from runner to the target user (and itself), mirroring
+          # the hostuser rule in the Linux test container
+          echo "runner ALL=(${OPENJD_TEST_SUDO_TARGET_USER},runner) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/openjd-cross-user-tests
+          sudo chmod 440 /etc/sudoers.d/openjd-cross-user-tests
+          sudo visudo -cf /etc/sudoers.d/openjd-cross-user-tests
+
+          # test_basic_operation runs a bare `python` as the target user via
+          # `sudo -i`; macOS ships python3 only, so provide the alias.
+          sudo mkdir -p /usr/local/bin
+          sudo ln -sf /usr/bin/python3 /usr/local/bin/python
+
+          # Flush Directory Services caches so the new users/groups resolve
+          sudo dscacheutil -flushcache
+
+          # World-writable temp root for the tests (see TMPDIR at the top of the file)
+          sudo mkdir -p "${TMPDIR}"
+          sudo chown runner:staff "${TMPDIR}"
+          sudo chmod 1777 "${TMPDIR}"
+
+      - name: Verify provisioning
+        run: |
+          set -euxo pipefail
+          id "${OPENJD_TEST_SUDO_TARGET_USER}"
+          id "${OPENJD_TEST_SUDO_DISJOINT_USER}"
+          id runner
+          # The isolation invariant the tests rely on: runner and the target user
+          # share OPENJD_TEST_SUDO_SHARED_GROUP; the disjoint user shares nothing.
+          id -Gn runner | tr ' ' '\n' | grep -qx "${OPENJD_TEST_SUDO_SHARED_GROUP}"
+          id -Gn "${OPENJD_TEST_SUDO_TARGET_USER}" | tr ' ' '\n' | grep -qx "${OPENJD_TEST_SUDO_SHARED_GROUP}"
+          if id -Gn "${OPENJD_TEST_SUDO_DISJOINT_USER}" | tr ' ' '\n' | grep -qx "${OPENJD_TEST_SUDO_SHARED_GROUP}"; then
+            echo "disjoint user must not be in the shared group" && exit 1
+          fi
+          # Cross-user execution works at all
+          sudo -u "${OPENJD_TEST_SUDO_TARGET_USER}" -i /usr/bin/true
+          sudo -u "${OPENJD_TEST_SUDO_TARGET_USER}" -i python -c 'import getpass; print("bare python runs as", getpass.getuser())'
+
+      - name: Install hatch
+        run: |
+          sudo mkdir -p "${HATCH_DATA_DIR}"
+          sudo chown runner "${HATCH_DATA_DIR}"
+          pip install hatch
+
+      - name: Create test environment
+        run: |
+          set -euxo pipefail
+          hatch env create
+          # The target user executes the venv python and reads test support files;
+          # make the venv and the workspace world-readable/traversable.
+          chmod -R o+rX "${HATCH_DATA_DIR}" "${GITHUB_WORKSPACE}"
+
+      - name: Report which interpreter the setsid shim resolves to
+        # NOTE: no braces in this inline script -- hatch run applies its own
+        # {...} template substitution to the arguments it receives.
+        run: |
+          hatch run python -c "
+          from openjd.sessions._subprocess import _macos_shim_interpreter, _MACOS_FALLBACK_SHIM_INTERPRETER
+          picked = _macos_shim_interpreter()
+          branch = 'FALLBACK' if picked == _MACOS_FALLBACK_SHIM_INTERPRETER else 'BASE-INTERPRETER'
+          print('shim interpreter:', picked, '(' + branch + ' branch)')
+          "
+
+      - name: Run cross-user impersonation tests
+        run: |
+          set -euxo pipefail
+          # -rxX lists (x)failed and (X)passed-unexpectedly tests in the summary so the
+          # next step can assert nothing silently xfailed back to a no-op.
+          hatch run test -- test/openjd/sessions_v0/test_subprocess.py test/openjd/sessions_v0/test_tempdir.py \
+            --no-cov -rxX 2>&1 | tee pytest-cross-user.log
+
+      - name: Assert impersonation tests actually ran
+        run: |
+          set -euxo pipefail
+          # If the OPENJD_TEST_SUDO_* wiring regresses, the impersonation tests xfail
+          # with this message instead of failing the job -- catch that here.
+          if grep -q "Must define environment vars OPENJD_TEST_SUDO" pytest-cross-user.log; then
+            echo "Impersonation tests were skipped (env vars not picked up); provisioning is broken."
+            exit 1
+          fi
+
+      - name: Run remaining tests
+        run: hatch run test -- --ignore test/openjd/sessions_v0/test_subprocess.py --ignore test/openjd/sessions_v0/test_tempdir.py --no-cov
