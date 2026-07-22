@@ -209,6 +209,23 @@ class EmbeddedFiles:
         self._user = user
 
     def materialize(self, files: EmbeddedFilesListType, symtab: SymbolTable) -> None:
+        records = self.allocate_file_paths(files, symtab)
+        self.write_file_contents(records, symtab)
+
+    def allocate_file_paths(
+        self, files: EmbeddedFilesListType, symtab: SymbolTable
+    ) -> list[_FileRecord]:
+        """Allocate the on-disk paths for the embedded files and define their
+        ``Env.File.*``/``Task.File.*`` symbols in ``symtab``, without writing
+        the file contents.
+
+        Splitting allocation from :meth:`write_file_contents` lets the runner
+        evaluate EXPR ``let`` bindings between the two phases (RFC 0007): a
+        file's *path* never depends on ``let`` values (``filename`` is a plain
+        string), so the ``Env.File.*``/``Task.File.*`` symbols are available
+        to the bindings, while a file's ``data`` is written afterwards so it
+        can reference let-bound values. Mirrors the openjd-rs runners.
+        """
         if self._scope == EmbeddedFilesScope.ENV:
             self._logger.info("Writing embedded files for Environment to disk.")
         else:
@@ -222,17 +239,28 @@ class EmbeddedFiles:
                 symbol, filename = self._get_symtab_entry(file)
                 records.append(_FileRecord(symbol=symbol, filename=filename, file=file))
 
-            # Add symbols to the symbol table
+            # Add symbols to the symbol table. For EXPR evaluation the
+            # Env.File.*/Task.File.* symbols are host-format path values
+            # (property access like `.parent` works), matching openjd-rs;
+            # the legacy (non-EXPR) interpolation path ignores the type and
+            # keeps the string form.
             for record in records:
                 symtab[record.symbol] = str(record.filename)
+                symtab.expr_types[record.symbol] = "PATH"
                 self._logger.info(
                     f"Mapping: {record.symbol} -> {record.filename}",
                     extra=LogExtraInfo(
                         openjd_log_content=LogContent.FILE_PATH | LogContent.PARAMETER_INFO
                     ),
                 )
+            return records
+        except (OSError, ValueError) as err:
+            raise RuntimeError(f"Could not write embedded file: {err}")
 
-            # Write the files to disk.
+    def write_file_contents(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
+        """Resolve each allocated file's ``data`` against ``symtab`` and write
+        it to disk. See :meth:`allocate_file_paths`."""
+        try:
             for record in records:
                 # Raises: OSError
                 self._materialize_file(record.filename, record.file, symtab)

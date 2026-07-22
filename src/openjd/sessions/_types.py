@@ -20,6 +20,14 @@ StepScriptModel = StepScript_2023_09
 EnvironmentModel = Environment_2023_09
 EnvironmentScriptModel = EnvironmentScript_2023_09
 
+# Default notifyPeriodInSeconds for a NOTIFY_THEN_TERMINATE cancelation
+# when the action omits the field (2023-09 Template Schemas 5.3.2).
+TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS = 120
+"""Default notify period for a Step Script's onRun action."""
+ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS = 30
+"""Default notify period for any other action (e.g. an Environment's
+onEnter/onExit)."""
+
 
 class ActionState(str, Enum):
     RUNNING = "running"
