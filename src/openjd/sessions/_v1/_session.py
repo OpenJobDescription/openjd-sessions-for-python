@@ -186,7 +186,7 @@ class Session:
             while True:
                 state = self._rust_session.state
                 status = self._rust_session.action_status
-                if state == SessionState.RUNNING:
+                if state in (SessionState.RUNNING, SessionState.CANCELING):
                     if status is not None and self._callback:
                         if not reported_running:
                             # Defensive: the synchronous initial callback
@@ -201,7 +201,7 @@ class Session:
                             self._callback(self._session_id, status)
                     time.sleep(0.05)
                     continue
-                # Not RUNNING anymore — action is done.
+                # Not RUNNING/CANCELING anymore — action is done.
                 # If we never saw RUNNING (e.g. Rust finished before we got here),
                 # still report the RUNNING transition first, so the agent state
                 # machine sees Start → End in order.
