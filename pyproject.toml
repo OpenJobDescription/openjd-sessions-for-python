@@ -31,6 +31,11 @@ classifiers = [
   "Topic :: Software Development :: Libraries"
 ]
 dependencies = [
+  # NOTE (version-skew guard): this branch requires openjd-model features that
+  # only exist as of openjd-model-for-python PR #318 (FormatString.resolve_value,
+  # FormatString.whole_field_expression, evaluate_let_bindings, Step.let).
+  # Before release, bump the version floor below to the first openjd-model
+  # release that includes PR #318's surface.
   "openjd-model >= 0.10,< 0.12",
   "pywin32 >= 307; platform_system == 'Windows'",
   "psutil >= 5.9,< 7.3; platform_system == 'Windows'",

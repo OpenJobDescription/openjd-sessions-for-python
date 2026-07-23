@@ -38,12 +38,17 @@ from openjd.model.v2023_09 import (
     ValueReferenceConstants as ValueReferenceConstants_2023_09,
 )
 from ._action_filter import ActionMessageKind, ActionMonitoringFilter
-from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, write_file_for_user
+from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, _FileRecord, write_file_for_user
 from ._logging import LOG, log_section_banner, LoggerAdapter, LogExtraInfo, LogContent
 from ._os_checker import is_posix, is_windows
 from ._path_mapping import PathMappingRule
-from ._runner_base import ScriptRunnerBase, apply_let_bindings, resolve_effective_cancelation
-from ._runner_env_script import EnvironmentScriptRunner
+from ._runner_base import (
+    ScriptRunnerBase,
+    apply_let_bindings,
+    resolve_effective_cancelation,
+    resolve_optional_int_field,
+)
+from ._runner_env_script import EnvironmentScriptRunner, WRAP_HOOK_ACTION_NAMES
 from ._runner_step_script import StepScriptRunner
 from ._session_user import SessionUser
 from ._subprocess import LoggingSubprocess
@@ -54,6 +59,7 @@ from ._types import (
     ActionState,
     EnvironmentIdentifier,
     EnvironmentModel,
+    EnvironmentScriptModel,
     StepScriptModel,
 )
 from ._version import version
@@ -163,6 +169,13 @@ class SimplifiedEnvironmentVariableChanges:
             else:
                 raise ValueError("Unknown type of environment variable change.")
 
+    def effective_items(self) -> dict[str, Optional[str]]:
+        """The effective session-defined variables for this environment, in
+        insertion order: the declarative ``variables:`` map seed plus any
+        openjd_env stdout sets/unsets applied so far (``None`` = unset).
+        Returns a copy; mutating it does not affect this object."""
+        return dict(self._to_set)
+
     def apply_to_environment(self, env_vars: dict[str, Optional[str]]) -> None:
         """Modify a given dictionary of environment variables to reflect the changes"""
         if is_windows():
@@ -263,6 +276,15 @@ class Session(object):
 
     _created_env_vars: dict[EnvironmentIdentifier, SimplifiedEnvironmentVariableChanges]
     """OS environment variables defined by Open Job Description Environments
+    """
+
+    _wrap_env_file_records: dict[EnvironmentIdentifier, list["_FileRecord"]]
+    """RFC 0008: per wrap environment, the embedded-file records whose on-disk
+    paths were allocated on the environment's first wrap-hook invocation and
+    are reused for every subsequent invocation — so the ``Env.File.*`` symbols
+    stay stable across tasks and unnamed files do not accumulate on disk. The
+    file *contents* are still re-resolved and rewritten per invocation by the
+    runner (a file's ``data`` may reference ``WrappedAction.*``).
     """
 
     _log_filter: Filter
@@ -401,11 +423,17 @@ class Session(object):
         # (e.g. the owning step's step-level bindings), re-applied when the
         # environment exits so its onExit resolves in the same scope.
         self._environment_extra_let_bindings: dict[EnvironmentIdentifier, list[str]] = dict()
+        # The owning step's name supplied when an environment was entered
+        # (seeds Step.Name, RFC 0007 EXPR), re-seeded when the environment
+        # exits so the re-applied extra `let` bindings resolve in the same
+        # scope.
+        self._environment_step_names: dict[EnvironmentIdentifier, str] = dict()
         self._environments_entered = list()
         self._runner = None
         self._running_environment_identifier = None
         self._process_env = dict(os_env_vars) if os_env_vars else dict()
         self._created_env_vars = dict()
+        self._wrap_env_file_records = dict()
         self._retain_working_dir = retain_working_dir
         self._user = user
         self._job_parameter_values = dict(job_parameter_values) if job_parameter_values else dict()
@@ -630,6 +658,32 @@ class Session(object):
 
         self._runner.cancel(time_limit=time_limit, mark_action_failed=mark_action_failed)
 
+    def _make_env_script_runner(
+        self,
+        *,
+        environment_script: Optional[EnvironmentScriptModel],
+        os_env_vars: dict[str, Optional[str]],
+        symtab: SymbolTable,
+        preallocated_file_records: Optional[list[_FileRecord]] = None,
+    ) -> EnvironmentScriptRunner:
+        """Construct an :class:`EnvironmentScriptRunner` with this Session's
+        standard wiring (logger, user, working/files directories, and action
+        callback). Only the script, subprocess environment, symbol table, and
+        (for wrap hooks) pre-allocated embedded-file records vary between the
+        call sites."""
+        return EnvironmentScriptRunner(
+            logger=self._logger,
+            user=self._user,
+            os_env_vars=os_env_vars,
+            session_working_directory=self.working_directory,
+            startup_directory=self.working_directory,
+            callback=self._action_callback,
+            environment_script=environment_script,
+            symtab=symtab,
+            session_files_directory=self.files_directory,
+            preallocated_file_records=preallocated_file_records,
+        )
+
     def enter_environment(
         self,
         *,
@@ -637,6 +691,7 @@ class Session(object):
         identifier: Optional[EnvironmentIdentifier] = None,
         os_env_vars: Optional[dict[str, str]] = None,
         extra_let_bindings: Optional[list[str]] = None,
+        step_name: Optional[str] = None,
     ) -> EnvironmentIdentifier:
         """Enters an Open Job Description Environment within this Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -662,6 +717,13 @@ class Session(object):
                 (``Step.let`` on the instantiated Job) so both can reference
                 them — the v0 counterpart of the per-step resolved symbol
                 table that openjd-rs threads into enter_environment.
+            step_name (Optional[str]): The name of the step whose
+                stepEnvironments are being entered, if any. Seeds
+                ``Step.Name`` (RFC 0007 EXPR) into the symbol table before
+                the extra ``let`` bindings evaluate, so step-level bindings
+                and the environment's variables and actions can reference
+                it — openjd-rs threads a per-step resolved symbol table into
+                environment entry, and this is the v0 counterpart.
 
         Returns:
             EnvironmentIdentifier: An identifier by which the Environment is known by to this Session.
@@ -698,16 +760,41 @@ class Session(object):
         self._environments[identifier] = environment
         if extra_let_bindings:
             self._environment_extra_let_bindings[identifier] = list(extra_let_bindings)
+        if step_name is not None:
+            self._environment_step_names[identifier] = step_name
         self._environments_entered.append(identifier)
         self._running_environment_identifier = identifier
 
         symtab = self._symbol_table(environment.revision)
 
+        # RFC 0007 §7.3.1 (EXPR): the owning step's name. Only EXPR templates
+        # pass validation referencing Step.Name, so seeding it when known does
+        # not change non-EXPR behavior. Seeded before the extra `let` bindings
+        # evaluate so a step-level binding may reference it.
+        if step_name is not None:
+            symtab["Step.Name"] = step_name
+
         # Step-level `let` bindings (RFC 0007) accompany a step's
         # environments: evaluate them first so the environment's variables
         # and actions can reference them.
         if extra_let_bindings:
-            apply_let_bindings(symtab=symtab, let_bindings=extra_let_bindings)
+            try:
+                apply_let_bindings(symtab=symtab, let_bindings=extra_let_bindings)
+            except ValueError as e:
+                # ExpressionError and FormatStringError subclass ValueError:
+                # a binding failed to evaluate (e.g. it referenced an
+                # undefined symbol). Fail the action through the normal
+                # failure path rather than raising out of the public API —
+                # the environment stays in the entered list, exactly as when
+                # a failing onEnter subprocess leaves it, so the caller's
+                # cleanup exits it as usual.
+                self._created_env_vars[identifier] = SimplifiedEnvironmentVariableChanges(
+                    dict[str, str]()
+                )
+                self._fail_action_before_start(
+                    f"Failed to evaluate the extra `let` bindings for {environment.name}: {e}"
+                )
+                return identifier
 
         # Note: the environment script's own EXPR `let` bindings (RFC 0007)
         # are evaluated by the script runner, after embedded-file paths are
@@ -772,58 +859,45 @@ class Session(object):
             wrap_env = None
 
         if wrap_env is not None:
-            try:
-                # The wrapped onEnter resolves against the INNER environment's
-                # own scope — its `let` bindings and embedded files, built on
-                # a COPY of the session table so the hook's own scope never
-                # sees them (openjd-rs #277). The hook itself resolves against
-                # `symtab`; its own script's lets/files are evaluated by the
-                # script runner from wrap_env.script.
-                inner_script = environment.script
-                inner_symtab = self._build_wrapped_inner_scope(
-                    EmbeddedFilesScope.ENV,
-                    getattr(inner_script, "let", None) if inner_script else None,
-                    inner_script.embeddedFiles if inner_script is not None else None,
-                    symtab,
-                )
-                self._inject_wrapped_env_symbols(
+            # The wrapped onEnter resolves against the INNER environment's
+            # own scope; the hook itself resolves against `symtab`, and its
+            # own script's lets/files are evaluated by the script runner
+            # from wrap_env.script (see _try_inject_wrapped_symbols). On
+            # failure the environment stays in the entered list, exactly as
+            # when enter() itself fails, so the caller's cleanup exits it
+            # as usual.
+            if not self._try_inject_wrapped_symbols(
+                scope=EmbeddedFilesScope.ENV,
+                inner_script=environment.script,
+                symtab=symtab,
+                inject=lambda inner_symtab: self._inject_wrapped_env_symbols(
                     symtab, environment, on_enter_action, inner_symtab=inner_symtab
-                )
-            except (FormatStringError, ValueError, RuntimeError) as e:
-                # e.g. the wrapped onEnter's inner scope failed to build (a
-                # `let` binding or embedded file did not resolve or write).
-                # Fail the action through the normal failure path — the
-                # environment stays in the entered list, exactly as when
-                # enter() itself fails, so the caller's cleanup exits it as
-                # usual.
-                self._fail_action_before_start(
+                ),
+                fail_message=(
                     f"Failed to resolve the wrapped onEnter action of "
-                    f"{environment.name} for {wrap_env.name}'s onWrapEnvEnter: {e}"
+                    f"{environment.name} for {wrap_env.name}'s onWrapEnvEnter"
+                ),
+            ):
+                return identifier
+            try:
+                wrap_file_records = self._get_wrap_env_file_records(wrap_env)
+            except RuntimeError as e:
+                self._fail_action_before_start(
+                    f"Failed to allocate embedded files for {wrap_env.name}: {e}"
                 )
                 return identifier
-            self._runner = EnvironmentScriptRunner(
-                logger=self._logger,
-                user=self._user,
-                os_env_vars=action_env_vars,
-                session_working_directory=self.working_directory,
-                startup_directory=self.working_directory,
-                callback=self._action_callback,
+            self._runner = self._make_env_script_runner(
                 environment_script=wrap_env.script,
+                os_env_vars=action_env_vars,
                 symtab=symtab,
-                session_files_directory=self.files_directory,
+                preallocated_file_records=wrap_file_records,
             )
             self._runner.wrap_env_enter()
         else:
-            self._runner = EnvironmentScriptRunner(
-                logger=self._logger,
-                user=self._user,
-                os_env_vars=action_env_vars,
-                session_working_directory=self.working_directory,
-                startup_directory=self.working_directory,
-                callback=self._action_callback,
+            self._runner = self._make_env_script_runner(
                 environment_script=environment.script,
+                os_env_vars=action_env_vars,
                 symtab=symtab,
-                session_files_directory=self.files_directory,
             )
             self._runner.enter()
 
@@ -893,18 +967,37 @@ class Session(object):
         # Remove the environment from our tracking since we're now exiting it.
         del self._environments[identifier]
         self._environments_entered.pop()
+        # RFC 0008: drop any embedded-file records reused across this (wrap)
+        # environment's hook invocations; the files themselves live in the
+        # session directory and are cleaned up with it.
+        self._wrap_env_file_records.pop(identifier, None)
 
         self._running_environment_identifier = identifier
 
         symtab = self._symbol_table(environment.revision)
         self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
 
-        # Re-apply the extra `let` bindings this environment was entered with
+        # Re-seed the owning step's name (Step.Name, RFC 0007 EXPR) and
+        # re-apply the extra `let` bindings this environment was entered with
         # (e.g. the owning step's step-level bindings, RFC 0007) so its onExit
         # resolves in the same scope as its onEnter.
+        exit_step_name = self._environment_step_names.pop(identifier, None)
+        if exit_step_name is not None:
+            symtab["Step.Name"] = exit_step_name
         exit_extra_let_bindings = self._environment_extra_let_bindings.pop(identifier, None)
         if exit_extra_let_bindings:
-            apply_let_bindings(symtab=symtab, let_bindings=exit_extra_let_bindings)
+            try:
+                apply_let_bindings(symtab=symtab, let_bindings=exit_extra_let_bindings)
+            except ValueError as e:
+                # ExpressionError and FormatStringError subclass ValueError:
+                # a binding failed to evaluate. Fail the action through the
+                # normal failure path rather than raising out of the public
+                # API — the environment was already removed from tracking
+                # above, matching how a failing onExit subprocess leaves it.
+                self._fail_action_before_start(
+                    f"Failed to evaluate the extra `let` bindings for {environment.name}: {e}"
+                )
+                return
 
         # Note: the environment script's own EXPR `let` bindings (RFC 0007)
         # are evaluated by the script runner (after embedded-file path
@@ -933,58 +1026,45 @@ class Session(object):
         )
 
         if wrap_env is not None:
-            try:
-                # See the onWrapEnvEnter path: the wrapped onExit resolves
-                # against the INNER environment's own scope (its lets and
-                # embedded files) built on a copy; the hook's scope never
-                # sees them (openjd-rs #277).
-                inner_exit_script = environment.script
-                inner_exit_symtab = self._build_wrapped_inner_scope(
-                    EmbeddedFilesScope.ENV,
-                    getattr(inner_exit_script, "let", None) if inner_exit_script else None,
-                    inner_exit_script.embeddedFiles if inner_exit_script is not None else None,
-                    symtab,
-                )
-                self._inject_wrapped_env_symbols(
+            # See the onWrapEnvEnter path (_try_inject_wrapped_symbols). On
+            # failure the environment was already removed from tracking
+            # above, matching how a failed exit() behaves.
+            if not self._try_inject_wrapped_symbols(
+                scope=EmbeddedFilesScope.ENV,
+                inner_script=environment.script,
+                symtab=symtab,
+                inject=lambda inner_symtab: self._inject_wrapped_env_symbols(
                     symtab,
                     environment,
                     on_exit_action,
                     session_env_list=wrapped_session_env_list,
-                    inner_symtab=inner_exit_symtab,
-                )
-            except (FormatStringError, ValueError, RuntimeError) as e:
-                # Mirror of the onWrapEnvEnter injection-failure handling:
-                # fail the action through the normal failure path. The
-                # environment was already removed from tracking above,
-                # matching how a failed exit() behaves.
-                self._fail_action_before_start(
+                    inner_symtab=inner_symtab,
+                ),
+                fail_message=(
                     f"Failed to resolve the wrapped onExit action of "
-                    f"{environment.name} for {wrap_env.name}'s onWrapEnvExit: {e}"
+                    f"{environment.name} for {wrap_env.name}'s onWrapEnvExit"
+                ),
+            ):
+                return
+            try:
+                wrap_file_records = self._get_wrap_env_file_records(wrap_env)
+            except RuntimeError as e:
+                self._fail_action_before_start(
+                    f"Failed to allocate embedded files for {wrap_env.name}: {e}"
                 )
                 return
-            self._runner = EnvironmentScriptRunner(
-                logger=self._logger,
-                user=self._user,
-                os_env_vars=action_env_vars,
-                session_working_directory=self.working_directory,
-                startup_directory=self.working_directory,
-                callback=self._action_callback,
+            self._runner = self._make_env_script_runner(
                 environment_script=wrap_env.script,
+                os_env_vars=action_env_vars,
                 symtab=symtab,
-                session_files_directory=self.files_directory,
+                preallocated_file_records=wrap_file_records,
             )
             self._runner.wrap_env_exit()
         else:
-            self._runner = EnvironmentScriptRunner(
-                logger=self._logger,
-                user=self._user,
-                os_env_vars=action_env_vars,
-                session_working_directory=self.working_directory,
-                startup_directory=self.working_directory,
-                callback=self._action_callback,
+            self._runner = self._make_env_script_runner(
                 environment_script=environment.script,
+                os_env_vars=action_env_vars,
                 symtab=symtab,
-                session_files_directory=self.files_directory,
             )
             self._runner.exit()
 
@@ -1063,45 +1143,36 @@ class Session(object):
                     "A wrap environment is active but run_task() was not given a "
                     "step_name; WrappedStep.Name will render as an empty string."
                 )
-            try:
-                # The wrapped onRun resolves against the STEP's own scope —
-                # its `let` bindings and embedded files, built on a COPY of
-                # the session table so the hook's own scope never sees them
-                # (openjd-rs #277). The hook resolves against `symtab`; the
-                # wrap environment's own lets/files are evaluated by the
-                # script runner from wrap_env.script.
-                inner_task_symtab = self._build_wrapped_inner_scope(
-                    EmbeddedFilesScope.STEP,
-                    getattr(step_script, "let", None),
-                    getattr(step_script, "embeddedFiles", None),
-                    symtab,
-                )
-                self._inject_wrapped_task_symbols(
-                    symtab, step_script, step_name or "", inner_symtab=inner_task_symtab
-                )
-            except (FormatStringError, ValueError, RuntimeError) as e:
-                # e.g. the wrapped onRun's inner scope failed to build (a
-                # `let` binding or embedded file did not resolve or write), or
-                # a FEATURE_BUNDLE_1 timeout/notifyPeriod format string did
-                # not resolve to an integer. Fail the action through the
-                # normal failure path rather than raising out of the public
-                # API.
-                self._fail_action_before_start(
+            # The wrapped onRun resolves against the STEP's own scope; the
+            # hook resolves against `symtab`, and the wrap environment's own
+            # lets/files are evaluated by the script runner from
+            # wrap_env.script (see _try_inject_wrapped_symbols).
+            if not self._try_inject_wrapped_symbols(
+                scope=EmbeddedFilesScope.STEP,
+                inner_script=step_script,
+                symtab=symtab,
+                inject=lambda inner_symtab: self._inject_wrapped_task_symbols(
+                    symtab, step_script, step_name or "", inner_symtab=inner_symtab
+                ),
+                fail_message=(
                     f"Failed to resolve the wrapped Task action for {wrap_env.name}'s "
-                    f"onWrapTaskRun: {e}"
-                )
+                    "onWrapTaskRun"
+                ),
+            ):
                 return
 
-            self._runner = EnvironmentScriptRunner(
-                logger=self._logger,
-                user=self._user,
-                os_env_vars=action_env_vars,
-                session_working_directory=self.working_directory,
-                startup_directory=self.working_directory,
-                callback=self._action_callback,
+            try:
+                wrap_file_records = self._get_wrap_env_file_records(wrap_env)
+            except RuntimeError as e:
+                self._fail_action_before_start(
+                    f"Failed to allocate embedded files for {wrap_env.name}: {e}"
+                )
+                return
+            self._runner = self._make_env_script_runner(
                 environment_script=wrap_env.script,
+                os_env_vars=action_env_vars,
                 symtab=symtab,
-                session_files_directory=self.files_directory,
+                preallocated_file_records=wrap_file_records,
             )
             self._action_state = ActionState.RUNNING
             self._state = SessionState.RUNNING
@@ -1440,7 +1511,7 @@ class Session(object):
     # RFC 0008 wrap-action helpers
     # ------------------------------------------------------------------
 
-    _WRAP_HOOK_NAMES = ("onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit")
+    _WRAP_HOOK_NAMES = WRAP_HOOK_ACTION_NAMES
 
     def _find_wrap_environment(self, *, hook: str) -> Optional[EnvironmentModel]:
         """Walk the environment stack (innermost first) and return the
@@ -1461,6 +1532,50 @@ class Session(object):
             ):
                 return env
         return None
+
+    def _get_wrap_env_file_records(self, wrap_env: EnvironmentModel) -> Optional[list[_FileRecord]]:
+        """Return the wrap environment's embedded-file records, allocating
+        their on-disk paths on first use and reusing them for every
+        subsequent wrap-hook invocation (see ``_wrap_env_file_records``).
+        Returns ``None`` when the wrap environment has no embedded files.
+
+        The allocation only reserves the paths (defining the symbols into a
+        throwaway table); the per-invocation symbol definitions and content
+        writes happen in the runner against that invocation's symbol table.
+
+        Raises:
+            RuntimeError: if a file path could not be allocated.
+        """
+        if wrap_env.script is None or wrap_env.script.embeddedFiles is None:
+            return None
+        # The wrap env's identifier: it is in the entered stack (that's how
+        # _find_wrap_environment found it).
+        identifier = next(
+            (
+                env_id
+                for env_id in self._environments_entered
+                if self._environments[env_id] is wrap_env
+            ),
+            None,
+        )
+        if identifier is None:  # pragma: no cover - guarded by _find_wrap_environment
+            raise RuntimeError(
+                f"Wrap environment '{wrap_env.name}' is not in this Session's entered stack."
+            )
+        records = self._wrap_env_file_records.get(identifier)
+        if records is None:
+            file_writer = EmbeddedFiles(
+                logger=self._logger,
+                scope=EmbeddedFilesScope.ENV,
+                session_files_directory=self.files_directory,
+                user=self._user,
+            )
+            # Paths only: symbols are defined (and logged) per wrap-hook
+            # invocation via register_file_paths, against that invocation's
+            # own symbol table.
+            records = file_writer.allocate_records(wrap_env.script.embeddedFiles)
+            self._wrap_env_file_records[identifier] = records
+        return records
 
     def _environment_defines_any_wrap_hook(self, env: EnvironmentModel) -> bool:
         """``True`` iff ``env``'s script declares any of the three wrap
@@ -1514,6 +1629,41 @@ class Session(object):
             apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
         return symtab
 
+    def _try_inject_wrapped_symbols(
+        self,
+        *,
+        scope: EmbeddedFilesScope,
+        inner_script: Any,
+        symtab: SymbolTable,
+        inject: Callable[[SymbolTable], None],
+        fail_message: str,
+    ) -> bool:
+        """Common wrap-interception step for the three RFC 0008 hooks: build
+        the wrapped (inner) entity's own resolution scope — its ``let``
+        bindings and embedded files on a COPY of the session table, so the
+        hook's own scope never sees them (openjd-rs #277) — and call
+        ``inject`` with it to populate the ``WrappedAction.*`` symbols in
+        ``symtab``, the hook's scope.
+
+        On failure (e.g. a binding or embedded file did not resolve or
+        write, or a FEATURE_BUNDLE_1 timeout/notifyPeriod format string did
+        not resolve to an integer) the action fails through the normal
+        failure path (:meth:`_fail_action_before_start` with
+        ``fail_message``) rather than raising out of the public API, and
+        ``False`` is returned so the caller can bail out."""
+        try:
+            inner_symtab = self._build_wrapped_inner_scope(
+                scope,
+                getattr(inner_script, "let", None) if inner_script is not None else None,
+                getattr(inner_script, "embeddedFiles", None) if inner_script is not None else None,
+                symtab,
+            )
+            inject(inner_symtab)
+        except (FormatStringError, ValueError, RuntimeError) as e:
+            self._fail_action_before_start(f"{fail_message}: {e}")
+            return False
+        return True
+
     def _collect_session_env_list(self) -> list[str]:
         """Collect all session-defined variables across the active
         environment stack as ``["KEY=value", ...]`` for
@@ -1534,10 +1684,10 @@ class Session(object):
         for env_id in self._environments_entered:
             if env_id in self._created_env_vars:
                 changes = self._created_env_vars[env_id]
-                # Iterate _to_set (insertion-ordered), which holds both the
+                # effective_items() is insertion-ordered, holding both the
                 # environment's declarative `variables:` seed and any
                 # openjd_env sets/unsets, so the list order is deterministic.
-                for key, value in changes._to_set.items():
+                for key, value in changes.effective_items().items():
                     effective[key] = value
         return [f"{key}={value}" for key, value in effective.items() if value is not None]
 
@@ -1547,17 +1697,14 @@ class Session(object):
         ``int?`` (RFC 0008), following the EXPR semantics for optional
         data, so whole-field forwarding
         (``timeout: "{{WrappedAction.Timeout}}"``) drops the field when the
-        wrapped action has no timeout."""
-        if action.timeout is not None:
-            if isinstance(action.timeout, int):
-                return action.timeout
-            resolved = action.timeout.resolve(symtab=symtab)
-            if resolved == "":
-                # A whole-field expression that resolved to null: treated
-                # as if the field were not provided.
-                return None
-            return int(resolved)
-        return None
+        wrapped action has no timeout.
+
+        A resolved format-string value must be a positive integer, matching
+        the openjd-rs runtime and the enforcement path in
+        :meth:`ScriptRunnerBase._run_action` (a non-positive value raises
+        ``ValueError``, failing the action through the caller's normal
+        failure path)."""
+        return resolve_optional_int_field(action.timeout, symtab, ge=1, description="timeout")
 
     def _inject_wrapped_cancelation_symbols(
         self, symtab: SymbolTable, action: Any, *, is_task_run: bool, inner_symtab: SymbolTable

@@ -5,18 +5,13 @@ from ._logging import LoggerAdapter
 from pathlib import Path
 from typing import Callable, Optional
 
-from openjd.model import FormatStringError, SymbolTable
-from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
+from openjd.model import SymbolTable
 from openjd.model.v2023_09 import StepScript as StepScript_2023_09
 from ._embedded_files import EmbeddedFilesScope
 from ._logging import log_subsection_banner
 from ._runner_base import (
-    CancelMethod,
-    NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
-    TerminateCancelMethod,
-    resolve_effective_cancelation,
 )
 from ._session_user import SessionUser
 from ._types import TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS, ActionState, StepScriptModel
@@ -134,34 +129,10 @@ class StepScriptRunner(ScriptRunnerBase):
         # For the type checker.
         assert isinstance(self._script, StepScript_2023_09)
 
-        # Resolve the cancelation config against the symbol table: a
-        # deferred (format-string) mode and/or a FEATURE_BUNDLE_1 notify
-        # period decide their values here, right when they are needed
-        # (see resolve_effective_cancelation for the full story). A cancel
-        # must always proceed, so resolution errors fall back to Terminate.
-        try:
-            mode, period = resolve_effective_cancelation(
-                self._script.actions.onRun.cancelation, self._symtab
-            )
-        except (ValueError, FormatStringError) as exc:
-            self._logger.warning(
-                f"Failed to resolve the action's cancelation; canceling by "
-                f"termination instead: {exc}"
-            )
-            mode, period = (None, None)
-
-        method: CancelMethod
-        if mode != CancelationMode_2023_09.NOTIFY_THEN_TERMINATE.value:
-            # Note: Default cancelation for a 2023-09 Step Script is Terminate
-            method = TerminateCancelMethod()
-        else:
-            method = NotifyCancelMethod(
-                terminate_delay=timedelta(
-                    seconds=(
-                        period if period is not None else TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS
-                    )
-                )
-            )
-
-        # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit, mark_action_failed)
+        self._cancel_with_effective_cancelation(
+            cancelation=self._script.actions.onRun.cancelation,
+            symtab=self._symtab,
+            default_notify_period_seconds=TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS,
+            time_limit=time_limit,
+            mark_action_failed=mark_action_failed,
+        )

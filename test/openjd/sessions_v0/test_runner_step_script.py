@@ -35,13 +35,13 @@ from openjd.model.v2023_09 import StepActions as StepActions_2023_09
 from openjd.model.v2023_09 import StepScript as StepScript_2023_09
 
 from openjd.sessions import WindowsSessionUser
-from openjd.sessions._runner_base import ScriptRunnerState
-from openjd.sessions._runner_step_script import (
+from openjd.sessions._runner_base import (
     CancelMethod,
     NotifyCancelMethod,
-    StepScriptRunner,
+    ScriptRunnerState,
     TerminateCancelMethod,
 )
+from openjd.sessions._runner_step_script import StepScriptRunner
 from openjd.sessions._tempdir import TempDir
 from openjd.sessions._os_checker import is_posix, is_windows
 

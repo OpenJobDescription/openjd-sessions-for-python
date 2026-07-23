@@ -5,19 +5,14 @@ from ._logging import LoggerAdapter
 from pathlib import Path
 from typing import Callable, Optional
 
-from openjd.model import FormatStringError, SymbolTable
+from openjd.model import SymbolTable
 from openjd.model.v2023_09 import Action as Action_2023_09
-from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
 from openjd.model.v2023_09 import EnvironmentScript as EnvironmentScript_2023_09
-from ._embedded_files import EmbeddedFilesScope
+from ._embedded_files import EmbeddedFilesScope, _FileRecord
 from ._logging import log_subsection_banner
 from ._runner_base import (
-    CancelMethod,
-    NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
-    TerminateCancelMethod,
-    resolve_effective_cancelation,
 )
 from ._session_user import SessionUser
 from ._types import (
@@ -27,7 +22,13 @@ from ._types import (
     EnvironmentScriptModel,
 )
 
-__all__ = ("EnvironmentScriptRunner",)
+__all__ = ("EnvironmentScriptRunner", "WRAP_HOOK_ACTION_NAMES")
+
+
+WRAP_HOOK_ACTION_NAMES = ("onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit")
+"""The three RFC 0008 wrap-hook action names an Environment's script may
+define. Single-sourced here for the runner's hook dispatch and the Session's
+wrap-environment lookup/validation."""
 
 
 _ENV_EXIT_DEFAULT_TIMEOUT = timedelta(minutes=5)
@@ -58,6 +59,13 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
     """If defined, then this is the action that is currently running, or was last run.
     """
 
+    _preallocated_file_records: Optional[list[_FileRecord]]
+    """RFC 0008: the script's embedded-file records with on-disk paths already
+    allocated by the Session (a wrap environment's files are allocated once
+    and reused across wrap-hook invocations). When set, the runner skips path
+    allocation and only re-resolves/rewrites the file contents.
+    """
+
     def __init__(
         self,
         *,
@@ -75,6 +83,9 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         symtab: SymbolTable,
         # Directory within which files/attachments should be materialized
         session_files_directory: Path,
+        # RFC 0008: pre-allocated embedded-file records to reuse (see
+        # _preallocated_file_records)
+        preallocated_file_records: Optional[list[_FileRecord]] = None,
     ):
         """
         Arguments (from base class):
@@ -94,6 +105,11 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 Script's scope (exluding any symbols defined within the Step Script itself).
             session_files_directory (Path): The location in the filesystem where embedded files will
                 be materialized.
+            preallocated_file_records (Optional[list[_FileRecord]]): RFC 0008: the script's
+                embedded-file records with on-disk paths already allocated by the Session
+                (a wrap environment's files are allocated once and reused across wrap-hook
+                invocations). When given, the runner skips path allocation and only
+                re-resolves/rewrites the file contents.
         """
         super().__init__(
             logger=logger,
@@ -107,6 +123,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         self._symtab = symtab
         self._session_files_directory = session_files_directory
         self._action = None
+        self._preallocated_file_records = preallocated_file_records
 
         if self._environment_script and not isinstance(
             self._environment_script, EnvironmentScript_2023_09
@@ -144,6 +161,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 self._session_files_directory,
                 symtab,
                 let_bindings=let_bindings,
+                preallocated_records=self._preallocated_file_records,
             )
             if self.state == ScriptRunnerState.FAILED:
                 return
@@ -214,7 +232,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
     def _run_wrap_hook(self, hook: str, *, default_timeout: Optional[timedelta] = None) -> None:
         """Common dispatch for the three RFC 0008 wrap hooks. ``hook`` is
         one of ``onWrapEnvEnter``, ``onWrapTaskRun``, or ``onWrapEnvExit``."""
-        if hook not in ("onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit"):
+        if hook not in WRAP_HOOK_ACTION_NAMES:
             # Guard the getattr below: without this, a typo'd hook name
             # would silently become a SUCCESS no-op.
             raise ValueError(f"Unknown wrap hook name: {hook}")
@@ -253,32 +271,10 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         # For the type checker
         assert isinstance(self._action, Action_2023_09)
 
-        # Resolve the cancelation config against the symbol table: a
-        # deferred (format-string) mode and/or a FEATURE_BUNDLE_1 notify
-        # period decide their values here, right when they are needed
-        # (see resolve_effective_cancelation for the full story). A cancel
-        # must always proceed, so resolution errors fall back to Terminate.
-        try:
-            mode, period = resolve_effective_cancelation(self._action.cancelation, self._symtab)
-        except (ValueError, FormatStringError) as exc:
-            self._logger.warning(
-                f"Failed to resolve the action's cancelation; canceling by "
-                f"termination instead: {exc}"
-            )
-            mode, period = (None, None)
-
-        method: CancelMethod
-        if mode != CancelationMode_2023_09.NOTIFY_THEN_TERMINATE.value:
-            # Note: Default cancelation for a 2023-09 Environment Script is Terminate
-            method = TerminateCancelMethod()
-        else:
-            method = NotifyCancelMethod(
-                terminate_delay=timedelta(
-                    seconds=(
-                        period if period is not None else ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS
-                    )
-                )
-            )
-
-        # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit, mark_action_failed)
+        self._cancel_with_effective_cancelation(
+            cancelation=self._action.cancelation,
+            symtab=self._symtab,
+            default_notify_period_seconds=ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS,
+            time_limit=time_limit,
+            mark_action_failed=mark_action_failed,
+        )

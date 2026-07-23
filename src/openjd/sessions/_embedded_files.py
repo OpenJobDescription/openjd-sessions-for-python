@@ -231,6 +231,22 @@ class EmbeddedFiles:
         else:
             self._logger.info("Writing embedded files for Task to disk.")
 
+        records = self.allocate_records(files)
+        self._define_symbols(records, symtab)
+        return records
+
+    def allocate_records(self, files: EmbeddedFilesListType) -> list["_FileRecord"]:
+        """Allocate the on-disk paths for the embedded files, without logging
+        or defining any symbols.
+
+        Used by the Session to pre-allocate a wrap environment's file records
+        once (RFC 0008); each wrap-hook invocation then defines the symbols
+        and logs through :meth:`register_file_paths` against its own symbol
+        table.
+
+        Raises:
+            RuntimeError: If a file path could not be allocated.
+        """
         try:
             records = list[_FileRecord]()
             # Generate the symbol table values and filenames
@@ -238,24 +254,41 @@ class EmbeddedFiles:
                 # Raises: OSError
                 symbol, filename = self._get_symtab_entry(file)
                 records.append(_FileRecord(symbol=symbol, filename=filename, file=file))
-
-            # Add symbols to the symbol table. For EXPR evaluation the
-            # Env.File.*/Task.File.* symbols are host-format path values
-            # (property access like `.parent` works), matching openjd-rs;
-            # the legacy (non-EXPR) interpolation path ignores the type and
-            # keeps the string form.
-            for record in records:
-                symtab[record.symbol] = str(record.filename)
-                symtab.expr_types[record.symbol] = "PATH"
-                self._logger.info(
-                    f"Mapping: {record.symbol} -> {record.filename}",
-                    extra=LogExtraInfo(
-                        openjd_log_content=LogContent.FILE_PATH | LogContent.PARAMETER_INFO
-                    ),
-                )
             return records
         except (OSError, ValueError) as err:
             raise RuntimeError(f"Could not write embedded file: {err}")
+
+    def register_file_paths(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
+        """Define the ``Env.File.*``/``Task.File.*`` symbols in ``symtab``
+        for already-allocated records, without allocating new paths.
+
+        Used to reuse a wrap environment's embedded-file records across
+        wrap-hook invocations (RFC 0008): the on-disk paths are allocated
+        once so the symbols stay stable and unnamed files do not accumulate,
+        while the contents are re-resolved and rewritten per invocation via
+        :meth:`write_file_contents`.
+        """
+        if self._scope == EmbeddedFilesScope.ENV:
+            self._logger.info("Writing embedded files for Environment to disk.")
+        else:
+            self._logger.info("Writing embedded files for Task to disk.")
+        self._define_symbols(records, symtab)
+
+    def _define_symbols(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
+        # Add symbols to the symbol table. For EXPR evaluation the
+        # Env.File.*/Task.File.* symbols are host-format path values
+        # (property access like `.parent` works), matching openjd-rs;
+        # the legacy (non-EXPR) interpolation path ignores the type and
+        # keeps the string form.
+        for record in records:
+            symtab[record.symbol] = str(record.filename)
+            symtab.expr_types[record.symbol] = "PATH"
+            self._logger.info(
+                f"Mapping: {record.symbol} -> {record.filename}",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.FILE_PATH | LogContent.PARAMETER_INFO
+                ),
+            )
 
     def write_file_contents(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
         """Resolve each allocated file's ``data`` against ``symtab`` and write

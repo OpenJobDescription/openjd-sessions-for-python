@@ -1,0 +1,269 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+"""Regression tests for the Session-level handling of EXPR ``let``
+bindings (RFC 0007):
+
+- a failing ``extra_let_bindings`` entry on ``enter_environment`` /
+  ``exit_environment`` fails the action through the normal callback path
+  instead of raising out of the public API;
+- ``enter_environment(step_name=...)`` seeds ``Step.Name`` so step-level
+  bindings and the environment's actions can reference it (on both the
+  enter and exit sides);
+- binding-RHS parsing is memoized across applications;
+- the unified optional int-or-format-string field resolver
+  (``resolve_optional_int_field``) enforces consistent bounds.
+"""
+from __future__ import annotations
+
+import time
+import uuid
+from typing import Any
+
+import pytest
+
+from openjd.model import SymbolTable
+from openjd.model.v2023_09 import (
+    Action as Action_2023_09,
+    ArgString as ArgString_2023_09,
+    CommandString as CommandString_2023_09,
+    Environment as Environment_2023_09,
+    EnvironmentActions as EnvironmentActions_2023_09,
+    EnvironmentScript as EnvironmentScript_2023_09,
+    ModelParsingContext as ModelParsingContext_2023_09,
+)
+from openjd.model._let_bindings import _parse_rhs
+from openjd.sessions import ActionState, ActionStatus, Session, SessionState
+from openjd.sessions._runner_base import (
+    apply_let_bindings,
+    resolve_optional_int_field,
+)
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _action(command: str, *args: str) -> Action_2023_09:
+    return Action_2023_09(
+        command=CommandString_2023_09(command),
+        args=[ArgString_2023_09(a) for a in args] if args else None,
+    )
+
+
+def _env(name: str, **action_kwargs) -> Environment_2023_09:
+    return Environment_2023_09(
+        name=name,
+        script=EnvironmentScript_2023_09(
+            actions=EnvironmentActions_2023_09(**action_kwargs),
+        ),
+    )
+
+
+def _run_until_ready(session: Session, timeout_s: float = 10.0) -> None:
+    deadline = time.time() + timeout_s
+    while session.state == SessionState.RUNNING and time.time() < deadline:
+        time.sleep(0.05)
+
+
+def _format_string_field(raw: str) -> Any:
+    """Build a FormatString-typed ``timeout`` field value (FEATURE_BUNDLE_1)."""
+    context = ModelParsingContext_2023_09(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
+    action = Action_2023_09.model_validate({"command": "echo", "timeout": raw}, context=context)
+    return action.timeout
+
+
+# ---------------------------------------------------------------------------
+# A failing extra `let` binding must FAIL the action via the callback path,
+# never raise out of enter_environment()/exit_environment().
+# ---------------------------------------------------------------------------
+
+
+class TestExtraLetBindingFailure:
+    def test_enter_environment_failing_binding_fails_action_cleanly(self) -> None:
+        # GIVEN: an extra binding referencing an undefined symbol.
+        callback_events: list[ActionStatus] = []
+
+        def callback(session_id: str, status: ActionStatus) -> None:
+            callback_events.append(status)
+
+        env = _env("Env", onEnter=_action("true"), onExit=_action("true"))
+        with Session(
+            session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
+        ) as session:
+            # WHEN: entering must not raise.
+            identifier = session.enter_environment(
+                environment=env,
+                extra_let_bindings=["msg = NoSuchSymbol"],
+            )
+            _run_until_ready(session)
+
+            # THEN: the action failed cleanly, the callback fired, and the
+            # environment remains entered-but-failed (exactly as a failing
+            # onEnter subprocess leaves it) so cleanup can exit it.
+            assert session.state == SessionState.READY_ENDING
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert status.fail_message is not None
+            assert "let" in status.fail_message
+            assert callback_events and callback_events[-1].state == ActionState.FAILED
+            assert identifier in session.environments_entered
+
+            # WHEN: exiting the failed environment re-applies the failing
+            # bindings — the exit action must also fail cleanly, not raise.
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
+
+            # THEN
+            assert session.state == SessionState.READY_ENDING
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert identifier not in session.environments_entered
+
+
+# ---------------------------------------------------------------------------
+# enter_environment(step_name=...) seeds Step.Name (RFC 0007 EXPR), for both
+# the enter side and the re-applied bindings on the exit side.
+# ---------------------------------------------------------------------------
+
+
+class TestEnterEnvironmentStepName:
+    def test_step_name_resolvable_in_bindings_and_actions(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a step-level binding referencing Step.Name, echoed by both
+        # the environment's onEnter and onExit actions.
+        env = _env(
+            "StepEnv",
+            onEnter=_action("echo", "enter:{{ msg }}"),
+            onExit=_action("echo", "exit:{{ msg }}"),
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            identifier = session.enter_environment(
+                environment=env,
+                extra_let_bindings=["msg = 'step is ' + Step.Name"],
+                step_name="MyStep",
+            )
+            _run_until_ready(session)
+
+            # THEN: the enter action ran with the binding resolved.
+            assert session.state == SessionState.READY
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("enter:step is MyStep" in m for m in caplog.messages)
+
+            # WHEN: the exit re-applies the bindings — Step.Name must be
+            # re-seeded so onExit resolves in the same scope as onEnter.
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("exit:step is MyStep" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# Binding-RHS parsing is memoized: re-applying the same bindings (per task,
+# per env enter/exit) must not re-parse through the engine each time.
+# ---------------------------------------------------------------------------
+
+
+class TestLetBindingParseMemoization:
+    def test_parse_is_cached_across_applications(self) -> None:
+        # GIVEN: apply_let_bindings delegates to the model's single-sourced
+        # evaluator, whose RHS parse (_parse_rhs) is memoized.
+        _parse_rhs.cache_clear()
+        bindings = ["a = 1 + 2", "b = a * 10"]
+
+        # WHEN: the same bindings apply against several symbol tables.
+        for _ in range(5):
+            symtab = SymbolTable()
+            apply_let_bindings(symtab=symtab, let_bindings=bindings)
+            # THEN: per-application evaluation is unchanged. (Values are the
+            # engine's typed results; compare via their string rendering.)
+            assert str(symtab["a"]) == "3"
+            assert str(symtab["b"]) == "30"
+
+        # THEN: each unique RHS was parsed exactly once.
+        info = _parse_rhs.cache_info()
+        assert info.misses == len(bindings)
+        assert info.hits == 4 * len(bindings)
+
+    def test_cached_expression_evaluates_against_per_call_symtab(self) -> None:
+        # The memoized expression object must hold no symbol-table state.
+        _parse_rhs.cache_clear()
+        first = SymbolTable()
+        first["X"] = 1
+        second = SymbolTable()
+        second["X"] = 41
+        apply_let_bindings(symtab=first, let_bindings=["y = X + 1"])
+        apply_let_bindings(symtab=second, let_bindings=["y = X + 1"])
+        assert str(first["y"]) == "2"
+        assert str(second["y"]) == "42"
+
+
+# ---------------------------------------------------------------------------
+# resolve_optional_int_field: one implementation for the three
+# "optional int-or-format-string" call sites, with consistent bounds.
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOptionalIntField:
+    def test_none_field_stays_none(self) -> None:
+        assert resolve_optional_int_field(None, SymbolTable(), ge=1, description="timeout") is None
+
+    def test_literal_int_passes_through(self) -> None:
+        # Literal values were bounds-checked by the static validator at
+        # parse time; they pass through unchecked at run time.
+        assert resolve_optional_int_field(30, SymbolTable(), ge=1, description="timeout") == 30
+
+    def test_whole_field_null_resolves_to_none(self) -> None:
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = None
+        assert resolve_optional_int_field(field, symtab, ge=1, description="timeout") is None
+
+    def test_resolved_value_below_ge_rejected(self) -> None:
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = 0
+        with pytest.raises(ValueError, match="timeout must be a positive integer, got '0'"):
+            resolve_optional_int_field(field, symtab, ge=1, description="timeout")
+
+    def test_resolved_value_above_le_rejected(self) -> None:
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = 700
+        with pytest.raises(
+            ValueError, match="notifyPeriodInSeconds must be between 1 and 600, got '700'"
+        ):
+            resolve_optional_int_field(
+                field, symtab, ge=1, le=600, description="notifyPeriodInSeconds"
+            )
+
+    def test_non_integer_resolved_value_rejected(self) -> None:
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = "abc"
+        with pytest.raises(ValueError, match="timeout must be a positive integer, got 'abc'"):
+            resolve_optional_int_field(field, symtab, ge=1, description="timeout")
+
+    def test_session_resolve_action_timeout_rejects_non_positive(self) -> None:
+        # Regression: Session._resolve_action_timeout previously accepted
+        # any int() — a resolved non-positive timeout must now be rejected,
+        # matching the openjd-rs runtime and the enforcement path in
+        # ScriptRunnerBase._run_action.
+        context = ModelParsingContext_2023_09(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
+        action = Action_2023_09.model_validate(
+            {"command": "echo", "timeout": "{{ X }}"}, context=context
+        )
+        symtab = SymbolTable()
+        symtab["X"] = 0
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            with pytest.raises(ValueError, match="timeout must be a positive integer"):
+                session._resolve_action_timeout(action, symtab)

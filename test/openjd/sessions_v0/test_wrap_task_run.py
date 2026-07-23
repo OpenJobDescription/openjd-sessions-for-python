@@ -434,3 +434,86 @@ class TestSecurityAndExecutionConstraints:
         assert cmd == "tool"
         assert args == many
         assert len(args) == 1000
+
+
+# ---------------------------------------------------------------------------
+# Wrap-environment embedded-file reuse across tasks.
+#
+# The wrap environment's embedded-file PATHS are allocated once and reused
+# for every task run through the wrap (so Env.File.* symbols stay stable and
+# unnamed files do not accumulate on disk), while the file CONTENTS are
+# re-resolved and rewritten per task (data may reference WrappedAction.*).
+# ---------------------------------------------------------------------------
+
+
+class TestWrapEnvEmbeddedFileReuse:
+    def _wrap_env_with_unnamed_file(self) -> Environment_2023_09:
+        from openjd.model.v2023_09 import (
+            DataString as DataString_2023_09,
+            EmbeddedFileText as EmbeddedFileText_2023_09,
+            EmbeddedFileTypes as EmbeddedFileTypes_2023_09,
+        )
+
+        # The embedded file is UNNAMED (no `filename`), so its on-disk path
+        # is mkstemp-allocated; its data references WrappedAction.Command,
+        # so contents must be rewritten per task.
+        return Environment_2023_09(
+            name="WrapEnv",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onWrapEnvEnter=_NOOP,
+                    onWrapTaskRun=Action_2023_09(
+                        command=CommandString_2023_09("cat"),
+                        args=[ArgString_2023_09("{{ Env.File.WrapData }}")],
+                    ),
+                    onWrapEnvExit=_NOOP,
+                ),
+                embeddedFiles=[
+                    EmbeddedFileText_2023_09(
+                        name="WrapData",
+                        type=EmbeddedFileTypes_2023_09.TEXT,
+                        data=DataString_2023_09("wrapped-command={{WrappedAction.Command}}\n"),
+                    )
+                ],
+            ),
+        )
+
+    def test_unnamed_wrap_file_path_reused_across_tasks(self) -> None:
+        # GIVEN: a wrap environment with an unnamed embedded file whose data
+        # references WrappedAction.Command, and three tasks with distinct
+        # wrapped commands (never executed; the wrap action runs instead).
+        env = self._wrap_env_with_unnamed_file()
+        commands = ("cmd-one", "cmd-two", "cmd-three")
+        file_paths = []
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            identifier = session.enter_environment(environment=env)
+            _run_until_ready(session)
+            assert session.state == SessionState.READY
+
+            for command in commands:
+                # WHEN: a task runs through the wrap.
+                session.run_task(
+                    step_script=_step_script(command, []),
+                    task_parameter_values={},
+                    step_name="Step",
+                )
+                _run_until_ready(session)
+
+                # THEN: the task succeeded, and the files directory contains
+                # exactly ONE file for the record (not one per task) ...
+                assert session.state == SessionState.READY
+                status = session.action_status
+                assert status is not None
+                assert status.state == ActionState.SUCCESS
+                files = [p for p in session.files_directory.iterdir() if p.is_file()]
+                assert len(files) == 1
+                # ... whose contents reflect THIS task's wrapped command.
+                assert files[0].read_text() == f"wrapped-command={command}\n"
+                file_paths.append(files[0])
+
+            # THEN: the file path is identical across all three tasks.
+            assert file_paths[0] == file_paths[1] == file_paths[2]
+
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
