@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import stat
 import shlex
 from abc import ABC, abstractmethod
@@ -36,9 +37,17 @@ __all__ = (
     "NotifyCancelMethod",
     "ScriptRunnerBase",
     "apply_let_bindings",
+    "resolve_action_arg_values",
     "resolve_effective_cancelation",
     "resolve_optional_int_field",
 )
+
+
+_STRICT_INT_RE = re.compile(r"[+-]?[0-9]+")
+"""The exact integer grammar accepted for dynamically resolved integer fields
+(FEATURE_BUNDLE_1 ``timeout`` / ``notifyPeriodInSeconds`` format strings):
+an optional sign followed by ASCII digits, exactly what Rust's ``str::parse``
+accepts. See resolve_optional_int_field."""
 
 
 class ScriptRunnerState(str, Enum):
@@ -96,6 +105,48 @@ class NotifyCancelMethod(CancelMethod):
     """Amount of time after a SIGTERM to wait to do the SIGKILL"""
 
 
+def resolve_action_arg_values(args: Optional[Sequence], symtab: SymbolTable) -> list[str]:
+    """Resolve an action's ``args`` field into its flat list of argument
+    strings (excluding the command).
+
+    RFC 0005 §1.3.2 argument semantics, mirroring openjd-rs's
+    resolve_action_args: a whole-field expression argument resolves typed —
+    a null result skips the argument, a list result flattens inline (one
+    argument per element, rendered with the engine's display coercion), and
+    a scalar becomes a single argument. Multi-segment format strings and
+    legacy (non-EXPR) expressions resolve to their string form.
+
+    Shared by the enforcement path (:meth:`ScriptRunnerBase._run_action`)
+    and the RFC 0008 ``WrappedAction.Args`` injection, so a wrap hook sees
+    exactly the arguments the wrapped action would have run with unwrapped.
+
+    Raises:
+        FormatStringError: If an argument's expression cannot be resolved.
+    """
+    resolved: list[str] = []
+    if args is not None:
+        for arg in args:
+            try:
+                value = arg.resolve_value(symtab=symtab)
+            except FormatStringError:
+                # Mirror openjd-rs's resolve_action_args: when typed
+                # resolution fails (e.g. a legacy-parsed expression meeting
+                # a typed symbol value), fall back to plain string
+                # resolution — which raises FormatStringError itself if the
+                # argument is genuinely unresolvable.
+                resolved.append(arg.resolve(symtab=symtab))
+                continue
+            if isinstance(value, str):
+                resolved.append(value)
+            elif getattr(value, "is_null", False):
+                continue
+            elif str(getattr(value, "type", "")).startswith("list["):
+                resolved.extend(str(element) for element in value)
+            else:
+                resolved.append(str(value))
+    return resolved
+
+
 def resolve_optional_int_field(
     value: Any,
     symtab: SymbolTable,
@@ -111,13 +162,16 @@ def resolve_optional_int_field(
     - ``None`` (field omitted) stays ``None``.
     - A literal ``int`` passes through unchecked: literal values were
       bounds-checked by the static validator at parse time.
-    - A FormatString (FEATURE_BUNDLE_1) is resolved against ``symtab``. A
-      whole-field expression that resolves to null renders as the empty
-      string and is treated as if the field were not provided (``None`` —
-      the caller applies any positional schema default). Otherwise the
-      resolved value must be an integer within the given bounds; the bounds
-      apply here because format-string values could not be checked at parse
-      time.
+    - A FormatString (FEATURE_BUNDLE_1) is resolved against ``symtab``
+      using typed resolution. A whole-field expression that resolves to a
+      typed null is treated as if the field were not provided (``None`` —
+      the caller applies any positional schema default). Any other result
+      — including a genuine empty string — must be an integer within the
+      given bounds; the bounds apply here because format-string values
+      could not be checked at parse time. This matches the openjd-rs
+      runtime (resolve_action_timeout / resolve_notify_period_seconds),
+      which only treats an ExprValue::Null result as "field omitted" and
+      errors on an empty string.
 
     Raises:
         ValueError: If the resolved value is not an integer, or violates
@@ -128,9 +182,15 @@ def resolve_optional_int_field(
         return None
     if isinstance(value, int):
         return value
-    resolved = value.resolve(symtab=symtab)
-    if resolved == "":
+    # Typed resolution: a whole-field EXPR expression yields the engine's
+    # typed value, so a null result is distinguishable from a genuine empty
+    # string. Multi-segment and legacy (non-EXPR) format strings fall back
+    # to plain string resolution — correct, since typed nulls only exist
+    # under EXPR whole-field semantics (Template Schemas 5.3).
+    resolved_value = value.resolve_value(symtab=symtab)
+    if getattr(resolved_value, "is_null", False):
         return None
+    resolved = str(resolved_value)
     if ge is not None and le is not None:
         constraint = f"between {ge} and {le}"
     elif ge == 1 and le is None:
@@ -139,10 +199,15 @@ def resolve_optional_int_field(
         constraint = f"an integer >= {ge}"
     else:
         constraint = "an integer"
-    try:
-        result = int(resolved)
-    except ValueError:
+    # Strict ASCII integer grammar, matching the Rust runtime's str::parse
+    # (openjd-rs resolve_action_timeout / resolve_notify_period_seconds).
+    # Python's int() is more lenient — it accepts surrounding whitespace,
+    # digit-group underscores ("1_0" == 10), and non-ASCII decimal digits —
+    # all of which Rust rejects, so accepting them here would be a
+    # spec-observable divergence.
+    if _STRICT_INT_RE.fullmatch(resolved) is None:
         raise ValueError(f"{description} must be {constraint}, got '{resolved}'")
+    result = int(resolved)
     if (ge is not None and result < ge) or (le is not None and result > le):
         raise ValueError(f"{description} must be {constraint}, got '{result}'")
     return result
@@ -195,19 +260,23 @@ def resolve_effective_cancelation(
     if cancelation is None:
         return (None, None)
     if isinstance(cancelation, CancelationMethodDeferred_2023_09):
-        # Null semantics apply only to a whole-field expression
-        # ("{{ ... }}" with no surrounding text, target type string? —
-        # Template Schemas 5.3). A normal format string that happens to
-        # resolve to the empty string is NOT null; it falls through to the
-        # "must resolve to..." error below.
-        is_whole_field = cancelation.mode.whole_field_expression() is not None
-        mode = cancelation.mode.resolve(symtab=symtab)
-        if mode == "" and is_whole_field:
+        # Typed resolution. Null semantics apply only to a whole-field
+        # expression ("{{ ... }}" with no surrounding text, target type
+        # string? — Template Schemas 5.3), and resolve_value only yields a
+        # typed null for a whole-field EXPR expression; every other format
+        # string resolves to its plain string form. A format string that
+        # happens to resolve to the empty string is NOT null; it falls
+        # through to the "must resolve to..." error below (matching the
+        # openjd-rs runtime, which errors on any non-null, non-mode-name
+        # result).
+        mode_value = cancelation.mode.resolve_value(symtab=symtab)
+        if getattr(mode_value, "is_null", False):
             # Null mode drops the ENTIRE cancelation object: mode is the
             # object's required discriminator, so an "omitted" mode cannot
             # leave a partial object behind. The action behaves exactly as
             # if no <Cancelation> were declared.
             return (None, None)
+        mode = str(mode_value)
         if mode == CancelationMode_2023_09.TERMINATE.value:
             # Post-resolution the object must validate against the resolved
             # variant's shape: TERMINATE admits no notify period.
@@ -235,7 +304,7 @@ def resolve_effective_cancelation(
 
 
 def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
-    """Evaluate EXPR ``let`` bindings (RFC 0007) and add them to ``symtab``.
+    """Evaluate EXPR ``let`` bindings (RFC 0005) and add them to ``symtab``.
 
     ``let_bindings`` is a script's ``let`` field: an ordered list of
     ``"name = expression"`` strings. Each RHS is an EXPR expression evaluated
@@ -346,6 +415,20 @@ class ScriptRunnerBase(ABC):
     e.g. We failed to write embedded files before even trying to run the action.
     """
 
+    _resolved_cancel_method: Optional[CancelMethod]
+    """The running action's effective cancel method, resolved by
+    :meth:`_run_action` right before subprocess launch — against the same
+    final (let/embedded-file enriched) symbol table the command and args
+    resolved with — and consumed by the runners' :meth:`cancel`.
+
+    Resolving at launch matches the openjd-rs runtime (``run_action``
+    resolves ``cancel_method_for_action`` up front): a cancelation whose
+    deferred mode or notify period cannot be resolved fails the action at
+    start rather than surfacing only if a cancel later occurs, and the
+    resolution scope is the action's own (a mode referencing a script-level
+    ``let`` binding resolves correctly). ``None`` until an action launches.
+    """
+
     def __init__(
         self,
         *,
@@ -394,6 +477,7 @@ class ScriptRunnerBase(ABC):
         # Will run at most the run futures
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._state_override = None
+        self._resolved_cancel_method = None
         self._print_section_banner = True
 
     # Context manager for use in our tests
@@ -579,7 +663,7 @@ class ScriptRunnerBase(ABC):
         materializing embedded files to disk.
 
         When ``let_bindings`` is given, they are evaluated between file-path
-        allocation and content writing (RFC 0007, mirroring the openjd-rs
+        allocation and content writing (RFC 0005, mirroring the openjd-rs
         runners): a file's *path* never depends on ``let`` values (filenames
         are plain strings), so ``Env.File.*``/``Task.File.*`` are available to
         the bindings, while a file's ``data`` is written afterwards so it can
@@ -629,6 +713,7 @@ class ScriptRunnerBase(ABC):
         symtab: SymbolTable,
         *,
         default_timeout: Optional[timedelta] = None,
+        default_notify_period_seconds: int = 30,
     ) -> None:
         """Helper for derived classes to run a specific Action.
 
@@ -640,28 +725,18 @@ class ScriptRunnerBase(ABC):
             default_timeout (Optional[timedelta], optional): Default timeout duration
                 for the action if no timeout is specified in the action. The default behaviour if
                 None is passed will allow the action to run indefinitely until it completes.
+            default_notify_period_seconds (int): The Template Schemas 5.3.2
+                positional default applied when a NOTIFY_THEN_TERMINATE
+                cancelation omits its notify period (120 for a task's onRun,
+                30 for any other action).
         """
         assert isinstance(action, Action_2023_09)
         try:
             command = [action.command.resolve(symtab=symtab)]
-            if action.args is not None:
-                # RFC 0005 §1.3.2 argument semantics, mirroring openjd-rs's
-                # resolve_action_args: a whole-field expression argument
-                # resolves typed — a null result skips the argument, a list
-                # result flattens inline (one argument per element, rendered
-                # with the engine's display coercion), and a scalar becomes a
-                # single argument. Multi-segment format strings and legacy
-                # (non-EXPR) expressions resolve to their string form.
-                for arg in action.args:
-                    value = arg.resolve_value(symtab=symtab)
-                    if isinstance(value, str):
-                        command.append(value)
-                    elif getattr(value, "is_null", False):
-                        continue
-                    elif str(getattr(value, "type", "")).startswith("list["):
-                        command.extend(str(element) for element in value)
-                    else:
-                        command.append(str(value))
+            # RFC 0005 §1.3.2 typed argument semantics (null skip, list
+            # flattening) — see resolve_action_arg_values, shared with the
+            # RFC 0008 WrappedAction.Args injection.
+            command.extend(resolve_action_arg_values(action.args, symtab))
         except FormatStringError as exc:
             # Extremely unlikely since a JobTemplate needs to have passed
             # validation before we could be running it, but just to be safe.
@@ -670,11 +745,10 @@ class ScriptRunnerBase(ABC):
             time_limit: Optional[timedelta] = default_timeout
             # A FormatString timeout (FEATURE_BUNDLE_1) is resolved right
             # before the action runs. A whole-field expression that
-            # resolves to null renders as the empty string — e.g.
-            # forwarding `timeout: "{{WrappedAction.Timeout}}"`
-            # (RFC 0008) when the wrapped action specified no
-            # timeout — and is treated as if the field were not
-            # provided, so the positional default applies.
+            # resolves to a typed null — e.g. forwarding
+            # `timeout: "{{WrappedAction.Timeout}}"` (RFC 0008) when the
+            # wrapped action specified no timeout — is treated as if the
+            # field were not provided, so the positional default applies.
             try:
                 seconds = resolve_optional_int_field(
                     action.timeout, symtab, ge=1, description="timeout"
@@ -687,51 +761,45 @@ class ScriptRunnerBase(ABC):
                 return
             if seconds is not None:
                 time_limit = timedelta(seconds=seconds)
+            # Resolve the action's effective cancelation NOW, against the
+            # same final scope the command/args/timeout resolved with — a
+            # deferred (format-string) mode or FEATURE_BUNDLE_1 notify
+            # period may reference script-level `let` bindings or
+            # Env.File.*/Task.File.* symbols that only exist in this scope.
+            # This matches the openjd-rs runtime (run_action resolves
+            # cancel_method_for_action before launching): an unresolvable or
+            # invalid cancelation fails the action at start instead of
+            # surfacing only if a cancel later occurs. The runners'
+            # cancel() consumes the stored method.
+            try:
+                mode, period = resolve_effective_cancelation(action.cancelation, symtab)
+            except ValueError as exc:
+                # FormatStringError (resolution failure) subclasses ValueError.
+                self._fail_action(str(exc))
+                return
+            if mode != CancelationMode_2023_09.NOTIFY_THEN_TERMINATE.value:
+                # Note: The default cancelation for a 2023-09 script is Terminate
+                self._resolved_cancel_method = TerminateCancelMethod()
+            else:
+                self._resolved_cancel_method = NotifyCancelMethod(
+                    terminate_delay=timedelta(
+                        seconds=(period if period is not None else default_notify_period_seconds)
+                    )
+                )
             self._run(command, time_limit)
 
-    def _cancel_with_effective_cancelation(
-        self,
-        *,
-        cancelation: Any,
-        symtab: SymbolTable,
-        default_notify_period_seconds: int,
-        time_limit: Optional[timedelta] = None,
-        mark_action_failed: bool = False,
+    def _cancel_with_resolved_method(
+        self, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
     ) -> None:
-        """Shared implementation of the runners' :meth:`cancel`.
-
-        Resolve the action's cancelation config against the symbol table: a
-        deferred (format-string) mode and/or a FEATURE_BUNDLE_1 notify
-        period decide their values here, right when they are needed
-        (see resolve_effective_cancelation for the full story). A cancel
-        must always proceed, so resolution errors fall back to Terminate.
-
-        ``default_notify_period_seconds`` is the Template Schemas 5.3.2
-        positional default applied when a NOTIFY_THEN_TERMINATE cancelation
-        omits its notify period (120 for a task's onRun, 30 otherwise).
+        """Shared implementation of the runners' :meth:`cancel`: cancel with
+        the effective cancel method that :meth:`_run_action` resolved at
+        launch time. No-op when no action was launched (e.g. setup failed
+        before the subprocess started — there is nothing to cancel).
         """
-        try:
-            mode, period = resolve_effective_cancelation(cancelation, symtab)
-        except (ValueError, FormatStringError) as exc:
-            self._logger.warning(
-                f"Failed to resolve the action's cancelation; canceling by "
-                f"termination instead: {exc}"
-            )
-            mode, period = (None, None)
-
-        method: CancelMethod
-        if mode != CancelationMode_2023_09.NOTIFY_THEN_TERMINATE.value:
-            # Note: The default cancelation for a 2023-09 script is Terminate
-            method = TerminateCancelMethod()
-        else:
-            method = NotifyCancelMethod(
-                terminate_delay=timedelta(
-                    seconds=(period if period is not None else default_notify_period_seconds)
-                )
-            )
-
+        if self._resolved_cancel_method is None:
+            return
         # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit, mark_action_failed)
+        self._cancel(self._resolved_cancel_method, time_limit, mark_action_failed)
 
     def _cancel(
         self,

@@ -220,7 +220,7 @@ class EmbeddedFiles:
         the file contents.
 
         Splitting allocation from :meth:`write_file_contents` lets the runner
-        evaluate EXPR ``let`` bindings between the two phases (RFC 0007): a
+        evaluate EXPR ``let`` bindings between the two phases (RFC 0005): a
         file's *path* never depends on ``let`` values (``filename`` is a plain
         string), so the ``Env.File.*``/``Task.File.*`` symbols are available
         to the bindings, while a file's ``data`` is written afterwards so it

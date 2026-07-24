@@ -105,6 +105,45 @@ class TestInjectWrappedTaskSymbols:
         finally:
             session.cleanup()
 
+    def test_injects_typed_args_null_skip_and_list_flatten(self) -> None:
+        # RFC 0005 §1.3.2 typed argument semantics (openjd-rs parity: the
+        # wrapped path in seed_wrapped_action_symbols resolves through the
+        # same resolve_action_args as the runner): a whole-field list
+        # expression flattens inline (one argument per element), a
+        # whole-field null is skipped, and the hook sees exactly the argv
+        # the wrapped action would have run with unwrapped.
+        from openjd.model.v2023_09 import ModelParsingContext
+        from openjd.sessions._runner_base import resolve_action_arg_values
+
+        context = ModelParsingContext(supported_extensions=["EXPR"])
+        script = StepScript_2023_09.model_validate(
+            {
+                "actions": {
+                    "onRun": {
+                        "command": "echo",
+                        "args": ["front", '{{ ["a", "b c"] }}', "{{ null }}", "back"],
+                    }
+                }
+            },
+            context=context,
+        )
+        session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
+        try:
+            symtab = SymbolTable()
+            session._inject_wrapped_task_symbols(symtab, script, "MyStep", inner_symtab=symtab)
+            assert symtab["WrappedAction.Args"] == ["front", "a", "b c", "back"]
+            # The unwrapped enforcement path (_run_action) resolves the same
+            # action's args via the same shared helper — wrapped and
+            # unwrapped runs of this action use identical argv.
+            assert resolve_action_arg_values(script.actions.onRun.args, symtab) == [
+                "front",
+                "a",
+                "b c",
+                "back",
+            ]
+        finally:
+            session.cleanup()
+
     def test_injects_wrapped_environment_as_key_value_list(self) -> None:
         # RFC 0008 (openjd-rs #277): WrappedAction.Environment carries every
         # session-defined variable — openjd_env definitions (applied via

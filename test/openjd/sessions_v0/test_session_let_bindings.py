@@ -1,7 +1,7 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 """Regression tests for the Session-level handling of EXPR ``let``
-bindings (RFC 0007):
+bindings (RFC 0005):
 
 - a failing ``extra_let_bindings`` entry on ``enter_environment`` /
   ``exit_environment`` fails the action through the normal callback path
@@ -13,6 +13,7 @@ bindings (RFC 0007):
 - the unified optional int-or-format-string field resolver
   (``resolve_optional_int_field``) enforces consistent bounds.
 """
+
 from __future__ import annotations
 
 import time
@@ -33,8 +34,10 @@ from openjd.model.v2023_09 import (
 )
 from openjd.model._let_bindings import _parse_rhs
 from openjd.sessions import ActionState, ActionStatus, Session, SessionState
+from openjd.model.v2023_09 import StepScript as StepScript_2023_09
 from openjd.sessions._runner_base import (
     apply_let_bindings,
+    resolve_action_arg_values,
     resolve_optional_int_field,
 )
 
@@ -123,7 +126,7 @@ class TestExtraLetBindingFailure:
 
 
 # ---------------------------------------------------------------------------
-# enter_environment(step_name=...) seeds Step.Name (RFC 0007 EXPR), for both
+# enter_environment(step_name=...) seeds Step.Name (RFC 0005 EXPR), for both
 # the enter side and the re-applied bindings on the exit side.
 # ---------------------------------------------------------------------------
 
@@ -208,6 +211,43 @@ class TestLetBindingParseMemoization:
 
 
 # ---------------------------------------------------------------------------
+# A let-bound LIST keeps its engine type through the symbol table and
+# flattens through whole-field argument resolution (RFC 0005 §1.3.2) —
+# regression for the typed round trip of non-string binding values.
+# ---------------------------------------------------------------------------
+
+
+class TestLetBoundListInArgs:
+    def test_let_bound_list_flattens_into_args(self) -> None:
+        # GIVEN: a step script whose `let` binds a list and whose onRun
+        # consumes it as a whole-field argument expression.
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        script = StepScript_2023_09.model_validate(
+            {
+                "let": ["files = ['alpha beta', 'gamma']"],
+                "actions": {
+                    "onRun": {
+                        "command": "echo",
+                        "args": ["front", "{{ files }}", "back"],
+                    }
+                },
+            },
+            context=context,
+        )
+
+        # WHEN: the bindings are applied the way the runner applies them,
+        # and the args resolve through the shared enforcement helper.
+        symtab = SymbolTable()
+        apply_let_bindings(symtab=symtab, let_bindings=script.let or [])
+        resolved = resolve_action_arg_values(script.actions.onRun.args, symtab)
+
+        # THEN: the stored value survived the engine symbol-table build as a
+        # typed list — flattened inline, one argument per element, embedded
+        # whitespace preserved — not rendered as a single stringified list.
+        assert resolved == ["front", "alpha beta", "gamma", "back"]
+
+
+# ---------------------------------------------------------------------------
 # resolve_optional_int_field: one implementation for the three
 # "optional int-or-format-string" call sites, with consistent bounds.
 # ---------------------------------------------------------------------------
@@ -228,6 +268,16 @@ class TestResolveOptionalIntField:
         symtab["X"] = None
         assert resolve_optional_int_field(field, symtab, ge=1, description="timeout") is None
 
+    def test_whole_field_empty_string_rejected(self) -> None:
+        # A genuine empty STRING is not null (openjd-rs parity: only an
+        # ExprValue::Null result means "field omitted"; an empty string
+        # falls through to the integer parse and errors).
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = ""
+        with pytest.raises(ValueError, match="timeout must be a positive integer, got ''"):
+            resolve_optional_int_field(field, symtab, ge=1, description="timeout")
+
     def test_resolved_value_below_ge_rejected(self) -> None:
         field = _format_string_field("{{ X }}")
         symtab = SymbolTable()
@@ -245,6 +295,32 @@ class TestResolveOptionalIntField:
             resolve_optional_int_field(
                 field, symtab, ge=1, le=600, description="notifyPeriodInSeconds"
             )
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param(" 45 ", id="surrounding whitespace"),
+            pytest.param("1_0", id="digit-group underscore"),
+            pytest.param("\u0661\u0662\u0663", id="non-ascii decimal digits"),
+        ],
+    )
+    def test_lenient_int_spellings_rejected(self, value: str) -> None:
+        # Strict ASCII integer grammar (openjd-rs parity): Python's int()
+        # accepts all of these spellings, but Rust's str::parse rejects
+        # them — accepting them here would be a spec-observable divergence
+        # for dynamically resolved timeout/notifyPeriodInSeconds values.
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = value
+        with pytest.raises(ValueError, match="timeout must be a positive integer"):
+            resolve_optional_int_field(field, symtab, ge=1, description="timeout")
+
+    def test_leading_plus_sign_accepted(self) -> None:
+        # Rust's u64/i64 from_str accepts a leading '+'; so do we.
+        field = _format_string_field("{{ X }}")
+        symtab = SymbolTable()
+        symtab["X"] = "+45"
+        assert resolve_optional_int_field(field, symtab, ge=1, description="timeout") == 45
 
     def test_non_integer_resolved_value_rejected(self) -> None:
         field = _format_string_field("{{ X }}")

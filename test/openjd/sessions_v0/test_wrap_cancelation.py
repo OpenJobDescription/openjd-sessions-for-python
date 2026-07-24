@@ -269,7 +269,12 @@ class TestResolveEffectiveCancelation:
         from openjd.model._format_strings import FormatString
         from openjd.model.v2023_09 import CancelationMethodDeferred, ModelParsingContext
 
-        ctx = ModelParsingContext()
+        # A deferred mode is an RFC 0008 forwarding construct, and
+        # WRAP_ACTIONS requires the EXPR extension — so the format strings
+        # here parse as EXPR expressions, giving the typed null semantics
+        # the runtime relies on (a whole-field null drops the cancelation
+        # object; an empty STRING is an error, matching openjd-rs).
+        ctx = ModelParsingContext(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
         return CancelationMethodDeferred(
             mode=FormatString(mode, context=ctx),
             notifyPeriodInSeconds=(
@@ -313,6 +318,17 @@ class TestResolveEffectiveCancelation:
         )
         assert result == ("NOTIFY_THEN_TERMINATE", 45)
 
+    def test_whole_field_mode_resolving_empty_string_raises(self) -> None:
+        # A genuine empty STRING is not null, even for a whole-field
+        # expression (openjd-rs parity: only an ExprValue::Null result
+        # drops the cancelation object; an empty string is an invalid
+        # mode). E.g. a STRING parameter whose value is "".
+        from openjd.sessions._runner_base import resolve_effective_cancelation
+
+        cancelation = self._deferred("{{X}}")
+        with pytest.raises(ValueError, match="must resolve to .* got ''"):
+            resolve_effective_cancelation(cancelation, self._symtab(X=""))
+
     def test_mode_resolving_garbage_raises(self) -> None:
         from openjd.sessions._runner_base import resolve_effective_cancelation
 
@@ -351,3 +367,111 @@ class TestResolveEffectiveCancelation:
             resolve_effective_cancelation(
                 cancelation, self._symtab(X="NOTIFY_THEN_TERMINATE", P=9999)
             )
+
+
+# ---------------------------------------------------------------------------
+# Launch-time cancelation resolution (openjd-rs run_action parity):
+# the effective cancel method is resolved by _run_action against the SAME
+# final scope the command/args resolved with (script lets, *.File.*,
+# WrappedAction.*) and stored on the runner; cancel() consumes it. An
+# unresolvable or invalid cancelation fails the action at start.
+# ---------------------------------------------------------------------------
+
+
+class TestLaunchTimeCancelationResolution:
+    def _env_with_let_bound_cancelation(self) -> Environment_2023_09:
+        from openjd.model.v2023_09 import ModelParsingContext
+
+        ctx = ModelParsingContext(supported_extensions=["EXPR", "WRAP_ACTIONS", "FEATURE_BUNDLE_1"])
+        return Environment_2023_09.model_validate(
+            {
+                "name": "Wrapper",
+                "script": {
+                    "let": [
+                        "hookMode = 'NOTIFY_THEN_TERMINATE'",
+                        "hookPeriod = 9",
+                    ],
+                    "actions": {
+                        "onEnter": {"command": "true"},
+                        "onWrapEnvEnter": {"command": "true"},
+                        "onWrapEnvExit": {"command": "true"},
+                        "onWrapTaskRun": {
+                            "command": "sleep",
+                            "args": ["20"],
+                            "cancelation": {
+                                "mode": "{{hookMode}}",
+                                "notifyPeriodInSeconds": "{{hookPeriod}}",
+                            },
+                        },
+                    },
+                },
+            },
+            context=ctx,
+        )
+
+    def test_let_bound_cancelation_resolved_against_final_scope(self) -> None:
+        # Regression: cancel() used to re-resolve the cancelation against
+        # the runner's BASE symtab — which lacks the script's `let`
+        # bindings — so a let-referencing mode fell back to Terminate with
+        # a warning. It must resolve at launch, in the hook's final scope.
+        from datetime import timedelta
+        from unittest.mock import MagicMock, patch
+
+        from openjd.sessions._runner_env_script import EnvironmentScriptRunner
+        from openjd.sessions._runner_base import NotifyCancelMethod
+
+        env = self._env_with_let_bound_cancelation()
+        import pathlib
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = pathlib.Path(tmp)
+            with patch.object(EnvironmentScriptRunner, "_run"):
+                runner = EnvironmentScriptRunner(
+                    logger=MagicMock(),
+                    session_working_directory=tmp_path,
+                    environment_script=env.script,
+                    symtab=SymbolTable(),
+                    session_files_directory=tmp_path,
+                )
+                runner.wrap_task_run()
+                assert runner._resolved_cancel_method == NotifyCancelMethod(
+                    terminate_delay=timedelta(seconds=9)
+                )
+
+    def test_invalid_deferred_mode_fails_action_at_launch(self) -> None:
+        # Eager validation (openjd-rs parity): a cancelation whose deferred
+        # mode resolves to something other than the two method names or
+        # null must FAIL the action at start — not launch successfully and
+        # only surface if a cancel later occurs.
+        session_id = uuid.uuid4().hex
+        probe = Action_2023_09(
+            command=CommandString_2023_09("sh"),
+            args=[ArgString_2023_09("-c"), ArgString_2023_09("echo should-not-run")],
+        )
+        env = _wrap_env("wrap_env", probe)
+        step = _step_script_with_cancelation(None)
+        # Forward an invalid mode through the wrap round trip: the wrap
+        # action's own cancelation defers to a symbol that resolves to
+        # garbage at run time.
+        from openjd.model._format_strings import FormatString
+        from openjd.model.v2023_09 import CancelationMethodDeferred, ModelParsingContext
+
+        ctx = ModelParsingContext(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
+        object.__setattr__(
+            env.script.actions.onWrapTaskRun,
+            "cancelation",
+            CancelationMethodDeferred(
+                mode=FormatString("{{WrappedStep.Name}}", context=ctx),
+                notifyPeriodInSeconds=None,
+            ),
+        )
+        with Session(session_id=session_id, job_parameter_values={}) as session:
+            session.enter_environment(environment=env)
+            _run_until_ready(session)
+            session.run_task(step_script=step, task_parameter_values={}, step_name="NotAMode")
+            _run_until_ready(session)
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert session.state == SessionState.READY_ENDING

@@ -45,6 +45,7 @@ from ._path_mapping import PathMappingRule
 from ._runner_base import (
     ScriptRunnerBase,
     apply_let_bindings,
+    resolve_action_arg_values,
     resolve_effective_cancelation,
     resolve_optional_int_field,
 )
@@ -373,7 +374,7 @@ class Session(object):
                 ParameterValue (a dataclass containing the type and value of the parameter)
             job_name (Optional[str]): The resolved name of the Job this Session belongs to.
                 When provided, it is seeded as the ``Job.Name`` template variable
-                (RFC 0007 §7.3.1, EXPR extension) for the session's actions —
+                (RFC 0005; Template Schemas §7.3.1, EXPR extension) for the session's actions —
                 mirroring the Job.Name symbol that openjd-rs carries in its
                 session symbol tables. Defaults to None (no Job.Name symbol).
             path_mapping_rules (Optional[list[PathMappingRule]]): A list of the path mapping rules to apply
@@ -424,7 +425,7 @@ class Session(object):
         # environment exits so its onExit resolves in the same scope.
         self._environment_extra_let_bindings: dict[EnvironmentIdentifier, list[str]] = dict()
         # The owning step's name supplied when an environment was entered
-        # (seeds Step.Name, RFC 0007 EXPR), re-seeded when the environment
+        # (seeds Step.Name, RFC 0005 EXPR), re-seeded when the environment
         # exits so the re-applied extra `let` bindings resolve in the same
         # scope.
         self._environment_step_names: dict[EnvironmentIdentifier, str] = dict()
@@ -711,7 +712,7 @@ class Session(object):
                     Key: Environment variable name
                     Value: Value for the environment variable.
             extra_let_bindings (Optional[list[str]]): Additional EXPR ``let``
-                bindings (RFC 0007) evaluated into the symbol table before the
+                bindings (RFC 0005) evaluated into the symbol table before the
                 environment's variables and actions resolve. A step's
                 environments are entered with the step-level ``let`` bindings
                 (``Step.let`` on the instantiated Job) so both can reference
@@ -719,7 +720,7 @@ class Session(object):
                 table that openjd-rs threads into enter_environment.
             step_name (Optional[str]): The name of the step whose
                 stepEnvironments are being entered, if any. Seeds
-                ``Step.Name`` (RFC 0007 EXPR) into the symbol table before
+                ``Step.Name`` (RFC 0005 EXPR) into the symbol table before
                 the extra ``let`` bindings evaluate, so step-level bindings
                 and the environment's variables and actions can reference
                 it — openjd-rs threads a per-step resolved symbol table into
@@ -767,14 +768,14 @@ class Session(object):
 
         symtab = self._symbol_table(environment.revision)
 
-        # RFC 0007 §7.3.1 (EXPR): the owning step's name. Only EXPR templates
+        # RFC 0005; Template Schemas §7.3.1 (EXPR): the owning step's name. Only EXPR templates
         # pass validation referencing Step.Name, so seeding it when known does
         # not change non-EXPR behavior. Seeded before the extra `let` bindings
         # evaluate so a step-level binding may reference it.
         if step_name is not None:
             symtab["Step.Name"] = step_name
 
-        # Step-level `let` bindings (RFC 0007) accompany a step's
+        # Step-level `let` bindings (RFC 0005) accompany a step's
         # environments: evaluate them first so the environment's variables
         # and actions can reference them.
         if extra_let_bindings:
@@ -796,7 +797,7 @@ class Session(object):
                 )
                 return identifier
 
-        # Note: the environment script's own EXPR `let` bindings (RFC 0007)
+        # Note: the environment script's own EXPR `let` bindings (RFC 0005)
         # are evaluated by the script runner, after embedded-file paths are
         # allocated (so bindings can reference Env.File.*). The environment's
         # `variables` resolve against the session symbol table without them,
@@ -977,9 +978,9 @@ class Session(object):
         symtab = self._symbol_table(environment.revision)
         self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
 
-        # Re-seed the owning step's name (Step.Name, RFC 0007 EXPR) and
+        # Re-seed the owning step's name (Step.Name, RFC 0005 EXPR) and
         # re-apply the extra `let` bindings this environment was entered with
-        # (e.g. the owning step's step-level bindings, RFC 0007) so its onExit
+        # (e.g. the owning step's step-level bindings, RFC 0005) so its onExit
         # resolves in the same scope as its onEnter.
         exit_step_name = self._environment_step_names.pop(identifier, None)
         if exit_step_name is not None:
@@ -999,7 +1000,7 @@ class Session(object):
                 )
                 return
 
-        # Note: the environment script's own EXPR `let` bindings (RFC 0007)
+        # Note: the environment script's own EXPR `let` bindings (RFC 0005)
         # are evaluated by the script runner (after embedded-file path
         # allocation); the wrap-interception branch below evaluates them
         # itself before resolving the wrapped onExit.
@@ -1116,7 +1117,7 @@ class Session(object):
 
         self._reset_action_state()
         symtab = self._symbol_table(step_script.revision, task_parameter_values)
-        # RFC 0007 §7.3.1 (EXPR): the running step's name. Only EXPR templates
+        # RFC 0005; Template Schemas §7.3.1 (EXPR): the running step's name. Only EXPR templates
         # pass validation referencing Step.Name, so seeding it when known does
         # not change non-EXPR behavior.
         if step_name is not None:
@@ -1124,7 +1125,7 @@ class Session(object):
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
         self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
 
-        # Note: the step script's EXPR `let` bindings (RFC 0007) are evaluated
+        # Note: the step script's EXPR `let` bindings (RFC 0005) are evaluated
         # by the script runner, after embedded-file paths are allocated (so
         # bindings can reference Task.File.*). The wrap-interception branch
         # below evaluates them itself before resolving the wrapped onRun.
@@ -1237,7 +1238,7 @@ class Session(object):
 
         self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
 
-        # Note: the step script's EXPR `let` bindings (RFC 0007) are evaluated
+        # Note: the step script's EXPR `let` bindings (RFC 0005) are evaluated
         # by the script runner, after embedded-file paths are allocated.
 
         self._runner = StepScriptRunner(
@@ -1461,7 +1462,7 @@ class Session(object):
             symtab[working_dir_key] = str(self.working_directory)
             # Session.WorkingDirectory is a host-format path value in openjd-rs.
             symtab.expr_types[working_dir_key] = ParameterValueType.PATH.value
-            # RFC 0007 §7.3.1 (EXPR): the job's resolved name. Only templates
+            # RFC 0005; Template Schemas §7.3.1 (EXPR): the job's resolved name. Only templates
             # declaring EXPR pass validation referencing Job.Name, so seeding
             # it whenever known does not change non-EXPR behavior.
             if self._job_name is not None:
@@ -1654,8 +1655,8 @@ class Session(object):
         try:
             inner_symtab = self._build_wrapped_inner_scope(
                 scope,
-                getattr(inner_script, "let", None) if inner_script is not None else None,
-                getattr(inner_script, "embeddedFiles", None) if inner_script is not None else None,
+                inner_script.let if inner_script is not None else None,
+                inner_script.embeddedFiles if inner_script is not None else None,
                 symtab,
             )
             inject(inner_symtab)
@@ -1771,9 +1772,13 @@ class Session(object):
         is removed from tracking, so the wrapped environment's own
         variables are included."""
         command = inner_action.command.resolve(symtab=inner_symtab)
-        args = (
-            [a.resolve(symtab=inner_symtab) for a in inner_action.args] if inner_action.args else []
-        )
+        # RFC 0005 §1.3.2 typed argument semantics (null skip, list
+        # flattening), shared with the enforcement path
+        # (ScriptRunnerBase._run_action) so the hook sees exactly the
+        # arguments the wrapped action would have run with unwrapped —
+        # mirroring openjd-rs's seed_wrapped_action_symbols, which resolves
+        # via the same resolve_action_args as the runner.
+        args = resolve_action_arg_values(inner_action.args, inner_symtab)
         symtab["WrappedAction.Command"] = command
         symtab["WrappedAction.Args"] = args
         symtab["WrappedAction.Environment"] = (
@@ -1807,9 +1812,10 @@ class Session(object):
         on_run = step_script.actions.onRun
 
         symtab["WrappedAction.Command"] = on_run.command.resolve(symtab=inner_symtab)
-        symtab["WrappedAction.Args"] = (
-            [arg.resolve(symtab=inner_symtab) for arg in on_run.args] if on_run.args else []
-        )
+        # RFC 0005 §1.3.2 typed argument semantics (null skip, list
+        # flattening), shared with the enforcement path — see
+        # _inject_wrapped_env_symbols.
+        symtab["WrappedAction.Args"] = resolve_action_arg_values(on_run.args, inner_symtab)
         symtab["WrappedAction.Environment"] = self._collect_session_env_list()
         symtab["WrappedAction.Timeout"] = self._resolve_action_timeout(on_run, inner_symtab)
         self._inject_wrapped_cancelation_symbols(
@@ -1898,7 +1904,7 @@ class Session(object):
         else:
             rules_dict = dict()
             symtab[ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value] = "false"
-        # RFC 0007 §7.3: for EXPR evaluation Session.HasPathMappingRules is a
+        # RFC 0005; Template Schemas §7.3: for EXPR evaluation Session.HasPathMappingRules is a
         # boolean and Session.PathMappingRulesFile is a path, matching
         # openjd-rs's typed session symbols. The legacy (non-EXPR)
         # interpolation path ignores these types and keeps the string forms.

@@ -97,7 +97,7 @@ class StepScriptRunner(ScriptRunnerBase):
 
         # For the type checker.
         assert isinstance(self._script, StepScript_2023_09)
-        let_bindings = getattr(self._script, "let", None)
+        let_bindings = self._script.let
         # Write any embedded files to disk. File paths are allocated before
         # the script's EXPR `let` bindings evaluate (so bindings can reference
         # Task.File.*), and contents are written after (so `data` can
@@ -121,18 +121,16 @@ class StepScriptRunner(ScriptRunnerBase):
             symtab = self._symtab
 
         # Construct the command by evalutating the format strings in the command
-        self._run_action(self._script.actions.onRun, symtab)
+        self._run_action(
+            self._script.actions.onRun,
+            symtab,
+            default_notify_period_seconds=TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS,
+        )
 
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
     ) -> None:
-        # For the type checker.
-        assert isinstance(self._script, StepScript_2023_09)
-
-        self._cancel_with_effective_cancelation(
-            cancelation=self._script.actions.onRun.cancelation,
-            symtab=self._symtab,
-            default_notify_period_seconds=TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS,
-            time_limit=time_limit,
-            mark_action_failed=mark_action_failed,
-        )
+        # Cancel with the effective method resolved at launch time by
+        # _run_action, against the action's own final scope (its lets and
+        # Task.File.* symbols) — openjd-rs parity.
+        self._cancel_with_resolved_method(time_limit, mark_action_failed)

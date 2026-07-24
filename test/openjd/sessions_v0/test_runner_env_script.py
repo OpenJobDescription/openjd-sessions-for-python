@@ -387,7 +387,9 @@ class TestEnvironmentScriptRunner:
         # The lower-level process runners have been thoroughly tested for cancel's
         # functionality, so this seems fine.
 
-        with patch.object(EnvironmentScriptRunner, "_run_action"):
+        # Patch _run (not _run_action): the effective cancel method is now
+        # resolved by _run_action at launch time and consumed by cancel().
+        with patch.object(EnvironmentScriptRunner, "_run"):
             with patch.object(EnvironmentScriptRunner, "_cancel") as mock_cancel:
                 # GIVEN
                 script = EnvironmentScript_2023_09(
@@ -468,6 +470,7 @@ class TestEnvironmentScriptRunner:
             action,
             symtab,
             default_timeout=default_timeout,
+            default_notify_period_seconds=30,
         )
 
     def test_exit_uses_default_timeout(

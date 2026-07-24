@@ -252,7 +252,9 @@ class TestStepScriptRunner:
         # The lower-level process runners have been thoroughly tested for cancel's
         # functionality, so this seems fine.
 
-        with patch.object(StepScriptRunner, "_run_action"):
+        # Patch _run (not _run_action): the effective cancel method is now
+        # resolved by _run_action at launch time and consumed by cancel().
+        with patch.object(StepScriptRunner, "_run"):
             with patch.object(StepScriptRunner, "_cancel") as mock_cancel:
                 # GIVEN
                 script = StepScript_2023_09(

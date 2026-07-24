@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from openjd.model import SymbolTable
-from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import EnvironmentScript as EnvironmentScript_2023_09
 from ._embedded_files import EmbeddedFilesScope, _FileRecord
 from ._logging import log_subsection_banner
@@ -141,9 +140,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         log_subsection_banner(self._logger, "Phase: Setup")
 
         let_bindings = (
-            getattr(self._environment_script, "let", None)
-            if self._environment_script is not None
-            else None
+            self._environment_script.let if self._environment_script is not None else None
         )
         # Write any embedded files to disk. File paths are allocated before
         # the script's EXPR `let` bindings evaluate (so bindings can reference
@@ -174,7 +171,12 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
 
         # Construct the command by evalutating the format strings in the command
         self._action = action
-        self._run_action(self._action, symtab, default_timeout=default_timeout)
+        self._run_action(
+            self._action,
+            symtab,
+            default_timeout=default_timeout,
+            default_notify_period_seconds=ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS,
+        )
 
     def enter(self) -> None:
         """Run the Environment's onEnter action."""
@@ -268,13 +270,8 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
             # Nothing to do.
             return
 
-        # For the type checker
-        assert isinstance(self._action, Action_2023_09)
-
-        self._cancel_with_effective_cancelation(
-            cancelation=self._action.cancelation,
-            symtab=self._symtab,
-            default_notify_period_seconds=ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS,
-            time_limit=time_limit,
-            mark_action_failed=mark_action_failed,
-        )
+        # Cancel with the effective method resolved at launch time by
+        # _run_action, against the action's own final scope (the script's
+        # lets and Env.File.* symbols, plus WrappedAction.* for a wrap
+        # hook) — openjd-rs parity.
+        self._cancel_with_resolved_method(time_limit, mark_action_failed)
