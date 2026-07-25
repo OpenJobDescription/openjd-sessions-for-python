@@ -547,12 +547,15 @@ class TestUriPathMapping:
     """
 
     def _rule(self, source: str, destination: str = "/local") -> PathMappingRule:
-        return PathMappingRule.from_dict(
-            rule={
-                "source_path_format": "URI",
-                "source_path": source,
-                "destination_path": destination,
-            }
+        # Construct directly with a PurePosixPath destination rather than going
+        # through from_dict, which builds a host-flavoured PurePath -- on Windows
+        # that renders "/local" as "\\local" and the expectations below would
+        # have to be host-dependent for no reason. os_name is patched to posix in
+        # each test, so the child separator is "/" on both hosts.
+        return PathMappingRule(
+            source_path_format=PathFormat.URI,
+            source_path=source,
+            destination_path=PurePosixPath(destination),
         )
 
     @pytest.mark.parametrize(

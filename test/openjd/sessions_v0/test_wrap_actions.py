@@ -64,6 +64,13 @@ def _run_until_ready(session: Session, timeout_s: float = 10.0) -> None:
 
 
 def _trace_path(session: Session) -> Path:
+    """The file the test scripts append to.
+
+    Interpolate it into a shell command as ``'{trace.as_posix()}'`` -- quoted and
+    slash-separated. A native Windows path interpolated bare has its backslashes
+    consumed as escapes by the ``sh`` these tests invoke, so the redirect would
+    silently land somewhere else.
+    """
     return Path(str(session.working_directory)) / "trace.log"
 
 
@@ -130,16 +137,18 @@ class TestWrapEnvEnter:
                 onWrapEnvEnter=_action(
                     "sh",
                     "-c",
-                    f"echo '[WRAPPED] inner-onEnter' >> {trace} && "
-                    f"echo 'inner-onEnter body' >> {trace}",
+                    f"echo '[WRAPPED] inner-onEnter' >> '{trace.as_posix()}' && "
+                    f"echo 'inner-onEnter body' >> '{trace.as_posix()}'",
                 ),
                 onWrapTaskRun=_NOOP,
                 onWrapEnvExit=_NOOP,
-                onEnter=_action("sh", "-c", f"echo 'outer-onEnter' >> {trace}"),
+                onEnter=_action("sh", "-c", f"echo 'outer-onEnter' >> '{trace.as_posix()}'"),
             )
             inner = _env(
                 "inner",
-                onEnter=_action("sh", "-c", f"echo 'should not run on host' >> {trace}"),
+                onEnter=_action(
+                    "sh", "-c", f"echo 'should not run on host' >> '{trace.as_posix()}'"
+                ),
             )
 
             session.enter_environment(environment=outer)
@@ -170,7 +179,7 @@ class TestWrapEnvEnter:
                     "-c",
                     "echo "
                     "'name={{WrappedEnv.Name}} cmd={{WrappedAction.Command}}' "
-                    f">> {trace}",
+                    f">> '{trace.as_posix()}'",
                 ),
                 onWrapTaskRun=_NOOP,
                 onWrapEnvExit=_NOOP,
@@ -204,13 +213,15 @@ class TestWrapEnvExit:
                 onWrapEnvExit=_action(
                     "sh",
                     "-c",
-                    f"echo '[WRAPPED] inner-onExit' >> {trace}",
+                    f"echo '[WRAPPED] inner-onExit' >> '{trace.as_posix()}'",
                 ),
-                onExit=_action("sh", "-c", f"echo 'outer-onExit' >> {trace}"),
+                onExit=_action("sh", "-c", f"echo 'outer-onExit' >> '{trace.as_posix()}'"),
             )
             inner = _env(
                 "inner",
-                onExit=_action("sh", "-c", f"echo 'should not run on host' >> {trace}"),
+                onExit=_action(
+                    "sh", "-c", f"echo 'should not run on host' >> '{trace.as_posix()}'"
+                ),
             )
 
             outer_id = session.enter_environment(environment=outer)
@@ -244,16 +255,22 @@ class TestVisibleOrdering:
             trace = _trace_path(session)
             outer = _env(
                 "outer",
-                onEnter=_action("sh", "-c", f"echo 'outer-onEnter' >> {trace}"),
-                onWrapEnvEnter=_action("sh", "-c", f"echo '[WRAPPED] inner-onEnter' >> {trace}"),
-                onWrapTaskRun=_action("sh", "-c", f"echo '[WRAPPED] task-onRun' >> {trace}"),
-                onWrapEnvExit=_action("sh", "-c", f"echo '[WRAPPED] inner-onExit' >> {trace}"),
-                onExit=_action("sh", "-c", f"echo 'outer-onExit' >> {trace}"),
+                onEnter=_action("sh", "-c", f"echo 'outer-onEnter' >> '{trace.as_posix()}'"),
+                onWrapEnvEnter=_action(
+                    "sh", "-c", f"echo '[WRAPPED] inner-onEnter' >> '{trace.as_posix()}'"
+                ),
+                onWrapTaskRun=_action(
+                    "sh", "-c", f"echo '[WRAPPED] task-onRun' >> '{trace.as_posix()}'"
+                ),
+                onWrapEnvExit=_action(
+                    "sh", "-c", f"echo '[WRAPPED] inner-onExit' >> '{trace.as_posix()}'"
+                ),
+                onExit=_action("sh", "-c", f"echo 'outer-onExit' >> '{trace.as_posix()}'"),
             )
             wrapped_inner = _env(
                 "wrapped-inner",
-                onEnter=_action("sh", "-c", f"echo 'inner-onEnter body' >> {trace}"),
-                onExit=_action("sh", "-c", f"echo 'inner-onExit body' >> {trace}"),
+                onEnter=_action("sh", "-c", f"echo 'inner-onEnter body' >> '{trace.as_posix()}'"),
+                onExit=_action("sh", "-c", f"echo 'inner-onExit body' >> '{trace.as_posix()}'"),
             )
             step = _step("echo", "task-onRun-body")
 
@@ -637,7 +654,7 @@ class TestWrappedActionEnvironmentContents:
                 onWrapEnvExit=_action(
                     "sh",
                     "-c",
-                    f"echo \"ENVLIST=<{{{{WrappedAction.Environment}}}}>\" >> '{trace}'",
+                    f"echo \"ENVLIST=<{{{{WrappedAction.Environment}}}}>\" >> '{trace.as_posix()}'",
                 ),
             )
             inner = _env("Inner", onEnter=_NOOP, onExit=_NOOP)
