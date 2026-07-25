@@ -235,8 +235,9 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         """Common dispatch for the three RFC 0008 wrap hooks. ``hook`` is
         one of ``onWrapEnvEnter``, ``onWrapTaskRun``, or ``onWrapEnvExit``."""
         if hook not in WRAP_HOOK_ACTION_NAMES:
-            # Guard the getattr below: without this, a typo'd hook name
-            # would silently become a SUCCESS no-op.
+            # Distinguish a caller typo from model skew: the hasattr check
+            # below would otherwise report a mistyped hook name as an
+            # incompatible openjd-model.
             raise ValueError(f"Unknown wrap hook name: {hook}")
         if self.state != ScriptRunnerState.READY:
             raise RuntimeError("This cannot be used to run a second subprocess.")

@@ -16,6 +16,7 @@ bindings (RFC 0005):
 
 from __future__ import annotations
 
+import sys
 import time
 import uuid
 from typing import Any
@@ -36,6 +37,7 @@ from openjd.model._let_bindings import _parse_rhs
 from openjd.sessions import ActionState, ActionStatus, Session, SessionState
 from openjd.model.v2023_09 import StepScript as StepScript_2023_09
 from openjd.sessions._runner_base import (
+    MAX_INT_FIELD_VALUE,
     apply_let_bindings,
     resolve_action_arg_values,
     resolve_optional_int_field,
@@ -401,3 +403,121 @@ class TestEnvironmentVariablesRuntimeFailure:
 
             # THEN
             assert identifier not in session.environments_entered
+
+
+# ---------------------------------------------------------------------------
+# RFC 0005 1.3.2 typed argument semantics on the ENFORCEMENT path: what a real
+# subprocess receives, not just what the helper returns. A whole-field list
+# expression flattens to one argument per element; a whole-field null is
+# skipped entirely.
+# ---------------------------------------------------------------------------
+
+
+class TestTypedArgumentSemanticsEndToEnd:
+    def test_subprocess_argv_flattens_lists_and_skips_nulls(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a step whose args mix plain strings, a whole-field list
+        # expression, and a whole-field null.
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        step = StepScript_2023_09.model_validate(
+            {
+                "let": ["items = ['alpha beta', 'gamma']", "missing = null"],
+                "actions": {
+                    "onRun": {
+                        "command": sys.executable,
+                        "args": [
+                            "-c",
+                            "import sys; print('ARGV=' + repr(sys.argv[1:]))",
+                            "front",
+                            "{{items}}",
+                            "{{missing}}",
+                            "back",
+                        ],
+                    }
+                },
+            },
+            context=context,
+        )
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(step_script=step, task_parameter_values={})
+            _run_until_ready(session)
+
+        # THEN: four arguments -- the list flattened element-wise (preserving the
+        # space inside an element) and the null argument was dropped. A stringified
+        # list or an empty argument would both be wrong.
+        status = session.action_status
+        assert status is not None
+        assert status.state == ActionState.SUCCESS
+        expected = "ARGV=" + repr(["front", "alpha beta", "gamma", "back"])
+        assert any(expected in m for m in caplog.messages), [
+            m for m in caplog.messages if "ARGV=" in m
+        ]
+
+
+# ---------------------------------------------------------------------------
+# The over-range bound applies to a value that arrives through a format string,
+# not only to a literal -- that is the path a forwarded WrappedAction.Timeout
+# takes, and without the bound the action would run unbounded instead of failing.
+# ---------------------------------------------------------------------------
+
+
+class TestOverRangeResolvedIntField:
+    def test_resolved_value_above_max_is_rejected(self) -> None:
+        # GIVEN
+        symtab = SymbolTable()
+        symtab["X"] = str(MAX_INT_FIELD_VALUE + 1)
+
+        # WHEN / THEN
+        with pytest.raises(ValueError, match="must be at most"):
+            resolve_optional_int_field(
+                _format_string_field("{{ X }}"), symtab, ge=1, description="timeout"
+            )
+
+    def test_resolved_value_at_max_is_accepted(self) -> None:
+        # GIVEN
+        symtab = SymbolTable()
+        symtab["X"] = str(MAX_INT_FIELD_VALUE)
+
+        # WHEN / THEN: the boundary itself is pinned from both sides.
+        assert (
+            resolve_optional_int_field(
+                _format_string_field("{{ X }}"), symtab, ge=1, description="timeout"
+            )
+            == MAX_INT_FIELD_VALUE
+        )
+
+
+# ---------------------------------------------------------------------------
+# Task.File.* / Env.File.* are PATH-typed, so EXPR property access works on
+# them. Without the type they resolve as plain strings and `.parent` fails.
+# ---------------------------------------------------------------------------
+
+
+class TestEmbeddedFileSymbolsArePathTyped:
+    def test_task_file_supports_path_property_access(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a step-level binding taking `.parent` of an embedded file path.
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        step = StepScript_2023_09.model_validate(
+            {
+                "let": ["where = string(Task.File.Cfg.parent)"],
+                "actions": {"onRun": {"command": "echo", "args": ["PARENT={{where}}"]}},
+                "embeddedFiles": [{"name": "Cfg", "type": "TEXT", "data": "config-contents\n"}],
+            },
+            context=context,
+        )
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(step_script=step, task_parameter_values={})
+            _run_until_ready(session)
+
+            # THEN: the binding resolved, so the symbol carried the PATH type.
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("PARENT=" in m and "embedded_files" in m for m in caplog.messages)

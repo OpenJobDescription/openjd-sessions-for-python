@@ -30,7 +30,7 @@ from openjd.sessions._embedded_files import EmbeddedFilesScope
 from openjd.sessions._os_checker import is_posix, is_windows
 
 from openjd.sessions._runner_base import (
-    MAX_UNSIGNED_64BIT_INT,
+    MAX_INT_FIELD_VALUE,
     NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
@@ -767,22 +767,23 @@ class TestScriptRunnerBase:
         assert any("larger than this runtime can enforce" in m for m in messages)
 
     @pytest.mark.usefixtures("queue_handler")
-    def test_run_action_timeout_above_u64_fails_action(
+    def test_run_action_over_range_timeout_fails_action(
         self,
         tmp_path: Path,
         queue_handler: QueueHandler,
     ) -> None:
-        """A timeout beyond u64::MAX fails the action, matching openjd-rs.
+        """An over-range timeout fails the action, matching openjd-rs.
 
-        openjd-rs resolves these fields with `str::parse::<u64>()`, which fails
-        rather than saturating, so the action must fail through the normal
-        failure path instead of running.
+        openjd-rs rejects a literal above i64::MAX at parse time and its runtime
+        parses a resolved one with str::parse, which fails rather than
+        saturating -- so the action must fail through the normal failure path
+        instead of running. See MAX_INT_FIELD_VALUE.
         """
         # GIVEN
         action = Action_2023_09(
             command=CommandString_2023_09("echo"),
             args=[ArgString_2023_09("ok")],
-            timeout=MAX_UNSIGNED_64BIT_INT + 1,
+            timeout=MAX_INT_FIELD_VALUE + 1,
         )
         logger = build_logger(queue_handler)
 

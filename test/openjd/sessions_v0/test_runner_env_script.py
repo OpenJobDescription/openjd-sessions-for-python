@@ -411,6 +411,10 @@ class TestEnvironmentScriptRunner:
                     session_files_directory=tmp_path,
                 )
                 runner.enter()
+                # _run is patched out, so stand in for the subprocess it would have
+                # created: a cancel that arrives before one exists is deferred
+                # rather than applied (see ScriptRunnerBase._pending_cancel).
+                runner._process = MagicMock()
                 time_limit = timedelta(30)
 
                 # WHEN

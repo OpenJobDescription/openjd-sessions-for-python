@@ -1,5 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+import re
 from dataclasses import dataclass, fields
 from enum import Enum
 from os import name as os_name
@@ -23,6 +24,14 @@ string."""
 def _ascii_lower(value: str) -> str:
     """Lower-case the ASCII letters in ``value``, leaving everything else alone."""
     return value.translate(_ASCII_LOWER_TABLE)
+
+
+_URI_SOURCE_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
+"""A URI-format rule's ``source_path`` must start with ``<scheme>://``.
+
+Mirrors the scheme grammar of RFC 3986 §3.1, which is what the EXPR engine's
+URI parser accepts. Validated in the constructor so a malformed rule is rejected
+where the value can be named."""
 
 
 class PathFormat(str, Enum):
@@ -58,6 +67,16 @@ class PathMappingRule:
             if not isinstance(source_path, str):
                 raise ValueError(
                     "Path mapping rule source_path must be a string for the URI source_path_format"
+                )
+            # Validate the shape here, where the offending value can be named.
+            # The EXPR engine requires a real "scheme://" for a URI rule, and
+            # these rules also reach it via the session's host context — without
+            # this check a single-slash typo in a pathmapping-1.0 document
+            # surfaces as an opaque ValueError out of Session() instead.
+            if _URI_SOURCE_RE.match(source_path) is None:
+                raise ValueError(
+                    "Path mapping rule source_path for the URI source_path_format must "
+                    f"begin with '<scheme>://', got {source_path!r}"
                 )
         else:
             if not isinstance(source_path, PureWindowsPath):
@@ -160,7 +179,7 @@ class PathMappingRule:
             result += sep
         return True, result
 
-    def source_path_component_count(self) -> int:
+    def _source_path_component_count(self) -> int:
         """Number of components in the source path, used to order rules from
         most to least specific. For URI sources the ``scheme://authority``
         counts as one component plus one per path segment."""
@@ -183,20 +202,30 @@ class PathMappingRule:
         if self.source_path_format == PathFormat.URI:
             return self._apply_uri(path)
         source_path = self.source_path
-        # The constructor guarantees non-URI rules carry PurePath sources. An
-        # assert rather than a raise: this method is reached from
-        # Session.run_task, where nothing catches a TypeError, so a broken
-        # invariant must not be able to become an exception escaping the public
-        # API. mypy narrows on the assert just as well.
+        # Unreachable: the constructor guarantees non-URI rules carry PurePath
+        # sources. An assert rather than a raise because its only job here is to
+        # narrow the Union for mypy.
         assert isinstance(source_path, PurePath)
         pure_path: PurePath
         if self.source_path_format == PathFormat.POSIX:
             pure_path = PurePosixPath(path)
+            if not pure_path.is_relative_to(source_path):
+                return False, path
         else:
             pure_path = PureWindowsPath(path)
-
-        if not pure_path.is_relative_to(source_path):
-            return False, path
+            # Windows paths match case-insensitively, but over ASCII only —
+            # PureWindowsPath.is_relative_to() folds with str.lower(), which also
+            # folds non-ASCII characters (U+212A KELVIN SIGN lowers to ASCII
+            # 'k'), so a homoglyph in a submitted path would remap here while the
+            # EXPR engine's apply_path_mapping() and openjd-rs, which both use an
+            # ASCII-only fold, leave it alone. RFC 0006 2.3.2 says the two are
+            # the same transformation, so compare components ourselves.
+            source_parts = source_path.parts
+            path_parts = pure_path.parts
+            if len(path_parts) < len(source_parts) or any(
+                _ascii_lower(sp) != _ascii_lower(pp) for sp, pp in zip(source_parts, path_parts)
+            ):
+                return False, path
 
         remapped_parts = self.destination_path.parts + pure_path.parts[len(source_path.parts) :]
         if os_name == "posix":
@@ -213,5 +242,6 @@ class PathMappingRule:
     def _has_trailing_slash(self, os: PathFormat, path: str) -> bool:
         if os == PathFormat.POSIX:
             return path.endswith("/")
-        else:
-            return path.endswith("\\")
+        # A Windows path may use either separator, and the EXPR engine (and
+        # openjd-rs) accept both here.
+        return path.endswith("\\") or path.endswith("/")

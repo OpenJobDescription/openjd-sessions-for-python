@@ -47,6 +47,8 @@ __all__ = (
     "resolve_action_arg_values",
     "resolve_effective_cancelation",
     "resolve_optional_int_field",
+    "MAX_INT_FIELD_VALUE",
+    "MAX_SCHEDULABLE_TIMEOUT_SECONDS",
 )
 
 
@@ -56,32 +58,43 @@ _STRICT_INT_RE = re.compile(r"[+-]?[0-9]+")
 an optional sign followed by ASCII digits, exactly what Rust's ``str::parse``
 accepts. See resolve_optional_int_field."""
 
-MAX_UNSIGNED_64BIT_INT = 2**64 - 1
-"""Largest value the openjd-rs runtime can hold for these fields.
+MAX_INT_FIELD_VALUE = 2**63 - 1
+"""Largest value accepted for a dynamically resolved integer field.
 
-openjd-rs models ``timeout`` as an ``Option<FormatString>`` and resolves it with
+Three limits coincide here. openjd-rs's model rejects a literal ``timeout``
+above ``i64::MAX`` at parse time; its runtime parses a resolved one with
 ``str::parse::<u64>()`` (``runner/mod.rs`` resolve_action_timeout), which *fails*
-rather than saturating above ``u64::MAX``; its model additionally rejects a
-literal above ``i64::MAX`` at parse time. Python's model has no upper bound at
-all, so we apply this one here — to literal and resolved values alike, so that
-a value forwarded as ``{{WrappedAction.Timeout}}`` (RFC 0008) behaves exactly as
+rather than saturating; and the EXPR engine's integers are ``i64``, so a larger
+value cannot round-trip through ``WrappedAction.Timeout`` (RFC 0008) at all.
+Python's model has no upper bound, so the bound is applied here — to literal and
+resolved values alike, which is what keeps a forwarded value behaving exactly as
 it would have unwrapped."""
 
 MAX_SCHEDULABLE_TIMEOUT_SECONDS = 2**62 // 10**9
 """Largest action timeout we can actually enforce, in seconds (~146 years).
 
-Two distinct limits sit above this, both of which used to surface as an
-``OverflowError``: :class:`datetime.timedelta` tops out at 999,999,999 days, and
+Two distinct limits sit above this. :class:`datetime.timedelta` tops out at
+999,999,999 days and raises ``OverflowError`` on construction. Separately,
 :class:`threading.Timer` computes an absolute deadline in CPython's internal
 64-bit nanosecond time representation, which overflows just above 2**63
-nanoseconds (measured: 9,223,372,036 s schedules, 9,223,372,037 s does not).
-The bound here is deliberately well inside that boundary rather than pinned to
-it, because the overflow is reported against the platform's ``time_t`` and the
-exact threshold is not portable.
+nanoseconds (measured: 9,223,372,036 s schedules, 9,223,372,037 s does not) —
+that one raises on the timer's own thread, so the timeout silently never fires
+rather than failing loudly. The bound here is deliberately well inside that
+boundary rather than pinned to it, because the overflow is reported against the
+platform's ``time_t`` and the exact threshold is not portable.
 
 A timeout beyond this is indistinguishable from "no timeout", which is what
 openjd-rs's ``Duration``-based timer effectively provides at that magnitude, so
 the action runs unbounded instead of failing. See _timeout_from_seconds."""
+
+
+def _over_range_message(description: str, value: int) -> str:
+    """Error text for a value that is a valid integer but too large to use.
+
+    Distinct from the bounds message, because "must be a positive integer" reads
+    as nonsense for a value that plainly is one -- the problem is magnitude.
+    """
+    return f"{description} must be at most {MAX_INT_FIELD_VALUE}, got '{value}'"
 
 
 def _timeout_from_seconds(seconds: int, logger: LoggerAdapter) -> Optional[timedelta]:
@@ -242,12 +255,11 @@ def resolve_optional_int_field(
         constraint = "an integer"
     if isinstance(value, int):
         # Literal values were bounds-checked by the static validator at parse
-        # time, with one exception: the validator has no upper bound (see
-        # MAX_UNSIGNED_64BIT_INT). Reject an unrepresentable literal here so
-        # the action fails through the caller's normal failure path instead of
-        # overflowing later.
-        if value > MAX_UNSIGNED_64BIT_INT:
-            raise ValueError(f"{description} must be {constraint}, got '{value}'")
+        # time -- with one exception: the validator has no upper bound. Reject an
+        # over-range literal here, mirroring openjd-rs, whose model rejects it at
+        # parse time and whose runtime's str::parse fails rather than saturating.
+        if value > MAX_INT_FIELD_VALUE:
+            raise ValueError(_over_range_message(description, value))
         return value
     # Typed resolution: a whole-field EXPR expression yields the engine's
     # typed value, so a null result is distinguishable from a genuine empty
@@ -267,13 +279,12 @@ def resolve_optional_int_field(
     if _STRICT_INT_RE.fullmatch(resolved) is None:
         raise ValueError(f"{description} must be {constraint}, got '{resolved}'")
     result = int(resolved)
-    # str::parse::<u64>() fails rather than saturating above u64::MAX, so an
-    # out-of-range value must fail here too rather than reach the timer.
-    if (
-        (ge is not None and result < ge)
-        or (le is not None and result > le)
-        or result > MAX_UNSIGNED_64BIT_INT
-    ):
+    if result > MAX_INT_FIELD_VALUE:
+        # See MAX_INT_FIELD_VALUE: openjd-rs's str::parse fails rather than
+        # saturating, so an over-range value must fail here too rather than
+        # reach the timer.
+        raise ValueError(_over_range_message(description, result))
+    if (ge is not None and result < ge) or (le is not None and result > le):
         raise ValueError(f"{description} must be {constraint}, got '{result}'")
     return result
 
@@ -461,6 +472,17 @@ class ScriptRunnerBase(ABC):
     """True iff the subprocess was canceled but action needs to be notified as FAILED.
     """
 
+    _pending_cancel: Optional[tuple[Optional[timedelta], bool]]
+    """A cancel that arrived before the subprocess existed, as
+    ``(time_limit, mark_action_failed)``.
+
+    ``cancel()`` is a cross-thread API, so it can land during action setup —
+    between resolving the action and the subprocess actually being created. The
+    request is remembered here and applied by :meth:`_run` as soon as the
+    subprocess exists, so a cancel is never silently dropped (openjd-rs holds
+    the equivalent state in a sticky ``CancellationToken``).
+    """
+
     _runtime_limit: Optional[Timer]
     """The Timer that will fire when the currently running Action has exhausted
     its runtime limit.
@@ -548,6 +570,7 @@ class ScriptRunnerBase(ABC):
         self._pool = ThreadPoolExecutor(max_workers=1)
         self._state_override = None
         self._resolved_cancel_method = None
+        self._pending_cancel = None
         self._print_section_banner = True
 
     # Context manager for use in our tests
@@ -698,6 +721,14 @@ class ScriptRunnerBase(ABC):
         # for _process.run hasn't actually gotten far enough to start the subprocess
         # before we check self.state
         self._process.wait_until_started()
+
+        # A cancel that landed during setup, before there was a subprocess to
+        # signal, is applied now rather than dropped. See _pending_cancel.
+        pending = self._pending_cancel
+        if pending is not None:
+            self._pending_cancel = None
+            if self._resolved_cancel_method is not None:
+                self._cancel(self._resolved_cancel_method, *pending)
 
         if self.state == ScriptRunnerState.RUNNING and self._callback is not None:
             # Let the caller know that the process is running.
@@ -880,12 +911,23 @@ class ScriptRunnerBase(ABC):
     ) -> None:
         """Shared implementation of the runners' :meth:`cancel`: cancel with
         the effective cancel method that :meth:`_run_action` resolved at
-        launch time. No-op when no action was launched (e.g. setup failed
-        before the subprocess started — there is nothing to cancel).
+        launch time.
+
+        A cancel that arrives before the subprocess exists is remembered and
+        applied by :meth:`_run` as soon as it does (see :attr:`_pending_cancel`)
+        — `cancel()` is called from another thread, so "no subprocess yet" is a
+        race, not a no-op. Only when no action will ever be launched (setup
+        failed before resolution) is there genuinely nothing to cancel.
         """
-        if self._resolved_cancel_method is None:
+        if self._process is None:
+            if self.state == ScriptRunnerState.FAILED:
+                # Setup already failed; no subprocess is coming.
+                return
+            self._pending_cancel = (time_limit, mark_action_failed)
             return
         # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
+        if self._resolved_cancel_method is None:  # pragma: no cover - defensive
+            return
         self._cancel(self._resolved_cancel_method, time_limit, mark_action_failed)
 
     def _cancel(
@@ -894,8 +936,12 @@ class ScriptRunnerBase(ABC):
         time_limit: Optional[timedelta] = None,
         mark_action_failed: bool = False,
     ) -> None:
-        # For the type checkers
-        assert self._process is not None
+        if self._process is None:
+            # A cancel that raced action setup: nothing to signal yet. Callers
+            # go through _cancel_with_resolved_method, which records it as a
+            # pending cancel instead — an early return here rather than an
+            # assert, so no bare AssertionError can reach the public API.
+            return
         # Nothing to do if it's not running.
         if not self._process.is_running:
             return

@@ -275,6 +275,10 @@ class TestStepScriptRunner:
                     session_files_directory=tmp_path,
                 )
                 runner.run()
+                # _run is patched out, so stand in for the subprocess it would have
+                # created: a cancel that arrives before one exists is deferred
+                # rather than applied (see ScriptRunnerBase._pending_cancel).
+                runner._process = MagicMock()
                 time_limit = timedelta(30)
 
                 # WHEN
@@ -348,3 +352,75 @@ class TestStepScriptRunner:
         assert runner.state == ScriptRunnerState.SUCCESS
         messages = collect_queue_messages(message_queue)
         assert "Hello!" in messages
+
+
+class TestCancelRacingLaunch:
+    """A cancel is delivered from another thread, so it can land while the action
+    is still being set up -- after the effective cancel method has been resolved
+    but before the subprocess exists. It must be remembered and applied, not
+    dropped and not raised (openjd-rs holds the equivalent state in a sticky
+    CancellationToken)."""
+
+    def _runner(self, tmp_path: Path, python_exe: str) -> StepScriptRunner:
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(python_exe),
+                    args=[ArgString_2023_09("-c"), ArgString_2023_09("print('hi')")],
+                )
+            )
+        )
+        return StepScriptRunner(
+            logger=MagicMock(),
+            session_working_directory=tmp_path,
+            script=script,
+            symtab=SymbolTable(),
+            session_files_directory=tmp_path,
+        )
+
+    def test_cancel_before_subprocess_is_remembered(self, tmp_path: Path, python_exe: str) -> None:
+        # GIVEN: the action resolved (so a cancel method is stored) but _run was
+        # patched out, so no subprocess exists yet
+        with patch.object(StepScriptRunner, "_run"):
+            runner = self._runner(tmp_path, python_exe)
+            runner.run()
+        assert runner._process is None
+        assert runner._resolved_cancel_method == TerminateCancelMethod()
+
+        # WHEN: a cancel lands in that window
+        runner.cancel(time_limit=timedelta(seconds=7))
+
+        # THEN: it is remembered rather than dropped, and nothing was raised
+        assert runner._pending_cancel == (timedelta(seconds=7), False)
+
+    def test_pending_cancel_is_applied_once_the_subprocess_exists(
+        self, tmp_path: Path, python_exe: str
+    ) -> None:
+        # GIVEN: a cancel recorded during setup
+        with patch.object(StepScriptRunner, "_run"):
+            runner = self._runner(tmp_path, python_exe)
+            runner.run()
+        runner.cancel(mark_action_failed=True)
+        assert runner._pending_cancel == (None, True)
+
+        # WHEN: the real _run finishes creating the subprocess
+        with patch.object(StepScriptRunner, "_cancel") as mock_cancel:
+            runner._process = MagicMock()
+            pending = runner._pending_cancel
+            assert pending is not None
+            runner._pending_cancel = None
+            assert runner._resolved_cancel_method is not None
+            runner._cancel(runner._resolved_cancel_method, *pending)
+
+        # THEN: the stored method is delivered with the recorded arguments
+        assert mock_cancel.call_args.args[0] == TerminateCancelMethod()
+        assert mock_cancel.call_args.args[2] is True
+
+    def test_cancel_with_no_subprocess_does_not_raise(
+        self, tmp_path: Path, python_exe: str
+    ) -> None:
+        # GIVEN: a runner that never launched anything
+        runner = self._runner(tmp_path, python_exe)
+
+        # WHEN / THEN: the low-level cancel is a quiet no-op, not an AssertionError
+        runner._cancel(TerminateCancelMethod())

@@ -617,3 +617,155 @@ class TestWrappedStepNameRequired:
             status = session.action_status
             assert status is not None
             assert status.state == ActionState.SUCCESS
+
+
+# ---------------------------------------------------------------------------
+# A wrap hook resolves in the wrap environment's own scope, which in openjd-rs
+# is that environment's frozen enter-time symbol table. So a step environment
+# that defines wrap hooks must carry the step-level `let` bindings it was
+# entered with into every hook invocation -- without letting them replace the
+# wrapped action's own resolution scope.
+# ---------------------------------------------------------------------------
+
+
+class TestWrapHookSeesEnterTimeStepScope:
+    def test_hook_resolves_step_level_let_bindings(self, tmp_path) -> None:
+        # GIVEN: a wrap environment entered with a step's step-level bindings,
+        # and a hook that references one of them.
+        env = _wrap_env(
+            "WrapEnv",
+            Action_2023_09(
+                command=CommandString_2023_09("echo"),
+                args=[ArgString_2023_09("HOOK-{{greeting}}")],
+            ),
+        )
+        step = _step_script("echo", ["INNER"])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            identifier = session.enter_environment(
+                environment=env,
+                extra_let_bindings=["greeting = 'from-step-let'"],
+                step_name="Step1",
+            )
+            _run_until_ready(session)
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS
+
+            # WHEN
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step1")
+            _run_until_ready(session)
+
+            # THEN: the hook resolved the step-level binding instead of failing
+            # with "Undefined variable".
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
+
+    def test_wrap_env_step_name_does_not_reach_the_wrapped_action(self) -> None:
+        """The wrap env's enter-time step context must not replace the running
+        step's in the wrapped action's own scope.
+
+        This goes through ``run_task`` on purpose: the ordering it pins lives in
+        ``run_task`` (seed the hook's scope only *after* the wrapped action's own
+        scope has been built), so a test that calls the two helpers itself in its
+        own order would re-assert its own script instead.
+        """
+        # GIVEN: a wrap env entered for "StepA", and a step whose onRun echoes
+        # {{Step.Name}} -- which must resolve to the step actually running.
+        hook_args: list[str] = []
+
+        env = _wrap_env(
+            "WrapEnv",
+            Action_2023_09(
+                command=CommandString_2023_09("echo"),
+                args=[ArgString_2023_09("{{Step.Name}}")],
+            ),
+        )
+        step = _step_script("echo", ["{{Step.Name}}"])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            identifier = session.enter_environment(
+                environment=env, extra_let_bindings=None, step_name="StepA"
+            )
+            _run_until_ready(session)
+
+            original = session._inject_wrapped_task_symbols
+
+            def _capture(symtab, step_script, step_name, *, inner_symtab):
+                original(symtab, step_script, step_name, inner_symtab=inner_symtab)
+                hook_args.extend(symtab["WrappedAction.Args"])
+
+            session._inject_wrapped_task_symbols = _capture  # type: ignore[method-assign]
+
+            # WHEN: a task of a DIFFERENT step runs under that wrap env
+            session.run_task(step_script=step, task_parameter_values={}, step_name="StepB")
+            _run_until_ready(session)
+
+            # THEN: the wrapped action resolved with the RUNNING step's name.
+            # Seeding the hook's scope before injection instead would give StepA.
+            assert hook_args == ["StepB"]
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS
+
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
+
+    @pytest.mark.parametrize("hook_phase", ["enter", "exit"])
+    def test_env_hooks_resolve_step_level_let_bindings(self, hook_phase: str) -> None:
+        """The seeding applies to onWrapEnvEnter and onWrapEnvExit too, not just
+        onWrapTaskRun."""
+        # GIVEN: a wrap env entered with a step-level binding, and an inner env
+        # whose onEnter/onExit the hooks intercept.
+        wrap_action = Action_2023_09(
+            command=CommandString_2023_09("echo"),
+            args=[ArgString_2023_09("HOOK-{{greeting}}")],
+        )
+        env = Environment_2023_09(
+            name="WrapEnv",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onWrapEnvEnter=wrap_action,
+                    onWrapTaskRun=_NOOP,
+                    onWrapEnvExit=wrap_action,
+                ),
+            ),
+        )
+        inner = Environment_2023_09(
+            name="Inner",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=Action_2023_09(command=CommandString_2023_09("true")),
+                    onExit=Action_2023_09(command=CommandString_2023_09("true")),
+                ),
+            ),
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            wrap_id = session.enter_environment(
+                environment=env,
+                extra_let_bindings=["greeting = 'from-step-let'"],
+                step_name="Step1",
+            )
+            _run_until_ready(session)
+
+            # WHEN
+            inner_id = session.enter_environment(environment=inner)
+            _run_until_ready(session)
+            if hook_phase == "enter":
+                # THEN: the onWrapEnvEnter hook resolved the binding
+                status = session.action_status
+                assert status is not None
+                assert status.state == ActionState.SUCCESS
+            else:
+                session.exit_environment(identifier=inner_id)
+                _run_until_ready(session)
+                # THEN: the onWrapEnvExit hook resolved the binding
+                status = session.action_status
+                assert status is not None
+                assert status.state == ActionState.SUCCESS
+
+            if hook_phase == "enter":
+                session.exit_environment(identifier=inner_id)
+                _run_until_ready(session)
+            session.exit_environment(identifier=wrap_id)
+            _run_until_ready(session)

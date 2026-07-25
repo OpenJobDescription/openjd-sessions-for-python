@@ -448,7 +448,7 @@ class Session(object):
         if self._path_mapping_rules is not None:
             # Path mapping rules are applied in order of longest to shortest source path,
             # so sort them for when we apply them.
-            self._path_mapping_rules.sort(key=lambda rule: -rule.source_path_component_count())
+            self._path_mapping_rules.sort(key=lambda rule: -rule._source_path_component_count())
         # Engine (openjd.expr) form of the path mapping rules, seeded into the
         # session's symbol tables so EXPR host-context functions such as
         # apply_path_mapping() apply the session's rules at run time —
@@ -866,13 +866,16 @@ class Session(object):
 
         self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
 
-        # Sets the subprocess running.
-        # Returns immediately after it has started, or is running
-        self._action_state = ActionState.RUNNING
-        self._state = SessionState.RUNNING
-        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
-        # so it's important to set the action_state to RUNNING before calling enter(), rather
-        # than after -- enter() itself may end up setting the action state to FAILED.
+        # Note: RUNNING is set below, immediately before the runner is asked to
+        # start, and never before `self._runner` exists. `cancel_action()` is a
+        # cross-thread API guarded only by `state == RUNNING`, so a window where
+        # the session claims RUNNING with no runner is a window in which a
+        # cancel is lost. That matters here because the RFC 0008 branch does
+        # real work first (materializing the inner entity's embedded files,
+        # evaluating its `let` bindings, allocating the hook's file records).
+        # Every failure before the launch goes through
+        # `_fail_action_before_start`, which sets FAILED/READY_ENDING without
+        # needing a prior RUNNING.
 
         # RFC 0008: an outer environment's onWrapEnvEnter intercepts an
         # inner environment's onEnter. The outer environment's *own*
@@ -912,6 +915,8 @@ class Session(object):
                 ),
             ):
                 return identifier
+            if not self._seed_wrap_env_scope(symtab, wrap_env):
+                return identifier
             try:
                 wrap_file_records = self._get_wrap_env_file_records(wrap_env)
             except RuntimeError as e:
@@ -925,6 +930,12 @@ class Session(object):
                 symtab=symtab,
                 preallocated_file_records=wrap_file_records,
             )
+            # Sets the subprocess running; returns once it has started, or has
+            # failed to start. Set RUNNING first: wrap_env_enter() may fail
+            # immediately (e.g. an embedded file that cannot be written) and
+            # set the action state to FAILED itself.
+            self._action_state = ActionState.RUNNING
+            self._state = SessionState.RUNNING
             self._runner.wrap_env_enter()
         else:
             self._runner = self._make_env_script_runner(
@@ -932,6 +943,8 @@ class Session(object):
                 os_env_vars=action_env_vars,
                 symtab=symtab,
             )
+            self._action_state = ActionState.RUNNING
+            self._state = SessionState.RUNNING
             self._runner.enter()
 
         return identifier
@@ -1039,13 +1052,9 @@ class Session(object):
         # allocation); the wrap-interception branch below evaluates them
         # itself before resolving the wrapped onExit.
 
-        # Sets the subprocess running.
-        # Returns immediately after it has started, or is running
-        self._action_state = ActionState.RUNNING
-        self._state = SessionState.RUNNING
-        # Note: This may fail immediately (e.g. if we cannot write embedded files to disk),
-        # so it's important to set the action_state to RUNNING before calling exit(), rather
-        # than after -- exit() itself may end up setting the action state to FAILED.
+        # Note: RUNNING is set below, immediately before the runner is asked to
+        # start, and never before `self._runner` exists -- see the note in
+        # enter_environment for why that window matters to `cancel_action()`.
 
         # RFC 0008: an outer environment's onWrapEnvExit intercepts an
         # inner environment's onExit. The inner environment was already
@@ -1081,6 +1090,8 @@ class Session(object):
                 ),
             ):
                 return
+            if not self._seed_wrap_env_scope(symtab, wrap_env):
+                return
             try:
                 wrap_file_records = self._get_wrap_env_file_records(wrap_env)
             except RuntimeError as e:
@@ -1094,6 +1105,10 @@ class Session(object):
                 symtab=symtab,
                 preallocated_file_records=wrap_file_records,
             )
+            # Set RUNNING first: wrap_env_exit() may fail immediately and set
+            # the action state to FAILED itself.
+            self._action_state = ActionState.RUNNING
+            self._state = SessionState.RUNNING
             self._runner.wrap_env_exit()
         else:
             self._runner = self._make_env_script_runner(
@@ -1101,6 +1116,8 @@ class Session(object):
                 os_env_vars=action_env_vars,
                 symtab=symtab,
             )
+            self._action_state = ActionState.RUNNING
+            self._state = SessionState.RUNNING
             self._runner.exit()
 
     def run_task(
@@ -1141,6 +1158,25 @@ class Session(object):
         if self.state != SessionState.READY:
             raise RuntimeError("Session must be in the READY state to run a task.")
 
+        # Look up the active wrap environment (RFC 0008) up front, before any
+        # state is reset or anything is logged, so that rejecting the call leaves
+        # the session exactly as it was — including the previous action's status.
+        wrap_env = self._find_wrap_environment(hook="onWrapTaskRun")
+        if wrap_env is not None and step_name is None:
+            # RFC 0008 defines WrappedStep.Name as the name of the wrapped step,
+            # and <StepName> has a minimum length of one — there is no "unknown
+            # step" value to render. Rendering the empty string instead would
+            # silently hand a wrap script an empty container or label name, so
+            # this is reported as what it is: caller misuse, in the same shape
+            # run_task already reports caller misuse. Raising (rather than
+            # failing the action) keeps the session usable, so the caller can
+            # retry with a step name.
+            raise ValueError(
+                f"run_task() requires step_name when a wrap environment "
+                f"('{wrap_env.name}') is active: RFC 0008's WrappedStep.Name "
+                f"has no value to render without it."
+            )
+
         if log_task_banner:
             log_section_banner(self._logger, "Running Task")
 
@@ -1170,25 +1206,11 @@ class Session(object):
         # bindings can reference Task.File.*). The wrap-interception branch
         # below evaluates them itself before resolving the wrapped onRun.
 
-        # Check if any active environment defines onWrapTaskRun.
-        # If so, inject WrappedAction.* into the symbol table and run the
-        # wrap action instead of the step script's onRun (RFC 0008).
-        wrap_env = self._find_wrap_environment(hook="onWrapTaskRun")
+        # If a wrap environment is active, inject WrappedAction.* into the symbol
+        # table and run its hook instead of the step script's onRun (RFC 0008).
         if wrap_env is not None:
-            if step_name is None:
-                # RFC 0008 defines WrappedStep.Name as the name of the wrapped
-                # step, and <StepName> has a minimum length of one — there is no
-                # "unknown step" value to render. Rendering the empty string
-                # instead would silently hand a wrap script an empty container
-                # or label name, so this is reported as what it is: caller
-                # misuse, in the same shape run_task already reports caller
-                # misuse. Raising (rather than failing the action) keeps the
-                # session usable, so the caller can retry with a step name.
-                raise ValueError(
-                    f"run_task() requires step_name when a wrap environment "
-                    f"('{wrap_env.name}') is active: RFC 0008's WrappedStep.Name "
-                    f"has no value to render without it."
-                )
+            # Rejected at the top of this method when a wrap env is active.
+            assert step_name is not None
             # The wrapped onRun resolves against the STEP's own scope; the
             # hook resolves against `symtab`, and the wrap environment's own
             # lets/files are evaluated by the script runner from
@@ -1205,6 +1227,11 @@ class Session(object):
                     "onWrapTaskRun"
                 ),
             ):
+                return
+
+            # Only now that the wrapped action has resolved in its own scope:
+            # give the hook the step context its environment was entered with.
+            if not self._seed_wrap_env_scope(symtab, wrap_env):
                 return
 
             try:
@@ -1589,6 +1616,69 @@ class Session(object):
                 return env
         return None
 
+    def _wrap_env_identifier(self, wrap_env: EnvironmentModel) -> EnvironmentIdentifier:
+        """The entered-stack identifier of ``wrap_env``.
+
+        Raises:
+            RuntimeError: if the environment is not in the entered stack.
+        """
+        identifier = next(
+            (
+                env_id
+                for env_id in self._environments_entered
+                if self._environments[env_id] is wrap_env
+            ),
+            None,
+        )
+        if identifier is None:  # pragma: no cover - guarded by _find_wrap_environment
+            raise RuntimeError(
+                f"Wrap environment '{wrap_env.name}' is not in this Session's entered stack."
+            )
+        return identifier
+
+    def _seed_wrap_env_scope(self, symtab: SymbolTable, wrap_env: EnvironmentModel) -> bool:
+        """Re-seed the scope a wrap hook resolves in with the step context the
+        wrap environment was *entered* with (RFC 0005 step-level ``let``
+        bindings and ``Step.Name``).
+
+        A wrap hook resolves in the wrap environment's own scope, and in
+        openjd-rs that scope is the environment's frozen enter-time resolved
+        symbol table — so a step environment that defines wrap hooks carries
+        the owning step's step-level ``let`` bindings into every hook
+        invocation. Python builds a fresh session-scope table per action, so
+        those bindings have to be re-applied here from what
+        :meth:`enter_environment` remembered (it already keeps them to
+        re-apply on the exit side).
+
+        Call this *after* the wrapped action's own scope has been built, so
+        the wrap environment's bindings cannot reach the wrapped action's
+        resolution — only the hook's.
+
+        Returns:
+            True on success. On failure the action has already been failed
+            through :meth:`_fail_action_before_start` and the caller must
+            return.
+        """
+        identifier = self._wrap_env_identifier(wrap_env)
+        step_name = self._environment_step_names.get(identifier)
+        if step_name is not None:
+            symtab["Step.Name"] = step_name
+        let_bindings = self._environment_extra_let_bindings.get(identifier)
+        if not let_bindings:
+            return True
+        try:
+            apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
+        except ValueError as e:
+            # ExpressionError and FormatStringError subclass ValueError. These
+            # bindings already evaluated successfully when the environment was
+            # entered, so this is unlikely — but it must not raise out of the
+            # public API.
+            self._fail_action_before_start(
+                f"Failed to evaluate the extra `let` bindings for {wrap_env.name}: {e}"
+            )
+            return False
+        return True
+
     def _get_wrap_env_file_records(self, wrap_env: EnvironmentModel) -> Optional[list[_FileRecord]]:
         """Return the wrap environment's embedded-file records, allocating
         their on-disk paths on first use and reusing them for every
@@ -1606,18 +1696,7 @@ class Session(object):
             return None
         # The wrap env's identifier: it is in the entered stack (that's how
         # _find_wrap_environment found it).
-        identifier = next(
-            (
-                env_id
-                for env_id in self._environments_entered
-                if self._environments[env_id] is wrap_env
-            ),
-            None,
-        )
-        if identifier is None:  # pragma: no cover - guarded by _find_wrap_environment
-            raise RuntimeError(
-                f"Wrap environment '{wrap_env.name}' is not in this Session's entered stack."
-            )
+        identifier = self._wrap_env_identifier(wrap_env)
         records = self._wrap_env_file_records.get(identifier)
         if records is None:
             file_writer = EmbeddedFiles(
@@ -1790,8 +1869,10 @@ class Session(object):
         # (resolve_effective_cancelation) — including a wrapped action
         # whose own mode is deferred (a format string) — so the value a
         # wrap script sees is always the value the runtime would enforce.
-        cancelation = getattr(action, "cancelation", None)
-        mode, notify_period = resolve_effective_cancelation(cancelation, inner_symtab)
+        # Direct attribute access, not a getattr default: a model rename must fail
+        # loudly rather than silently tell every wrap script that the wrapped
+        # action declared no cancelation. See resolve_effective_cancelation.
+        mode, notify_period = resolve_effective_cancelation(action.cancelation, inner_symtab)
         if mode == CancelationMode_2023_09.NOTIFY_THEN_TERMINATE.value and notify_period is None:
             notify_period = (
                 TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS
@@ -2012,7 +2093,7 @@ class Session(object):
 
             if cancel_action_mark_failed:
                 # Cancel the action and pass the failure message
-                self.cancel_action(mark_action_failed=True)
+                self._cancel_running_action_as_failed()
 
         elif kind == ActionMessageKind.ENV:
             if self._running_environment_identifier is None:
@@ -2041,7 +2122,7 @@ class Session(object):
                 assert isinstance(value, str)
 
                 # Cancel the action and pass the failure message
-                self.cancel_action(mark_action_failed=True)
+                self._cancel_running_action_as_failed()
                 self._action_fail_message = value
 
                 return
@@ -2065,7 +2146,7 @@ class Session(object):
                 assert isinstance(value, str)
 
                 # Cancel the action and pass the failure message
-                self.cancel_action(mark_action_failed=True)
+                self._cancel_running_action_as_failed()
                 self._action_fail_message = value
 
                 return
@@ -2085,6 +2166,21 @@ class Session(object):
             # for the type checker
             assert action_status is not None
             self._callback(self._session_id, action_status)
+
+    def _cancel_running_action_as_failed(self) -> None:
+        """Cancel the running action and report it as failed, if one is running.
+
+        This is reached from the log-forwarding thread whenever a malformed
+        OpenJD stdout macro is seen. The state guard matters because that filter
+        is attached to the session logger, so it also sees lines the *session
+        itself* logs while no action is running — a task parameter whose name
+        starts with ``openjd_env`` is enough — and ``cancel_action()`` raises
+        unless an action is in flight. Without the guard that RuntimeError
+        propagates out of ``logger.info`` and out of the public API.
+        """
+        if self.state != SessionState.RUNNING:
+            return
+        self.cancel_action(mark_action_failed=True)
 
     def _log_discarded_env_macro(self, kind: ActionMessageKind, value: Any) -> None:
         """Record, at debug level, that an environment-variable stdout macro was
