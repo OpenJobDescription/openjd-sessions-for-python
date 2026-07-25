@@ -1,5 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+import threading
 import time
 from datetime import timedelta
 from logging.handlers import QueueHandler
@@ -42,6 +43,7 @@ from openjd.sessions._runner_base import (
     TerminateCancelMethod,
 )
 from openjd.sessions._runner_step_script import StepScriptRunner
+from openjd.sessions._subprocess import LoggingSubprocess
 from openjd.sessions._tempdir import TempDir
 from openjd.sessions._os_checker import is_posix, is_windows
 
@@ -424,3 +426,76 @@ class TestCancelRacingLaunch:
 
         # WHEN / THEN: the low-level cancel is a quiet no-op, not an AssertionError
         runner._cancel(TerminateCancelMethod())
+
+
+class TestCancelRacingLaunchIsSerialized:
+    """The pending-cancel handoff must be atomic with respect to launch.
+
+    `cancel()` runs on another thread. Without serialization there is an
+    interleaving where the canceller sees a subprocess object and hands off to
+    `_cancel`, which has nothing to signal because the process has not started
+    yet, while `_run` has already passed the point where it consumes a pending
+    cancel -- so the cancel is dropped by both sides and the action runs to
+    completion.
+    """
+
+    @pytest.mark.skipif(not is_posix(), reason="signal delivery is posix-only here")
+    @pytest.mark.timeout(120)
+    def test_cancel_during_launch_is_not_dropped(self, tmp_path: Path, python_exe: str) -> None:
+        # GIVEN: a long-running action, and a canceller that fires while the
+        # subprocess object exists but has NOT started -- held open by blocking
+        # inside _start_subprocess, which runs on the pool thread after _run has
+        # already assigned self._process.
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09(python_exe),
+                    args=[
+                        ArgString_2023_09("-c"),
+                        ArgString_2023_09("import time; time.sleep(30)"),
+                    ],
+                )
+            )
+        )
+        runner = StepScriptRunner(
+            logger=MagicMock(),
+            session_working_directory=tmp_path,
+            script=script,
+            symtab=SymbolTable(),
+            session_files_directory=tmp_path,
+        )
+        in_window = threading.Event()
+        canceller_done = threading.Event()
+        real_start = LoggingSubprocess._start_subprocess
+
+        def _start_after_cancel(subproc):  # type: ignore[no-untyped-def]
+            in_window.set()
+            # Hold the window: _has_started is not set until this returns.
+            canceller_done.wait(timeout=30)
+            return real_start(subproc)
+
+        def _cancel_in_window() -> None:
+            in_window.wait(timeout=30)
+            assert runner._process is not None
+            assert runner._process.has_started is False
+            runner.cancel()
+            canceller_done.set()
+
+        canceller = threading.Thread(target=_cancel_in_window, daemon=True)
+
+        # WHEN
+        with patch.object(LoggingSubprocess, "_start_subprocess", _start_after_cancel):
+            canceller.start()
+            runner.run()
+        canceller.join(timeout=30)
+
+        # THEN: the cancel was applied, so the 30 second sleep did not run to
+        # completion. Unsynchronized, it is dropped by both sides and the runner
+        # ends in SUCCESS after 30 seconds.
+        deadline = time.time() + 60
+        while runner.state in (ScriptRunnerState.RUNNING, ScriptRunnerState.CANCELING):
+            if time.time() > deadline:  # pragma: no cover - timing guard
+                pytest.fail(f"runner never settled; state={runner.state}")
+            time.sleep(0.05)
+        assert runner.state == ScriptRunnerState.CANCELED
+        assert runner._pending_cancel is None

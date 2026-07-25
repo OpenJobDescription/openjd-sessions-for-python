@@ -722,13 +722,16 @@ class ScriptRunnerBase(ABC):
         # before we check self.state
         self._process.wait_until_started()
 
-        # A cancel that landed during setup, before there was a subprocess to
-        # signal, is applied now rather than dropped. See _pending_cancel.
-        pending = self._pending_cancel
-        if pending is not None:
+        # A cancel that landed during setup, before there was a running
+        # subprocess to signal, is applied now rather than dropped. Read under
+        # the lock so the handoff is serialized against the writer in
+        # _cancel_with_resolved_method; _cancel takes the lock itself, so it is
+        # called outside.
+        with self._lock:
+            pending = self._pending_cancel
             self._pending_cancel = None
-            if self._resolved_cancel_method is not None:
-                self._cancel(self._resolved_cancel_method, *pending)
+        if pending is not None and self._resolved_cancel_method is not None:
+            self._cancel(self._resolved_cancel_method, *pending)
 
         if self.state == ScriptRunnerState.RUNNING and self._callback is not None:
             # Let the caller know that the process is running.
@@ -913,22 +916,34 @@ class ScriptRunnerBase(ABC):
         the effective cancel method that :meth:`_run_action` resolved at
         launch time.
 
-        A cancel that arrives before the subprocess exists is remembered and
-        applied by :meth:`_run` as soon as it does (see :attr:`_pending_cancel`)
-        — `cancel()` is called from another thread, so "no subprocess yet" is a
+        A cancel that arrives before the subprocess is running is remembered and
+        applied by :meth:`_run` as soon as it starts (see :attr:`_pending_cancel`)
+        — `cancel()` is called from another thread, so "not running yet" is a
         race, not a no-op. Only when no action will ever be launched (setup
-        failed before resolution) is there genuinely nothing to cancel.
+        failed, or there was no action to run) is there genuinely nothing to
+        cancel.
         """
-        if self._process is None:
-            if self.state == ScriptRunnerState.FAILED:
-                # Setup already failed; no subprocess is coming.
+        with self._lock:
+            # Decide-and-record must be atomic with respect to _run creating and
+            # starting the subprocess, otherwise a cancel can land between the
+            # two and be dropped by both sides: this method would see a process
+            # and hand off to _cancel, which has nothing to signal yet, while
+            # _run has already passed the point where it consumes a pending
+            # cancel. Keyed on has_started rather than on the object existing,
+            # for the same reason.
+            if self._state_override is not None:
+                # Terminal before launch: setup failed, or there was no action.
                 return
-            self._pending_cancel = (time_limit, mark_action_failed)
+            process = self._process
+            if process is None or not process.has_started:
+                self._pending_cancel = (time_limit, mark_action_failed)
+                return
+            method = self._resolved_cancel_method
+        if method is None:  # pragma: no cover - defensive
             return
         # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        if self._resolved_cancel_method is None:  # pragma: no cover - defensive
-            return
-        self._cancel(self._resolved_cancel_method, time_limit, mark_action_failed)
+        # Called outside the lock: _cancel takes it itself.
+        self._cancel(method, time_limit, mark_action_failed)
 
     def _cancel(
         self,
