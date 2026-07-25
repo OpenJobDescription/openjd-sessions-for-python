@@ -769,3 +769,73 @@ class TestWrapHookSeesEnterTimeStepScope:
                 _run_until_ready(session)
             session.exit_environment(identifier=wrap_id)
             _run_until_ready(session)
+
+
+# ---------------------------------------------------------------------------
+# The session must never claim RUNNING while it has no runner. cancel_action()
+# is a cross-thread API guarded only by `state == RUNNING`, so such a window is
+# one in which a cancel is lost -- and the RFC 0008 branches do real work
+# (materializing the inner entity's embedded files, evaluating its `let`
+# bindings, allocating the hook's file records) before a runner exists.
+# ---------------------------------------------------------------------------
+
+
+class TestNoRunningWithoutRunner:
+    def _wrap_env_all_hooks(self) -> Environment_2023_09:
+        act = Action_2023_09(command=CommandString_2023_09("true"))
+        return Environment_2023_09(
+            name="WrapEnv",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onWrapEnvEnter=act, onWrapTaskRun=act, onWrapEnvExit=act
+                ),
+            ),
+        )
+
+    def _inner_env(self) -> Environment_2023_09:
+        act = Action_2023_09(command=CommandString_2023_09("true"))
+        return Environment_2023_09(
+            name="Inner",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(onEnter=act, onExit=act),
+            ),
+        )
+
+    def test_state_is_not_running_during_wrap_setup(self) -> None:
+        """Observed at the last point before the runner is built, in all three
+        wrap paths."""
+        observed: list[tuple[str, SessionState]] = []
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            original = session._get_wrap_env_file_records
+
+            def _observe(wrap_env):  # type: ignore[no-untyped-def]
+                # _get_wrap_env_file_records is the last step before the runner
+                # is constructed, so this is the worst case for the window.
+                observed.append((wrap_env.name, session.state))
+                return original(wrap_env)
+
+            session._get_wrap_env_file_records = _observe  # type: ignore[method-assign]
+
+            wrap_id = session.enter_environment(environment=self._wrap_env_all_hooks())
+            _run_until_ready(session)
+
+            inner_id = session.enter_environment(environment=self._inner_env())
+            _run_until_ready(session)
+
+            session.run_task(
+                step_script=_step_script("echo", ["hi"]),
+                task_parameter_values={},
+                step_name="Step1",
+            )
+            _run_until_ready(session)
+
+            session.exit_environment(identifier=inner_id)
+            _run_until_ready(session)
+            session.exit_environment(identifier=wrap_id)
+            _run_until_ready(session)
+
+        # THEN: all three wrap paths were exercised, and none of them had
+        # already flipped the session to RUNNING.
+        assert len(observed) == 3, observed
+        assert all(state is not SessionState.RUNNING for _, state in observed), observed

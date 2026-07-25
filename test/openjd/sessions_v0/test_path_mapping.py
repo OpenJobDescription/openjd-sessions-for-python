@@ -618,3 +618,96 @@ class TestUriPathMapping:
         # THEN: ASCII letters fold, the non-ASCII character compares as itself
         assert matched is True
         assert result == "/local/f.obj"
+
+
+class TestWindowsAsciiOnlyFold:
+    """Windows path rules match case-insensitively, but over ASCII only.
+
+    `PureWindowsPath.is_relative_to()` folds with `str.lower()`, which also folds
+    non-ASCII characters, so a homoglyph in a submitted path would remap here
+    while the EXPR engine's `apply_path_mapping()` and openjd-rs -- both using an
+    ASCII-only fold -- leave it alone. RFC 0006 2.3.2 says the two are the same
+    transformation.
+    """
+
+    def _rule(self, source: str) -> PathMappingRule:
+        return PathMappingRule(
+            source_path_format=PathFormat.WINDOWS,
+            source_path=PureWindowsPath(source),
+            destination_path=PurePosixPath("/mnt/assets"),
+        )
+
+    def test_non_ascii_homoglyph_does_not_match(self) -> None:
+        # GIVEN: a rule whose source ends in ASCII 'k'
+        rule = self._rule("C:\\assets\\k")
+
+        # WHEN: the input uses U+212A KELVIN SIGN, which str.lower() folds to 'k'
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            matched, result = rule.apply(path="C:\\assets\\\u212a\\shot.exr")
+
+        # THEN: no match, matching the engine and openjd-rs
+        assert matched is False
+        assert result == "C:\\assets\\\u212a\\shot.exr"
+
+    @pytest.mark.parametrize(
+        "given, expected",
+        [
+            pytest.param("C:\\assets\\shot.exr", (True, "/mnt/assets/shot.exr"), id="plain"),
+            pytest.param(
+                "C:\\ASSETS\\shot.exr", (True, "/mnt/assets/shot.exr"), id="ascii-fold-still-works"
+            ),
+            pytest.param(
+                "C:/assets/scenes/", (True, "/mnt/assets/scenes/"), id="forward-slash-trailing"
+            ),
+            pytest.param("C:\\assets\\", (True, "/mnt/assets/"), id="backslash-trailing"),
+            pytest.param(
+                "D:\\assets\\shot.exr", (False, "D:\\assets\\shot.exr"), id="different-drive"
+            ),
+            pytest.param(
+                "C:\\assetsmore\\x", (False, "C:\\assetsmore\\x"), id="not-a-component-boundary"
+            ),
+        ],
+    )
+    def test_windows_matching(self, given: str, expected: tuple[bool, str]) -> None:
+        # GIVEN
+        rule = self._rule("C:\\assets")
+
+        # WHEN / THEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            assert rule.apply(path=given) == expected
+
+
+class TestUriRuleValidation:
+    """A URI-format rule's source_path must carry a real scheme.
+
+    The EXPR engine requires one, and these rules are handed to it via the
+    session's host context -- so a malformed rule has to be rejected where the
+    offending value can still be named, not later from inside `Session()`.
+    """
+
+    @pytest.mark.parametrize(
+        "source",
+        ["s3:/bucket", "notauri", "://bucket", "1s3://bucket", "", "s_3://bucket"],
+    )
+    def test_malformed_uri_source_rejected(self, source: str) -> None:
+        with pytest.raises(ValueError, match="must begin with"):
+            PathMappingRule.from_dict(
+                rule={
+                    "source_path_format": "URI",
+                    "source_path": source,
+                    "destination_path": "/local",
+                }
+            )
+
+    @pytest.mark.parametrize(
+        "source", ["s3://bucket/a", "file:///x", "nfs://host:2049/export", "S3://Bucket"]
+    )
+    def test_well_formed_uri_source_accepted(self, source: str) -> None:
+        rule = PathMappingRule.from_dict(
+            rule={
+                "source_path_format": "URI",
+                "source_path": source,
+                "destination_path": "/local",
+            }
+        )
+        assert rule.source_path == source
