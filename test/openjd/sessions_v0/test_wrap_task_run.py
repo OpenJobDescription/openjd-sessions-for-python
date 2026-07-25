@@ -221,7 +221,7 @@ class TestWrapTaskRunExecution:
 
         # WHEN: we run the task.
         with Session(session_id=session_id, job_parameter_values={}) as session:
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
 
             # THEN: the original step ran, not a wrap action.
@@ -246,7 +246,7 @@ class TestWrapTaskRunExecution:
             _run_until_ready(session)
 
             # WHEN: we run a task.
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
 
             # THEN: the wrap action ran, not the original step.
@@ -275,7 +275,7 @@ class TestWrapTaskRunExecution:
             session.enter_environment(environment=env)
             _run_until_ready(session)
 
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
 
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
@@ -314,7 +314,7 @@ class TestWrapTaskRunExecution:
             session.enter_environment(environment=inner)
             _run_until_ready(session)
 
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
 
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
@@ -338,9 +338,17 @@ class TestWrapTaskRunExecution:
             session.enter_environment(environment=env)
             _run_until_ready(session)
 
-            session.run_task(step_script=_step_script("cmd-one", []), task_parameter_values={})
+            session.run_task(
+                step_script=_step_script("cmd-one", []),
+                task_parameter_values={},
+                step_name="Step",
+            )
             _run_until_ready(session)
-            session.run_task(step_script=_step_script("cmd-two", []), task_parameter_values={})
+            session.run_task(
+                step_script=_step_script("cmd-two", []),
+                task_parameter_values={},
+                step_name="Step",
+            )
             _run_until_ready(session)
 
         messages = "\n".join(caplog.messages)
@@ -556,3 +564,56 @@ class TestWrapEnvEmbeddedFileReuse:
 
             session.exit_environment(identifier=identifier)
             _run_until_ready(session)
+
+
+# ---------------------------------------------------------------------------
+# step_name is required once a wrap environment is active: RFC 0008's
+# WrappedStep.Name has no value to render without it, and <StepName> has a
+# minimum length of one, so there is no empty sentinel to fall back on.
+# ---------------------------------------------------------------------------
+
+
+class TestWrappedStepNameRequired:
+    def test_run_task_without_step_name_raises(self) -> None:
+        # GIVEN: a wrap environment is entered
+        env = _wrap_env(
+            "container",
+            Action_2023_09(
+                command=CommandString_2023_09("echo"),
+                args=[ArgString_2023_09("{{WrappedStep.Name}}")],
+            ),
+        )
+        step = _step_script("echo", ["hello"])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            identifier = session.enter_environment(environment=env)
+            _run_until_ready(session)
+
+            # WHEN / THEN: omitting step_name is caller misuse, reported as such
+            # rather than silently rendering an empty container name.
+            with pytest.raises(ValueError, match="requires step_name"):
+                session.run_task(step_script=step, task_parameter_values={})
+
+            # AND: the session is left usable — nothing was started, so the
+            # caller can retry with a step name.
+            assert session.state == SessionState.READY
+            session.run_task(step_script=step, task_parameter_values={}, step_name="RetriedStep")
+            _run_until_ready(session)
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
+
+    def test_run_task_without_step_name_is_fine_unwrapped(self) -> None:
+        # GIVEN: no wrap environment
+        step = _step_script("echo", ["hello"])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN: step_name is still optional on the unwrapped path
+            session.run_task(step_script=step, task_parameter_values={})
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS

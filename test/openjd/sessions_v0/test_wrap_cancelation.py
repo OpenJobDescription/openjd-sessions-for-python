@@ -40,6 +40,7 @@ from openjd.model.v2023_09 import (
     StepScript as StepScript_2023_09,
 )
 from openjd.sessions import ActionState, ActionStatus, Session, SessionState
+from openjd.sessions._os_checker import is_posix
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -215,7 +216,7 @@ class TestWrapCancelationExecution:
         with Session(session_id=session_id, job_parameter_values={}) as session:
             session.enter_environment(environment=env)
             _run_until_ready(session)
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
         return "\n".join(caplog.messages)
@@ -475,3 +476,87 @@ class TestLaunchTimeCancelationResolution:
             assert status is not None
             assert status.state == ActionState.FAILED
             assert session.state == SessionState.READY_ENDING
+
+
+# ---------------------------------------------------------------------------
+# End-to-end delivery: canceling a running wrap hook must actually apply the
+# method resolved at launch, not merely store it.
+# ---------------------------------------------------------------------------
+
+
+class TestWrapCancelationDelivery:
+    """The launch-time-resolution refactor removed cancel()'s ability to derive
+    the cancel method itself, so nothing but this test covers the wiring from
+    the stored method through to a delivered signal. Platform-gated like the
+    other signal-delivering cancel tests in this repo."""
+
+    @pytest.mark.skipif(not is_posix(), reason="Signals not yet implemented for non-posix")
+    def test_cancel_delivers_forwarded_notify_period(self, python_exe: str) -> None:
+        # GIVEN: a wrap hook whose own cancelation forwards the wrapped action's
+        # NOTIFY_THEN_TERMINATE mode and period, wrapping an action that declares
+        # a 1 second period. The hook runs a program that TRAPS SIGTERM, so only
+        # the terminate that follows the notify period can end it — a plain
+        # Terminate cancel would leave it running.
+        from datetime import timedelta
+        from pathlib import Path as _Path
+
+        from openjd.model._format_strings import FormatString
+        from openjd.model.v2023_09 import CancelationMethodDeferred, ModelParsingContext
+
+        from openjd.sessions._runner_base import NotifyCancelMethod
+
+        ctx = ModelParsingContext(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
+        trapping_app = (
+            _Path(__file__).parent / "support_files" / "app_20s_run_ignore_signal.py"
+        ).resolve()
+        hook = Action_2023_09(
+            command=CommandString_2023_09(python_exe),
+            args=[ArgString_2023_09(str(trapping_app))],
+        )
+        object.__setattr__(
+            hook,
+            "cancelation",
+            CancelationMethodDeferred(
+                mode=FormatString("{{WrappedAction.Cancelation.Mode}}", context=ctx),
+                notifyPeriodInSeconds=FormatString(
+                    "{{WrappedAction.Cancelation.NotifyPeriodInSeconds}}", context=ctx
+                ),
+            ),
+        )
+        env = _wrap_env("wrap_env", hook)
+        step = _step_script_with_cancelation(_notify(1))
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            session.enter_environment(environment=env)
+            _run_until_ready(session)
+
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
+            deadline = time.time() + 10.0
+            while (
+                session.action_status is None or session.action_status.state != ActionState.RUNNING
+            ):
+                if time.time() > deadline:  # pragma: no cover - timing guard
+                    pytest.fail("wrap hook never reached RUNNING")
+                time.sleep(0.05)
+
+            runner = session._runner
+            assert runner is not None
+            # The forwarded mode+period resolved at launch...
+            assert runner._resolved_cancel_method == NotifyCancelMethod(
+                terminate_delay=timedelta(seconds=1)
+            )
+
+            # WHEN
+            time.sleep(0.5)  # let the subprocess install its signal handler
+            session.cancel_action()
+
+            # THEN: ...and the notify-then-terminate method was really delivered,
+            # so a SIGTERM-trapping subprocess still ends, and well before its own
+            # 20 second runtime.
+            started = time.time()
+            _run_until_ready(session, timeout_s=15.0)
+            elapsed = time.time() - started
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.CANCELED
+            assert elapsed < 15.0

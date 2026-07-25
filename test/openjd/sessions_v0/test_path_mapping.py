@@ -535,3 +535,83 @@ class TestPathMapping:
     def test_from_dict_failure(self, dict_rule):
         with pytest.raises(ValueError):
             PathMappingRule.from_dict(dict_rule)
+
+
+class TestUriPathMapping:
+    """RFC 0006 §2.3.2 (EXPR): URI-form source paths.
+
+    Per RFC 3986 the scheme and authority match case-insensitively while the
+    path portion matches case-sensitively, on whole path components. openjd-rs
+    implements the prefix comparison with ``str::eq_ignore_ascii_case``, so the
+    fold must be ASCII-only here too.
+    """
+
+    def _rule(self, source: str, destination: str = "/local") -> PathMappingRule:
+        return PathMappingRule.from_dict(
+            rule={
+                "source_path_format": "URI",
+                "source_path": source,
+                "destination_path": destination,
+            }
+        )
+
+    @pytest.mark.parametrize(
+        "given, expected",
+        [
+            pytest.param("s3://bucket/prefix/f.obj", (True, "/local/f.obj"), id="child-file"),
+            pytest.param("s3://bucket/prefix", (True, "/local"), id="exact-source"),
+            pytest.param("S3://BUCKET/prefix/f.obj", (True, "/local/f.obj"), id="ascii-fold"),
+            pytest.param(
+                "s3://bucket/PREFIX/f.obj",
+                (False, "s3://bucket/PREFIX/f.obj"),
+                id="path-is-case-sensitive",
+            ),
+            pytest.param(
+                "s3://other/prefix/f.obj",
+                (False, "s3://other/prefix/f.obj"),
+                id="different-authority",
+            ),
+            pytest.param(
+                "s3://bucket/prefixed/f.obj",
+                (False, "s3://bucket/prefixed/f.obj"),
+                id="not-a-component-boundary",
+            ),
+        ],
+    )
+    def test_apply_uri(self, given: str, expected: tuple[bool, str]) -> None:
+        # GIVEN
+        rule = self._rule("s3://bucket/prefix")
+
+        # WHEN / THEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            assert rule.apply(path=given) == expected
+
+    def test_scheme_authority_fold_is_ascii_only(self) -> None:
+        """A non-ASCII authority must not fold to an ASCII one.
+
+        U+212A KELVIN SIGN lower-cases to ASCII 'k' under ``str.lower()``, so a
+        Unicode fold would make these two authorities match — where openjd-rs's
+        ``eq_ignore_ascii_case`` keeps them distinct.
+        """
+        # GIVEN
+        rule = self._rule("s3://bucket\u212a")
+
+        # WHEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            matched, result = rule.apply(path="s3://bucketk/f.obj")
+
+        # THEN
+        assert matched is False
+        assert result == "s3://bucketk/f.obj"
+
+    def test_non_ascii_authority_still_matches_itself(self) -> None:
+        # GIVEN
+        rule = self._rule("s3://bucket\u212a")
+
+        # WHEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            matched, result = rule.apply(path="S3://BUCKET\u212a/f.obj")
+
+        # THEN: ASCII letters fold, the non-ASCII character compares as itself
+        assert matched is True
+        assert result == "/local/f.obj"

@@ -245,11 +245,19 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         if self._environment_script is not None:
             assert isinstance(self._environment_script, EnvironmentScript_2023_09)
 
-        action = (
-            getattr(self._environment_script.actions, hook, None)
-            if self._environment_script is not None
-            else None
-        )
+        action = None
+        if self._environment_script is not None:
+            actions = self._environment_script.actions
+            # Distinguish "the model has no such field" from "the hook is not
+            # declared". Only the latter is a legitimate no-op; the former means
+            # the model's field was renamed, and a getattr default would silently
+            # report SUCCESS *without running the hook*.
+            if not hasattr(actions, hook):
+                raise RuntimeError(
+                    f"This Environment's actions do not support the wrap hook '{hook}'. "
+                    "The installed openjd-model may be incompatible with this runtime."
+                )
+            action = getattr(actions, hook)
         if action is None:
             self._state_override = ScriptRunnerState.SUCCESS
             # Nothing to do, no wrap action defined. Call the callback
@@ -258,10 +266,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 self._callback(ActionState.SUCCESS)
             return
 
-        if default_timeout is not None:
-            self._run_env_action(action, default_timeout=default_timeout)
-        else:
-            self._run_env_action(action)
+        self._run_env_action(action, default_timeout=default_timeout)
 
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False

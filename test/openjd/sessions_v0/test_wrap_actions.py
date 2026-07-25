@@ -262,7 +262,7 @@ class TestVisibleOrdering:
             wrapped_id = session.enter_environment(environment=wrapped_inner)
             _run_until_ready(session)
 
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
 
             session.exit_environment(identifier=wrapped_id)
@@ -359,7 +359,11 @@ class TestWrapInjectionFailure:
             _run_until_ready(session)
             assert session.state == SessionState.READY
 
-            session.run_task(step_script=_embedded_file_step(), task_parameter_values={})
+            session.run_task(
+                step_script=_embedded_file_step(),
+                task_parameter_values={},
+                step_name="Step",
+            )
             _run_until_ready(session)
 
             assert session.state == SessionState.READY
@@ -408,7 +412,11 @@ class TestWrapInjectionFailure:
             _run_until_ready(session)
             assert session.state == SessionState.READY
 
-            session.run_task(step_script=bad_step, task_parameter_values={})
+            session.run_task(
+                step_script=bad_step,
+                task_parameter_values={},
+                step_name="Step",
+            )
             _run_until_ready(session)
 
             assert session.state == SessionState.READY_ENDING
@@ -459,7 +467,7 @@ class TestWrapScopeSeparation:
             _run_until_ready(session)
 
             # WHEN: the task runs through the wrap hook.
-            session.run_task(step_script=step, task_parameter_values={})
+            session.run_task(step_script=step, task_parameter_values={}, step_name="Step")
             _run_until_ready(session)
 
             # THEN: the hook saw the WRAPPER's binding, and the wrapped

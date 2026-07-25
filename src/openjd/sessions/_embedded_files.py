@@ -226,11 +226,7 @@ class EmbeddedFiles:
         to the bindings, while a file's ``data`` is written afterwards so it
         can reference let-bound values. Mirrors the openjd-rs runners.
         """
-        if self._scope == EmbeddedFilesScope.ENV:
-            self._logger.info("Writing embedded files for Environment to disk.")
-        else:
-            self._logger.info("Writing embedded files for Task to disk.")
-
+        self._log_scoped("Allocating embedded file paths for")
         records = self.allocate_records(files)
         self._define_symbols(records, symtab)
         return records
@@ -268,11 +264,18 @@ class EmbeddedFiles:
         while the contents are re-resolved and rewritten per invocation via
         :meth:`write_file_contents`.
         """
-        if self._scope == EmbeddedFilesScope.ENV:
-            self._logger.info("Writing embedded files for Environment to disk.")
-        else:
-            self._logger.info("Writing embedded files for Task to disk.")
+        self._log_scoped("Reusing embedded file paths for")
         self._define_symbols(records, symtab)
+
+    def _log_scoped(self, message: str) -> None:
+        """Log ``message`` qualified by this collection's scope.
+
+        The phase messages are kept accurate on purpose: allocation reserves
+        paths, registration only defines symbols, and only
+        :meth:`write_file_contents` writes content.
+        """
+        scope = "Environment" if self._scope == EmbeddedFilesScope.ENV else "Task"
+        self._logger.info(f"{message} {scope}.")
 
     def _define_symbols(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
         # Add symbols to the symbol table. For EXPR evaluation the
@@ -293,6 +296,7 @@ class EmbeddedFiles:
     def write_file_contents(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
         """Resolve each allocated file's ``data`` against ``symtab`` and write
         it to disk. See :meth:`allocate_file_paths`."""
+        self._log_scoped("Writing embedded files to disk for")
         try:
             for record in records:
                 # Raises: OSError

@@ -4,7 +4,25 @@ from dataclasses import dataclass, fields
 from enum import Enum
 from os import name as os_name
 from pathlib import PurePath, PurePosixPath, PureWindowsPath
+from string import ascii_lowercase, ascii_uppercase
 from typing import Optional, Union
+
+_ASCII_LOWER_TABLE = str.maketrans(ascii_uppercase, ascii_lowercase)
+"""Translation table for an ASCII-only case fold.
+
+RFC 3986 makes a URI's scheme and authority case-insensitive over ASCII only,
+which is what openjd-rs implements (``str::eq_ignore_ascii_case``). ``str.lower()``
+would additionally fold non-ASCII characters — U+212A KELVIN SIGN lowers to ASCII
+``k``, so ``s3://bucket\u212a`` would match ``s3://bucketk`` here but not in
+openjd-rs. A translation table is also safer than ``str.lower()``/``str.casefold()``
+because it cannot change the string's length (``"\u0130".lower()`` yields two
+characters), and :meth:`PathMappingRule._apply_uri` relies on offsets into the
+string."""
+
+
+def _ascii_lower(value: str) -> str:
+    """Lower-case the ASCII letters in ``value``, leaving everything else alone."""
+    return value.translate(_ASCII_LOWER_TABLE)
 
 
 class PathFormat(str, Enum):
@@ -121,8 +139,9 @@ class PathMappingRule:
         inp_path_start = self._uri_path_start(path)
         inp_path_start = 0 if inp_path_start is None else inp_path_start
 
-        # Scheme+authority must match case-insensitively.
-        if path[:inp_path_start].lower() != source[:src_path_start].lower():
+        # Scheme+authority must match case-insensitively, over ASCII only —
+        # see _ASCII_LOWER_TABLE for why this is not str.lower().
+        if _ascii_lower(path[:inp_path_start]) != _ascii_lower(source[:src_path_start]):
             return False, path
         # Path portion must match case-sensitively, on a component boundary.
         src_path = source[src_path_start:]
@@ -164,11 +183,12 @@ class PathMappingRule:
         if self.source_path_format == PathFormat.URI:
             return self._apply_uri(path)
         source_path = self.source_path
-        if not isinstance(source_path, PurePath):
-            # The constructor guarantees non-URI rules carry PurePath sources.
-            raise TypeError(
-                "Path mapping rule source_path must be a PurePath for filesystem source formats"
-            )
+        # The constructor guarantees non-URI rules carry PurePath sources. An
+        # assert rather than a raise: this method is reached from
+        # Session.run_task, where nothing catches a TypeError, so a broken
+        # invariant must not be able to become an exception escaping the public
+        # API. mypy narrows on the assert just as well.
+        assert isinstance(source_path, PurePath)
         pure_path: PurePath
         if self.source_path_format == PathFormat.POSIX:
             pure_path = PurePosixPath(path)

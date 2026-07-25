@@ -30,6 +30,7 @@ from openjd.sessions._embedded_files import EmbeddedFilesScope
 from openjd.sessions._os_checker import is_posix, is_windows
 
 from openjd.sessions._runner_base import (
+    MAX_UNSIGNED_64BIT_INT,
     NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
@@ -715,6 +716,83 @@ class TestScriptRunnerBase:
             assert f"Log from test {expected_effective_timeout_seconds + 1}" not in messages
         else:
             assert "Log from test 19" in messages
+
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    @pytest.mark.parametrize(
+        argnames="timeout_seconds",
+        argvalues=(
+            # Larger than datetime.timedelta can represent.
+            pytest.param(86_400_000_000_000, id="over-timedelta-max"),
+            # Representable by timedelta, but threading.Timer's deadline
+            # arithmetic overflows CPython's 64-bit nanosecond time
+            # representation.
+            pytest.param(86_399_999_913_600, id="over-schedulable-but-in-timedelta"),
+            pytest.param(9_223_372_036_854_775_807, id="i64-max"),
+        ),
+    )
+    def test_run_action_unenforceable_timeout_runs_unbounded(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        timeout_seconds: int,
+    ) -> None:
+        """A timeout too large to schedule must not raise; the action runs.
+
+        The 2023-09 <Action> schema puts no upper bound on `timeout`, so these
+        values are template-legal. openjd-rs resolves them with
+        `Duration::from_secs` and runs the action, so we do the same rather than
+        raising OverflowError out of the public Session API (which used to leave
+        the Session stuck in RUNNING with no terminal ActionStatus).
+        """
+        # GIVEN
+        action = Action_2023_09(
+            command=CommandString_2023_09("{{Task.Command}}"),
+            args=[ArgString_2023_09("ok")],
+            timeout=timeout_seconds,
+        )
+        symtab = SymbolTable(source={"Task.Command": "echo" if is_posix() else "cmd.exe"})
+        logger = build_logger(queue_handler)
+
+        # WHEN
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            runner._run_action(action, symtab)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.2)
+
+            # THEN: it ran, with no time limit scheduled
+            assert runner.state == ScriptRunnerState.SUCCESS
+            assert runner._runtime_limit is None
+        messages = collect_queue_messages(message_queue)
+        assert any("larger than this runtime can enforce" in m for m in messages)
+
+    @pytest.mark.usefixtures("queue_handler")
+    def test_run_action_timeout_above_u64_fails_action(
+        self,
+        tmp_path: Path,
+        queue_handler: QueueHandler,
+    ) -> None:
+        """A timeout beyond u64::MAX fails the action, matching openjd-rs.
+
+        openjd-rs resolves these fields with `str::parse::<u64>()`, which fails
+        rather than saturating, so the action must fail through the normal
+        failure path instead of running.
+        """
+        # GIVEN
+        action = Action_2023_09(
+            command=CommandString_2023_09("echo"),
+            args=[ArgString_2023_09("ok")],
+            timeout=MAX_UNSIGNED_64BIT_INT + 1,
+        )
+        logger = build_logger(queue_handler)
+
+        # WHEN
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            runner._run_action(action, SymbolTable())
+
+            # THEN
+            assert runner.state == ScriptRunnerState.FAILED
+            assert runner._runtime_limit is None
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(

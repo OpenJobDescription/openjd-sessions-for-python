@@ -19,6 +19,13 @@ from tempfile import mkstemp
 from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model import evaluate_let_bindings
+
+# The EXPR engine's typed value. Imported concretely (rather than duck-typed
+# with getattr) so that a model API change fails loudly at import time instead
+# of silently mis-classifying every optional integer field as "omitted".
+# openjd.expr ships in the same distribution as openjd.model, which this module
+# already hard-imports unreleased API from.
+from openjd.expr import ExprValue, TypeCode
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import CancelationMethodDeferred as CancelationMethodDeferred_2023_09
 from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
@@ -48,6 +55,51 @@ _STRICT_INT_RE = re.compile(r"[+-]?[0-9]+")
 (FEATURE_BUNDLE_1 ``timeout`` / ``notifyPeriodInSeconds`` format strings):
 an optional sign followed by ASCII digits, exactly what Rust's ``str::parse``
 accepts. See resolve_optional_int_field."""
+
+MAX_UNSIGNED_64BIT_INT = 2**64 - 1
+"""Largest value the openjd-rs runtime can hold for these fields.
+
+openjd-rs models ``timeout`` as an ``Option<FormatString>`` and resolves it with
+``str::parse::<u64>()`` (``runner/mod.rs`` resolve_action_timeout), which *fails*
+rather than saturating above ``u64::MAX``; its model additionally rejects a
+literal above ``i64::MAX`` at parse time. Python's model has no upper bound at
+all, so we apply this one here — to literal and resolved values alike, so that
+a value forwarded as ``{{WrappedAction.Timeout}}`` (RFC 0008) behaves exactly as
+it would have unwrapped."""
+
+MAX_SCHEDULABLE_TIMEOUT_SECONDS = 2**62 // 10**9
+"""Largest action timeout we can actually enforce, in seconds (~146 years).
+
+Two distinct limits sit above this, both of which used to surface as an
+``OverflowError``: :class:`datetime.timedelta` tops out at 999,999,999 days, and
+:class:`threading.Timer` computes an absolute deadline in CPython's internal
+64-bit nanosecond time representation, which overflows just above 2**63
+nanoseconds (measured: 9,223,372,036 s schedules, 9,223,372,037 s does not).
+The bound here is deliberately well inside that boundary rather than pinned to
+it, because the overflow is reported against the platform's ``time_t`` and the
+exact threshold is not portable.
+
+A timeout beyond this is indistinguishable from "no timeout", which is what
+openjd-rs's ``Duration``-based timer effectively provides at that magnitude, so
+the action runs unbounded instead of failing. See _timeout_from_seconds."""
+
+
+def _timeout_from_seconds(seconds: int, logger: LoggerAdapter) -> Optional[timedelta]:
+    """Convert a resolved timeout in seconds into an enforceable time limit.
+
+    Returns ``None`` — no time limit — for a value too large to schedule (see
+    :data:`MAX_SCHEDULABLE_TIMEOUT_SECONDS`), so that an absurd-but-valid
+    timeout runs the action to completion the way openjd-rs does, rather than
+    raising ``OverflowError`` out of the public Session API.
+    """
+    if seconds > MAX_SCHEDULABLE_TIMEOUT_SECONDS:
+        logger.warning(
+            f"Action timeout of {seconds} seconds is larger than this runtime can enforce; "
+            "the action will run without a time limit.",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
+        return None
+    return timedelta(seconds=seconds)
 
 
 class ScriptRunnerState(str, Enum):
@@ -138,9 +190,9 @@ def resolve_action_arg_values(args: Optional[Sequence], symtab: SymbolTable) -> 
                 continue
             if isinstance(value, str):
                 resolved.append(value)
-            elif getattr(value, "is_null", False):
+            elif value.is_null:
                 continue
-            elif str(getattr(value, "type", "")).startswith("list["):
+            elif value.type.type_code == TypeCode.LIST:
                 resolved.extend(str(element) for element in value)
             else:
                 resolved.append(str(value))
@@ -180,17 +232,6 @@ def resolve_optional_int_field(
     """
     if value is None:
         return None
-    if isinstance(value, int):
-        return value
-    # Typed resolution: a whole-field EXPR expression yields the engine's
-    # typed value, so a null result is distinguishable from a genuine empty
-    # string. Multi-segment and legacy (non-EXPR) format strings fall back
-    # to plain string resolution — correct, since typed nulls only exist
-    # under EXPR whole-field semantics (Template Schemas 5.3).
-    resolved_value = value.resolve_value(symtab=symtab)
-    if getattr(resolved_value, "is_null", False):
-        return None
-    resolved = str(resolved_value)
     if ge is not None and le is not None:
         constraint = f"between {ge} and {le}"
     elif ge == 1 and le is None:
@@ -199,6 +240,24 @@ def resolve_optional_int_field(
         constraint = f"an integer >= {ge}"
     else:
         constraint = "an integer"
+    if isinstance(value, int):
+        # Literal values were bounds-checked by the static validator at parse
+        # time, with one exception: the validator has no upper bound (see
+        # MAX_UNSIGNED_64BIT_INT). Reject an unrepresentable literal here so
+        # the action fails through the caller's normal failure path instead of
+        # overflowing later.
+        if value > MAX_UNSIGNED_64BIT_INT:
+            raise ValueError(f"{description} must be {constraint}, got '{value}'")
+        return value
+    # Typed resolution: a whole-field EXPR expression yields the engine's
+    # typed value, so a null result is distinguishable from a genuine empty
+    # string. Multi-segment and legacy (non-EXPR) format strings fall back
+    # to plain string resolution — correct, since typed nulls only exist
+    # under EXPR whole-field semantics (Template Schemas 5.3).
+    resolved_value = value.resolve_value(symtab=symtab)
+    if isinstance(resolved_value, ExprValue) and resolved_value.is_null:
+        return None
+    resolved = str(resolved_value)
     # Strict ASCII integer grammar, matching the Rust runtime's str::parse
     # (openjd-rs resolve_action_timeout / resolve_notify_period_seconds).
     # Python's int() is more lenient — it accepts surrounding whitespace,
@@ -208,7 +267,13 @@ def resolve_optional_int_field(
     if _STRICT_INT_RE.fullmatch(resolved) is None:
         raise ValueError(f"{description} must be {constraint}, got '{resolved}'")
     result = int(resolved)
-    if (ge is not None and result < ge) or (le is not None and result > le):
+    # str::parse::<u64>() fails rather than saturating above u64::MAX, so an
+    # out-of-range value must fail here too rather than reach the timer.
+    if (
+        (ge is not None and result < ge)
+        or (le is not None and result > le)
+        or result > MAX_UNSIGNED_64BIT_INT
+    ):
         raise ValueError(f"{description} must be {constraint}, got '{result}'")
     return result
 
@@ -270,7 +335,7 @@ def resolve_effective_cancelation(
         # openjd-rs runtime, which errors on any non-null, non-mode-name
         # result).
         mode_value = cancelation.mode.resolve_value(symtab=symtab)
-        if getattr(mode_value, "is_null", False):
+        if isinstance(mode_value, ExprValue) and mode_value.is_null:
             # Null mode drops the ENTIRE cancelation object: mode is the
             # object's required discriminator, so an "omitted" mode cannot
             # leave a partial object behind. The action behaves exactly as
@@ -297,9 +362,14 @@ def resolve_effective_cancelation(
         )
     if cancelation.mode == CancelationMode_2023_09.TERMINATE:
         return (CancelationMode_2023_09.TERMINATE.value, None)
+    # Direct attribute access, not getattr with a default: the mode above has
+    # already established this is a NOTIFY_THEN_TERMINATE object, which always
+    # carries the field. A getattr default would silently substitute the
+    # positional 30/120 s default for the author's period if the model ever
+    # renamed it.
     return (
         CancelationMode_2023_09.NOTIFY_THEN_TERMINATE.value,
-        resolve_period(getattr(cancelation, "notifyPeriodInSeconds", None)),
+        resolve_period(cancelation.notifyPeriodInSeconds),
     )
 
 
@@ -674,6 +744,17 @@ class ScriptRunnerBase(ABC):
         reuses across wrap-hook invocations), path allocation is skipped;
         the records' symbols are defined in ``symtab`` and the contents are
         re-resolved and written as usual.
+
+        Note on the per-invocation rewrite: the resolved bytes are in fact
+        invariant across a wrap environment's hook invocations, because model
+        validation rejects ``WrappedAction.*`` both in an environment script's
+        ``data`` and in its ``let`` bindings, and every other symbol a wrap
+        env's ``data`` may reference (``Param.*``, ``Session.*``, ``Job.Name``,
+        the now-stable ``Env.File.*``) is fixed for the session. The rewrite is
+        kept anyway, deliberately: it costs one small write immediately before
+        spawning a subprocess — the same cost class as the spawn — and it makes
+        each invocation deterministic even if a previous invocation's subprocess
+        modified a ``runnable`` embedded script in place.
         """
         file_writer = EmbeddedFiles(
             logger=self._logger,
@@ -760,7 +841,13 @@ class ScriptRunnerBase(ABC):
                 self._fail_action(str(exc))
                 return
             if seconds is not None:
-                time_limit = timedelta(seconds=seconds)
+                # Assigned unconditionally: a declared timeout always replaces
+                # `default_timeout`, including when it is too large to enforce
+                # (in which case the action runs unbounded — see
+                # _timeout_from_seconds). Assigning only in the enforceable
+                # case would silently downgrade an oversized timeout to the
+                # positional default, e.g. an environment exit's 5 minutes.
+                time_limit = _timeout_from_seconds(seconds, self._logger)
             # Resolve the action's effective cancelation NOW, against the
             # same final scope the command/args/timeout resolved with — a
             # deferred (format-string) mode or FEATURE_BUNDLE_1 notify

@@ -343,3 +343,61 @@ class TestResolveOptionalIntField:
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             with pytest.raises(ValueError, match="timeout must be a positive integer"):
                 session._resolve_action_timeout(action, symtab)
+
+
+# ---------------------------------------------------------------------------
+# A runtime EXPR failure in an environment's `variables:` map must FAIL the
+# action via the callback path, never raise out of enter_environment().
+# ---------------------------------------------------------------------------
+
+
+class TestEnvironmentVariablesRuntimeFailure:
+    def test_failing_variable_expression_fails_action_cleanly(self) -> None:
+        # GIVEN: a `variables:` entry that passes validation but cannot be
+        # evaluated at run time (int() applied to a non-numeric value). Under
+        # legacy interpolation this was unreachable; EXPR host functions make it
+        # reachable for a template that validated successfully.
+        callback_events: list[ActionStatus] = []
+
+        def callback(session_id: str, status: ActionStatus) -> None:
+            callback_events.append(status)
+
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        environment = Environment_2023_09.model_validate(
+            {
+                "name": "BrokenVars",
+                "variables": {"BROKEN": "{{ int(Session.WorkingDirectory.name) }}"},
+                "script": {"actions": {"onEnter": {"command": "echo", "args": ["entered"]}}},
+            },
+            context=context,
+        )
+
+        with Session(
+            session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
+        ) as session:
+            # WHEN: entering must not raise.
+            identifier = session.enter_environment(environment=environment)
+            _run_until_ready(session)
+
+            # THEN: the caller gets the identifier, a terminal FAILED status, and
+            # a session it can still exit the attempted environment from.
+            assert identifier is not None
+            assert session.state == SessionState.READY_ENDING
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert status.fail_message is not None
+            assert "environment variables" in status.fail_message
+            assert callback_events and callback_events[-1].state == ActionState.FAILED
+            assert identifier in session.environments_entered
+
+            # AND: the change record was seeded, so the log-forwarding thread
+            # cannot KeyError on an openjd_env emitted by this environment.
+            assert identifier in session._created_env_vars
+
+            # WHEN: cleanup exits it
+            session.exit_environment(identifier=identifier)
+            _run_until_ready(session)
+
+            # THEN
+            assert identifier not in session.environments_entered
