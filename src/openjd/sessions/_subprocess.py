@@ -177,13 +177,22 @@ class LoggingSubprocess(object):
         # Would use is_posix(), but it doesn't short-circuit mypy which then complains
         # about os.getpgid not being a valid attribute.
         if not sys.platform == "win32":
-            if not self._user or self._user.is_process_user():
-                self._sudo_child_process_group_id = os.getpgid(self._process.pid)
-            else:
-                self._sudo_child_process_group_id = find_sudo_child_process_group_id(
-                    logger=self._logger,
-                    sudo_process=self._process,
-                )
+            # A trivial command can exit before we get here. Looking up the
+            # process group of an already-reaped child raises ProcessLookupError
+            # (ESRCH), which must not fail the action: the child ran, and its
+            # exit code is still collected below. Fall back to its own pid --
+            # the process group we would have found, since the child is the
+            # group leader (start_new_session=True).
+            try:
+                if not self._user or self._user.is_process_user():
+                    self._sudo_child_process_group_id = os.getpgid(self._process.pid)
+                else:
+                    self._sudo_child_process_group_id = find_sudo_child_process_group_id(
+                        logger=self._logger,
+                        sudo_process=self._process,
+                    )
+            except ProcessLookupError:
+                self._sudo_child_process_group_id = self._process.pid
 
         self._logger.info(
             f"Command started as pid: {self._process.pid}",
