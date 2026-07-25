@@ -459,6 +459,7 @@ class TestLaunchTimeCancelationResolution:
         from openjd.model.v2023_09 import CancelationMethodDeferred, ModelParsingContext
 
         ctx = ModelParsingContext(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
+        assert env.script is not None  # _wrap_env always populates it
         object.__setattr__(
             env.script.actions.onWrapTaskRun,
             "cancelation",
