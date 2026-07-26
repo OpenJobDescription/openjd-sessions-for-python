@@ -354,3 +354,47 @@ try:
 except ValueError as e:
     # Error handling...
 ```
+#### Use of `assert` in Runtime Code
+
+This package can legitimately be run under `python -O`, which strips every `assert`
+statement from the bytecode. So the choice between `assert` and `raise` decides
+whether a check exists in production at all.
+
+Use `assert` **only** for type-checker narrowing: a condition that the type system
+cannot see but that is structurally guaranteed by the caller, where losing the check
+costs nothing but a slightly less legible `AttributeError` on the following line.
+Narrowing a schema-version union immediately after the caller has already selected
+that version is the canonical example.
+
+Use an explicit `raise` for anything that is a *runtime invariant* — a condition that
+could actually be false because of a race, a partially-completed construction, an
+unexpected model shape, or a caller error. Concretely, prefer `raise` when any of
+these is true:
+
+- The check is in a **public** method or property. A stripped assert turns a clear
+  library error into `AttributeError: 'NoneType' object has no attribute ...` raised
+  from inside this package.
+- The code runs on a **background thread** — a pool worker, a `threading.Timer`
+  callback, or the stdout-forwarding path. An `AssertionError` there reaches only
+  `threading.excepthook`, so the failure is invisible and the surrounding work
+  (waiting on and reaping the subprocess, arming a grace timer) is silently skipped.
+- The assert **is** the fix. Several checks in `_runner_base.py` exist specifically to
+  hold an invariant that a bug-fix introduced. Under `-O` such an assert reverts the
+  fix without changing any test result.
+- Something **downstream would proceed on bad data** rather than stop, for example
+  materializing an embedded file from an object of an unrecognized schema.
+
+When a `raise` would be noisy in an already-defensive spot, prefer binding the value
+once and handling `None` explicitly (return early, log, skip the notification) over
+either an assert or a raise. That keeps the failure legible and the process owned.
+
+Both forms narrow types for mypy, so there is no typing cost to choosing `raise`:
+
+```py
+# Narrowing only — fine as an assert.
+assert isinstance(script, StepScript_2023_09)
+
+# A runtime invariant — must survive -O.
+if not isinstance(file, EmbeddedFileText_2023_09):
+    raise RuntimeError(f"Unsupported embedded file model '{type(file).__name__}'.")
+```

@@ -2,11 +2,12 @@
 
 import os
 import stat
+import sys
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from pathlib import Path
 from shutil import chown, rmtree
 from tempfile import gettempdir, mkdtemp
-from typing import Optional, cast
+from typing import Any, Optional, cast
 
 from ._session_user import PosixSessionUser, SessionUser, WindowsSessionUser
 from ._windows_permission_helper import WindowsPermissionHelper
@@ -14,6 +15,66 @@ from ._os_checker import is_posix, is_windows
 
 if is_windows():
     from ._win32._helpers import get_process_user  # type: ignore
+
+
+OPENJD_TEMPDIR_MODE = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
+"""Mode for the shared Open Job Description temporary root: 0o755.
+
+World-traversable on purpose. If this directory lacked group/other search
+permission then a job user -- who by design is a different OS user from this
+process -- could not reach the session working directory beneath it. The session
+directories themselves are created 0o700 by mkdtemp() and only widened to 0o770
+for the specific group named by a SessionUser, so the permissive mode here grants
+traversal, not read access to any session's contents.
+
+Applied explicitly rather than left to the process umask so that the resulting
+mode does not depend on how the embedding application happens to be configured.
+"""
+
+
+def _validate_temp_dir_ownership(temp_dir: str) -> None:
+    """Refuse to use the shared temporary root unless it is a real directory
+    owned by this process' user (or root).
+
+    Why this exists: the root is a *fixed, predictable* path
+    (``<tempdir>/OpenJD``) and on POSIX its parent is typically world-writable
+    ``/tmp``. ``os.makedirs(..., exist_ok=True)`` happily accepts an entry that
+    some other local user created first, or a symlink pointing somewhere else
+    entirely -- and every session working directory would then be created inside
+    a directory that user controls. ``/tmp``'s sticky bit does not help: it
+    restricts deletion within ``/tmp`` itself, not within an attacker-owned
+    ``/tmp/OpenJD``.
+
+    ``os.lstat`` rather than ``os.stat``, because the whole point is to see a
+    symlink rather than follow it.
+
+    Raises:
+        RuntimeError: if the path is a symlink/reparse point, is not a
+            directory, or is owned by another user.
+    """
+    try:
+        st = os.lstat(temp_dir)
+    except OSError as err:
+        raise RuntimeError(f"Could not inspect the temporary directory {temp_dir}: {err}")
+
+    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
+        raise RuntimeError(
+            f"Refusing to use temporary directory {temp_dir}: it is a link or reparse point "
+            "rather than a real directory. Remove it, or pass an explicit session root directory."
+        )
+    if not stat.S_ISDIR(st.st_mode):
+        raise RuntimeError(
+            f"Refusing to use temporary directory {temp_dir}: it exists but is not a directory."
+        )
+    if is_posix():
+        this_uid = os.geteuid()
+        # root is accepted so that a system-provisioned root directory works.
+        if st.st_uid not in (this_uid, 0):
+            raise RuntimeError(
+                f"Refusing to use temporary directory {temp_dir}: it is owned by uid "
+                f"{st.st_uid}, not by this process' uid ({this_uid}) or root. Another user "
+                "may have created it. Remove it, or pass an explicit session root directory."
+            )
 
 
 def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
@@ -30,6 +91,11 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
 
     Returns:
         str: The path to the temporary directory specific to the operating system.
+
+    Raises:
+        RuntimeError: If the directory could not be created, or if it already
+            exists and is not a directory owned by this process' user (see
+            :func:`_validate_temp_dir_ownership`).
     """
     if is_windows():
         program_data_path = os.getenv("PROGRAMDATA")
@@ -46,7 +112,32 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
         temp_dir_parent = gettempdir()
 
     temp_dir = os.path.join(temp_dir_parent, "OpenJD")
-    os.makedirs(temp_dir, exist_ok=True)
+    try:
+        os.makedirs(temp_dir, mode=OPENJD_TEMPDIR_MODE, exist_ok=True)
+    except OSError as err:
+        raise RuntimeError(f"Could not create temporary directory {temp_dir}: {err}")
+
+    # R5-3 fix: exist_ok=True accepts whatever is already at this predictable
+    # path -- another local user's directory, or a symlink pointing elsewhere.
+    # Validate BEFORE the chmod below, so we never modify an entry that turns out
+    # not to be ours.
+    _validate_temp_dir_ownership(temp_dir)
+
+    # makedirs()' `mode` is masked by the process umask, so it does not on its own
+    # guarantee anything: under umask 0o077 the "explicit" 0o755 above lands as
+    # 0o700, and a job user could then not traverse into its own session
+    # directory. Set the mode outright. Conditional because a
+    # system-provisioned root may be owned by root with the right mode already,
+    # where chmod would fail for no reason.
+    try:
+        current_mode = stat.S_IMODE(os.stat(temp_dir).st_mode)
+        if current_mode != stat.S_IMODE(OPENJD_TEMPDIR_MODE):
+            os.chmod(temp_dir, mode=OPENJD_TEMPDIR_MODE)
+    except OSError as err:
+        raise RuntimeError(
+            f"Could not set permissions on temporary directory {temp_dir}: {err}. Session "
+            "working directories created beneath it may not be reachable by a job user."
+        )
     return temp_dir
 
 
@@ -60,6 +151,28 @@ class TempDir:
             do it (don't really need to, either, since the use-case for this class is to
             create the Open Job Description Session working directory and that working directory needs to be
             both writable and deletable by this process).
+
+    Trust precondition when ``user`` is given (POSIX):
+        ``mkdtemp()``'s 0o700 is deliberately widened to 0o770 so that the target
+        user can write into the session directory. That grant is to a *group*,
+        not to a user, so **every member of the group named by the
+        ``PosixSessionUser`` gains write access to the whole session tree** --
+        not only the intended session user. Generated shell scripts and
+        materialized embedded files live in that tree and are executed after
+        being written, so a second member of that group could substitute their
+        contents between materialization and exec.
+
+        The caller is therefore required to supply a group that contains only
+        principals it already trusts with the session's work -- conventionally a
+        group dedicated to the pairing of this process' user and the one job
+        user. This runtime cannot verify that and does not try to. The ordering
+        here is careful about the part it can control: group ownership is changed
+        *before* the mode is widened, so a failure to set the group never leaves
+        a group-writable directory behind.
+
+        The same precondition covers the group-writable bits that
+        ``_embedded_files.write_file_for_user`` sets on individual files for the
+        same reason.
     """
 
     path: Path
@@ -136,20 +249,41 @@ class TempDir:
     def cleanup(self) -> None:
         """Deletes the temporary directory and all of its contents.
         Raises:
-            RuntimeError - If not all files could be deleted.
+            RuntimeError - If not all files could be deleted. The message names
+                each path that could not be deleted along with the reason.
         """
-        encountered_errors = False
-        file_paths: list[str] = []
+        failures: list[str] = []
 
-        def onerror(f, p, e):
-            nonlocal encountered_errors
-            nonlocal file_paths
-            encountered_errors = True
-            file_paths.append(str(p))
+        def _record(path: Any, error: BaseException) -> None:
+            # R5-7 fix: keep the reason. Cleanup is exactly where the difference
+            # between "permission denied" and "a process still holds this open"
+            # decides what the operator should do next, and the old handler
+            # accepted the exception and discarded it -- leaving a list of bare
+            # paths with no cause.
+            failures.append(f"{path}: {error!r}")
 
-        rmtree(self.path, onerror=onerror)
-        if encountered_errors:
+        if sys.version_info >= (3, 12):
+            # `onerror` is deprecated from 3.12 and slated for removal; `onexc`
+            # receives the exception instance directly.
+            def onexc(
+                func: Any, path: Any, error: BaseException
+            ) -> None:  # pragma: nocover - version-gated
+                _record(path, error)
+
+            rmtree(self.path, onexc=onexc)
+        else:
+
+            def onerror(
+                func: Any, path: Any, exc_info: Any
+            ) -> None:  # pragma: nocover - version-gated
+                # Pre-3.12 handlers are called with sys.exc_info()-style triples.
+                error = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+                _record(path, error)
+
+            rmtree(self.path, onerror=onerror)
+
+        if failures:
             raise RuntimeError(
                 f"Files within temporary directory {str(self.path)} could not be deleted.\n"
-                + "\n".join(file_paths)
+                + "\n".join(failures)
             )

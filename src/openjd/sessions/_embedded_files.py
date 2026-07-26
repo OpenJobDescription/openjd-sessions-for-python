@@ -66,6 +66,26 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
     return data
 
 
+def _unsupported_embedded_file_model(file: EmbeddedFileType) -> RuntimeError:
+    """The error for an embedded file from a schema this class does not implement.
+
+    Returned rather than raised so that call sites can keep the
+    ``if not isinstance(...): raise`` shape, which narrows the type for mypy
+    exactly as an ``assert isinstance`` did while still being enforced under
+    ``python -O`` (R5-6). These three checks are genuine runtime invariants, not
+    type-checker narrowing: with them stripped, the call sites would read
+    ``.filename``/``.data``/``.runnable`` off an object of an unknown shape and
+    materialize a file from whatever they happened to find, instead of stopping.
+
+    When a new schema version is added, this is the seam that grows the
+    per-version dispatch.
+    """
+    return RuntimeError(
+        f"Unsupported embedded file model '{type(file).__name__}'. This runtime implements the "
+        "2023-09 schema only."
+    )
+
+
 def _validate_embedded_filename(filename: str) -> None:
     """Validate that an embedded file's ``filename`` is a single path component
     (a basename) with no directory pathing, as required by the OpenJD
@@ -318,7 +338,8 @@ class EmbeddedFiles:
         """
         # When adding a new schema, start this method with a check for which
         # model 'file' belongs to -- that'll tell us the schema version.
-        assert isinstance(file, EmbeddedFileText_2023_09)
+        if not isinstance(file, EmbeddedFileText_2023_09):
+            raise _unsupported_embedded_file_model(file)
 
         if self._scope == EmbeddedFilesScope.ENV:
             return ValueReferenceConstants_2023_09.ENV_FILE_PREFIX.value
@@ -339,7 +360,8 @@ class EmbeddedFiles:
                 value - The absolute filename of the file to manifest.
         """
 
-        assert isinstance(file, EmbeddedFileText_2023_09)
+        if not isinstance(file, EmbeddedFileText_2023_09):
+            raise _unsupported_embedded_file_model(file)
 
         # Figure out what filename to use for the given embedded file.
         # This will either be provided in the given 'file' or we will
@@ -379,7 +401,8 @@ class EmbeddedFiles:
         Make the file executable if the file settings indicate that we should.
         """
 
-        assert isinstance(file, EmbeddedFileText_2023_09)
+        if not isinstance(file, EmbeddedFileText_2023_09):
+            raise _unsupported_embedded_file_model(file)
 
         execute_permissions = 0
         if file.runnable:

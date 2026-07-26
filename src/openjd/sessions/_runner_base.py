@@ -50,8 +50,18 @@ __all__ = (
     "MAX_INT_FIELD_VALUE",
     "MAX_LET_BINDING_LENGTH",
     "MAX_SCHEDULABLE_TIMEOUT_SECONDS",
+    "POSIX_SHELL_NAME_RE",
 )
 
+
+POSIX_SHELL_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+"""The only shape a POSIX shell variable name may take (POSIX.1-2017 §3.235).
+
+Used to gate what ``_generate_command_shell_script`` is willing to emit an
+``export``/``unset`` line for. Deliberately identical to the name grammar
+``_action_filter`` enforces on ``openjd_env`` messages, so a variable defined by
+a job's stdout and one supplied by the embedder are held to the same standard.
+"""
 
 _STRICT_INT_RE = re.compile(r"[+-]?[0-9]+")
 """The exact integer grammar accepted for dynamically resolved integer fields
@@ -695,8 +705,19 @@ class ScriptRunnerBase(ABC):
             return ScriptRunnerState.READY
         # Check on the state of the future for done/canceled first
         # If the future is done, then we have a terminal state.
-        assert self._run_future is not None  # For the type checker
-        if self._run_future.done():
+        #
+        # R5-6: this is a reachable invariant, not type-checker narrowing, so it
+        # is a plain read rather than an `assert`. `_run` assigns `_process`
+        # before submitting the future, so a submit that fails leaves the pair
+        # inconsistent -- and this is a *property*, on the path every consumer
+        # polls, where an AssertionError (or, under `python -O`, an
+        # AttributeError) makes the runner permanently unreadable. A launched
+        # process with no future has not started running, so report READY and let
+        # the caller's own error handling deal with the failed launch.
+        run_future = self._run_future
+        if run_future is None:  # pragma: no cover - launch failed after _process was set
+            return ScriptRunnerState.READY
+        if run_future.done():
             if self._canceled and self._notify_canceled_action_as_failed:
                 return ScriptRunnerState.FAILED
             if self._canceled and self._runtime_limit_reached:
@@ -789,9 +810,16 @@ class ScriptRunnerBase(ABC):
             return
 
         # At this point, launch succeeded so _process and _run_future are set.
-        # Assert for the type checker.
-        assert self._run_future is not None
-        assert self._process is not None
+        # R5-6: explicit raises, not asserts. The R4-5 restructuring above depends
+        # on these two being set together whenever `launch_failure is None`, and
+        # under `python -O` an `assert` here would strip that check and let the
+        # method carry on to `add_done_callback`/`wait_until_started` on None --
+        # silently reverting the fix this block exists to implement.
+        if self._run_future is None or self._process is None:  # pragma: no cover - defensive
+            raise RuntimeError(
+                "Internal error: the action's subprocess was not created despite a successful "
+                "launch."
+            )
 
         # Intentionally leave the lock section. If the process was *really* fast,
         # then it's possible for the future to have finished before we get to add
@@ -822,19 +850,49 @@ class ScriptRunnerBase(ABC):
             self._callback(ActionState.RUNNING)
 
     def _generate_command_shell_script(self, args: Sequence[str]) -> str:
-        """Generate a shell script for running a command given by the args."""
+        """Generate a shell script for running a command given by the args.
+
+        Everything interpolated into this script is quoted or validated, because
+        the result is ``exec``'d by ``/bin/sh``: a single unquoted metacharacter
+        anywhere in it is arbitrary code execution as the session user.
+        """
         script = list[str]()
         script.append("#!/bin/sh\n")
         if self._os_env_vars:
             for name, value in self._os_env_vars.items():
+                if not POSIX_SHELL_NAME_RE.fullmatch(name):
+                    # R5-5 fix: the value was already quoted, but the NAME was
+                    # interpolated raw -- so a name containing ';', '$(' or a
+                    # newline injected commands here.
+                    #
+                    # Skipped rather than escaped or rejected. A shell variable
+                    # name cannot legally contain a metacharacter, so there is
+                    # nothing to escape *to*: `export 'a;b'=v` is not a valid
+                    # assignment, and `export ProgramFiles(x86)=v` -- a real
+                    # Windows variable name -- is an outright /bin/sh syntax
+                    # error that would fail the whole action. Skipping is
+                    # strictly better than both: the variable still reaches the
+                    # subprocess through Popen's `env=`, which does not go
+                    # through a shell, so nothing that used to work stops
+                    # working.
+                    self._logger.warning(
+                        f"Not exporting environment variable {name!r} from the action's shell "
+                        "script: the name is not a valid POSIX shell identifier. The variable is "
+                        "still passed to the subprocess directly.",
+                        extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
+                    )
+                    continue
                 if value is None:
                     script.append(f"unset {name}")
                 else:
                     script.append(f"export {name}={shlex.quote(value)}")
         if self._startup_directory is not None:
-            # Note: Single quotes around the path as it may have spaces, and we don't want to
-            # process any shell commands in the path.
-            script.append(f"cd '{self._startup_directory}'")
+            # R5-4 fix: shlex.quote, not hand-written single quotes. A single
+            # quote *in the path* closed the quoted region and everything after
+            # it was interpreted by /bin/sh. Note the env var value two lines
+            # above has always used shlex.quote -- the safe idiom was already
+            # imported and in use in this same function.
+            script.append(f"cd {shlex.quote(str(self._startup_directory))}")
         script.append("exec " + shlex.join(args))
         return "\n".join(script)
 
@@ -1182,7 +1240,13 @@ class ScriptRunnerBase(ABC):
 
     def _on_process_exit(self, future: Future) -> None:
         """This is invoked as a callback when run_future is done."""
-        assert self._run_future is not None
+        # R5-6: use the future the completion actually fired for, rather than
+        # asserting on the instance attribute. This runs on the pool worker (or,
+        # for a very fast process, on the launching thread), so an AssertionError
+        # here would only surface through threading.excepthook -- and under
+        # `python -O` the assert is stripped and the `.exception()` read below
+        # becomes an AttributeError in the same unobservable place.
+        run_future = self._run_future if self._run_future is not None else future
         with self._lock:
             # F2 fix: Claim _pending_cancel atomically before signalling completion.
             # A cancel racing completion would otherwise see the process still
@@ -1199,7 +1263,7 @@ class ScriptRunnerBase(ABC):
                 self._cancel_gracetime_timer.cancel()
                 self._cancel_gracetime_timer = None
 
-            if exc := self._run_future.exception():
+            if exc := run_future.exception():
                 self._logger.error(
                     f"Error running subprocess: {str(exc)}",
                     extra=LogExtraInfo(
@@ -1226,20 +1290,28 @@ class ScriptRunnerBase(ABC):
         """This is invoked when the grace period in a NOTIFY_THEN_TERMINATE
         cancelation has expired.
         """
-        assert self._process is not None
         with self._lock:
             self._cancel_gracetime_timer = None
+            process = self._process
+        # R5-6: a plain check, not `assert`. This runs on a threading.Timer
+        # thread, so any exception raised here reaches only
+        # threading.excepthook -- the grace period would appear to have silently
+        # done nothing. There is nothing left to terminate if the process is
+        # already gone, which is the ordinary outcome when the action completed
+        # during the grace period.
+        if process is None:
+            return
         self._logger.info(
             "Notify period ended. Terminate at %s",
             datetime.now(timezone.utc).strftime(TIME_FORMAT_STR),
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
         try:
-            self._process.terminate()
+            process.terminate()
         except OSError as err:  # pragma: nocover
             # Being paranoid. Won't happen... if we could start the process, then we can send it a kill signal
             self._logger.warning(
-                f"Cancelation could not send terminate signal to process {self._process.pid}: {str(err)}",
+                f"Cancelation could not send terminate signal to process {process.pid}: {str(err)}",
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
                 ),

@@ -119,8 +119,14 @@ class LoggingSubprocess(object):
         # has been set once the subprocess has completed running. Don't poll here...
         # we only want to make the returncode available after the run method has
         # completed its work.
-        if self._process is not None:
-            return self._process.returncode
+        #
+        # Bind once (same reason as notify()/terminate()): this property is read
+        # cross-thread via Session.action_status while run()'s `finally` clears
+        # `_process`, so a None check followed by a separate attribute read raised
+        # AttributeError out of a public property.
+        proc = self._process
+        if proc is not None:
+            return proc.returncode
         return self._returncode
 
     @property
@@ -180,9 +186,7 @@ class LoggingSubprocess(object):
             # A trivial command can exit before we get here. Looking up the
             # process group of an already-reaped child raises ProcessLookupError
             # (ESRCH), which must not fail the action: the child ran, and its
-            # exit code is still collected below. Fall back to its own pid --
-            # the process group we would have found, since the child is the
-            # group leader (start_new_session=True).
+            # exit code is still collected below.
             try:
                 if not self._user or self._user.is_process_user():
                     self._sudo_child_process_group_id = os.getpgid(self._process.pid)
@@ -192,7 +196,24 @@ class LoggingSubprocess(object):
                         sudo_process=self._process,
                     )
             except ProcessLookupError:
-                self._sudo_child_process_group_id = self._process.pid
+                # R5-9 fix: leave this as None -- "no process group known" --
+                # rather than substituting the pid. The lookup failed *because*
+                # the process is gone, so its pid is dead: signalling it is at
+                # best a no-op, and after pid recycling on a busy host `killpg`
+                # would target an unrelated group. In the sudo branch the pid is
+                # not even the right identifier, since it belongs to `sudo` and
+                # not to the workload's process group.
+                #
+                # None is the established "unknown" value on this field --
+                # find_sudo_child_process_group_id returns it for the same reason
+                # (_linux/_sudo.py), and _posix_signal_subprocess already retries
+                # the lookup and then declines to signal when it is still unset.
+                self._sudo_child_process_group_id = None
+                self._logger.debug(
+                    f"Process {self._process.pid} exited before its process group could be "
+                    "determined; no process group will be signalled for it.",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                )
 
         self._logger.info(
             f"Command started as pid: {self._process.pid}",
@@ -365,10 +386,19 @@ class LoggingSubprocess(object):
 
         Then the thread exits and is cleaned up automatically by the python garbage collector.
         """
-        assert self._process
-        stream = self._process.stdout
-        # Convince type checker that stdout is not None
-        assert stream is not None
+        # R5-6: explicit raises rather than `assert`. This method owns the
+        # subprocess's output stream for the whole life of the child, and it runs
+        # on the pool worker; stripping these under `python -O` would turn a
+        # legible "called with no process" into an AttributeError on None from
+        # inside the pump loop.
+        process = self._process
+        if process is None:  # pragma: no cover - defensive
+            raise RuntimeError(
+                "Internal error: cannot forward stdout before the subprocess has been created."
+            )
+        stream = process.stdout
+        if stream is None:  # pragma: no cover - defensive
+            raise RuntimeError("Internal error: the subprocess was created without a stdout pipe.")
 
         exit_event = Event()
 
@@ -422,7 +452,7 @@ class LoggingSubprocess(object):
             except Empty:
                 pass  # queue.get timed out. This means the subprocess does not print much to STDOUT. Just continue.
 
-            if self._process.poll() is not None:  # The main command exited.
+            if process.poll() is not None:  # The main command exited.
                 if process_exit_time is None:
                     process_exit_time = time.monotonic()
                 elif (time.monotonic() - process_exit_time) < 1:

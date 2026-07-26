@@ -44,7 +44,19 @@ def find_sudo_child_process_group_id(
     # send SIGKILL signals to the subprocess of sudo
     start = time.monotonic()
     now = start
-    sudo_pgid = os.getpgid(sudo_process.pid)
+    try:
+        sudo_pgid = os.getpgid(sudo_process.pid)
+    except ProcessLookupError:
+        # Sibling of the same guard in LoggingSubprocess.run(): `sudo` itself has
+        # already been reaped, so there is no group to find. Return the "unknown"
+        # value this function already uses for a child that exits mid-scan
+        # (below) rather than letting ESRCH escape to a caller that is only
+        # looking for a signal target.
+        logger.debug(
+            f"sudo process {sudo_process.pid} exited before its process group could be determined.",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
+        return None
 
     # Repeatedly scan for child processes
     #

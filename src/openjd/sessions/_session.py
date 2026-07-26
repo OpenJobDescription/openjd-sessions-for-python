@@ -597,8 +597,19 @@ class Session(object):
         """The directory that was created for this Session's working files.
         This is available in a Job Template's format string expressions as
         Session.WorkingDirectory
+
+        Raises:
+            RuntimeError: If this Session has no working directory, which means
+                construction did not complete.
         """
-        assert self._working_dir is not None
+        # A public property, so an explicit raise rather than `assert`: under
+        # `python -O` the assert vanished and the caller got
+        # `AttributeError: 'NoneType' object has no attribute 'path'` from inside
+        # a library property (R5-6).
+        if self._working_dir is None:
+            raise RuntimeError(
+                "This Session has no working directory; its construction did not complete."
+            )
         return self._working_dir.path
 
     @property
@@ -1217,8 +1228,16 @@ class Session(object):
         # If a wrap environment is active, inject WrappedAction.* into the symbol
         # table and run its hook instead of the step script's onRun (RFC 0008).
         if wrap_env is not None:
-            # Rejected at the top of this method when a wrap env is active.
-            assert step_name is not None
+            # A cross-field invariant, not type-checker narrowing: RFC 0008
+            # requires WrappedStep.Name, so a wrapped run without a step name is
+            # rejected at the top of this method. An explicit raise rather than
+            # `assert` so that `python -O` cannot let a wrapped task through with
+            # `WrappedStep.Name` set to None (R5-6).
+            if step_name is None:  # pragma: no cover - guarded at method entry
+                raise RuntimeError(
+                    "Internal error: a wrap environment is active but no step name was "
+                    "resolved for the task."
+                )
             # The wrapped onRun resolves against the STEP's own scope; the
             # hook resolves against `symtab`, and the wrap environment's own
             # lets/files are evaluated by the script runner from
@@ -1975,18 +1994,22 @@ class Session(object):
         if self._session_root_directory is not None:
             return self._session_root_directory
 
-        tempdir = Path(custom_gettempdir(self._logger))
-
-        # Note: If this doesn't have group permissions, then we will be unable to access files
-        #  under this directory if the default group of the current user is the group that
-        #  is shared with a job user. The group permissions override the world permissions
-        #  when the accessor is in the group.
-        # 0o755
-        mode = stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH
-        tempdir.mkdir(exist_ok=True, mode=mode)
-        # tempdir might already exist with the incorrect permissions, so set the permissions.
-        os.chmod(tempdir, mode=mode)
-        return tempdir
+        # custom_gettempdir() owns this directory's lifecycle end to end: it
+        # creates it, refuses to return a path that is a link or that another user
+        # owns (_validate_temp_dir_ownership), and guarantees
+        # OPENJD_TEMPDIR_MODE. The mode matters and is not merely cosmetic -- if
+        # the root lacked group/other search permission we would be unable to
+        # reach files under it when this process' default group is the group
+        # shared with a job user, because group permissions override world
+        # permissions for a member of the group.
+        #
+        # This used to re-apply the mode itself, with the constant duplicated. The
+        # duplicate is gone rather than merely single-sourced: two creators of one
+        # shared path is what let an unvalidated one hand out a directory the
+        # other then chmod'ed.
+        #
+        # Raises: RuntimeError
+        return Path(custom_gettempdir(self._logger))
 
     def _create_working_directory(self) -> TempDir:
         """Creates and returns the temporary working directory for this Session"""
@@ -2171,9 +2194,13 @@ class Session(object):
 
         if self._callback:
             action_status = self.action_status
-            # for the type checker
-            assert action_status is not None
-            self._callback(self._session_id, action_status)
+            # R5-6: a plain check, not `assert`. Every branch above sets
+            # `_action_state`, so this is non-None in practice -- but it is read
+            # on the stdout-forwarding thread, where an AssertionError unwinds
+            # LoggingSubprocess.run() before the child is waited on. Skipping the
+            # notification is strictly better than losing the process.
+            if action_status is not None:
+                self._callback(self._session_id, action_status)
 
     def _cancel_running_action_as_failed(self) -> None:
         """Cancel the running action and report it as failed, if one is running.
@@ -2224,8 +2251,11 @@ class Session(object):
         self._state = SessionState.READY_ENDING
         if self._callback:
             action_status = self.action_status
-            # for the type checker
-            assert action_status is not None
+            # R5-6: a plain check, not `assert` -- `_action_state` is assigned
+            # immediately above, so None here would be an internal error, and
+            # skipping the callback beats raising out of a failure path.
+            if action_status is None:  # pragma: no cover - defensive
+                return
             # R4-6 fix: Isolate consumer-callback exceptions. Same pattern as
             # _fail_action in ScriptRunnerBase and _on_process_exit. A consumer
             # that raises must not turn a handled resolution failure into an
@@ -2252,10 +2282,16 @@ class Session(object):
 
         We can be certain that the process is no longer running when this is called.
         """
-        # For the type checker
-        assert self._runner is not None
+        # R5-6: a bound read with an explicit check rather than `assert`. This is
+        # invoked from the runner's own completion path, so `_runner` is set --
+        # but `cleanup()` clears it, and this runs on the pool worker where an
+        # AssertionError reaches nobody. Under `python -O` the assert vanished and
+        # the very next line became an AttributeError in the same blind spot.
+        runner = self._runner
+        if runner is None:  # pragma: no cover - defensive
+            return
 
-        self._action_exit_code = self._runner.exit_code
+        self._action_exit_code = runner.exit_code
         self._action_state = state
 
         # F5 fix: Snapshot action_status BEFORE publishing READY. If we set
