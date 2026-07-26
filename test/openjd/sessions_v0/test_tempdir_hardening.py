@@ -8,15 +8,46 @@ on typical POSIX hosts, and it is shared with the job user.
 
 import os
 import stat
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from unittest.mock import patch
 
 import pytest
 
+from openjd.sessions._os_checker import is_posix, is_windows
+from openjd.sessions._tempdir import (
+    OPENJD_TEMPDIR_MODE,
+    TempDir,
+    _prepare_temp_dir_root,
+    _prepare_temp_dir_root_windows,
+    custom_gettempdir,
+)
 
-from openjd.sessions._os_checker import is_posix
-from openjd.sessions._tempdir import OPENJD_TEMPDIR_MODE, TempDir, custom_gettempdir
+
+def temp_root_under(parent: Path) -> Path:
+    """The root `custom_gettempdir()` will use when its parent is redirected to `parent`.
+
+    The two platforms nest differently: POSIX uses `<tempdir>/OpenJD`, Windows
+    uses `%PROGRAMDATA%\\Amazon\\OpenJD`.
+    """
+    return parent / "Amazon" / "OpenJD" if is_windows() else parent / "OpenJD"
+
+
+@contextmanager
+def redirected_temp_root(parent: Path) -> Iterator[Path]:
+    """Redirect `custom_gettempdir()` beneath `parent` on either platform.
+
+    Patching `gettempdir` alone is not enough: on Windows `custom_gettempdir()`
+    never calls it, so a `gettempdir`-only patch silently leaves the test
+    operating on the real `%PROGRAMDATA%\\Amazon\\OpenJD`.
+    """
+    if is_windows():
+        with patch.dict(os.environ, {"PROGRAMDATA": str(parent)}):
+            yield temp_root_under(parent)
+    else:
+        with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
+            yield temp_root_under(parent)
 
 
 class TestSharedTempRootValidation:
@@ -28,14 +59,14 @@ class TestSharedTempRootValidation:
         # GIVEN: a hostile umask that would otherwise strip group/other bits
         old_umask = os.umask(0o077)
         try:
-            with patch("openjd.sessions._tempdir.gettempdir", return_value=str(tmp_path)):
+            with redirected_temp_root(tmp_path) as expected_root:
                 # WHEN
                 created = custom_gettempdir()
         finally:
             os.umask(old_umask)
 
         # THEN: the root is traversable as intended, not umask-dependent.
-        assert Path(created) == tmp_path / "OpenJD"
+        assert Path(created) == expected_root
         if is_posix():
             assert stat.S_IMODE(os.stat(created).st_mode) == stat.S_IMODE(OPENJD_TEMPDIR_MODE)
 
@@ -57,11 +88,13 @@ class TestSharedTempRootValidation:
     def test_rejects_a_root_that_is_not_a_directory(self, tmp_path: Path) -> None:
         # GIVEN: a plain file squatting on the root path
         parent = tmp_path / "parent"
-        parent.mkdir()
-        (parent / "OpenJD").write_text("squat")
+        squatter = temp_root_under(parent)
+        squatter.parent.mkdir(parents=True)
+        squatter.write_text("squat")
 
-        # WHEN / THEN
-        with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
+        # WHEN / THEN: makedirs() rejects it first on both platforms, so this
+        # asserts the refusal, not which layer produced it.
+        with redirected_temp_root(parent):
             with pytest.raises(RuntimeError):
                 custom_gettempdir()
 
@@ -100,6 +133,100 @@ class TestSharedTempRootValidation:
             ):
                 with pytest.raises(RuntimeError, match="owned by uid"):
                     custom_gettempdir()
+
+    def test_windows_validator_accepts_a_real_directory(self, tmp_path: Path) -> None:
+        """The Windows branch must not try to `os.open()` a directory.
+
+        Windows returns EACCES for `os.open()` on a directory whatever the flags,
+        so an earlier version of this validator failed *every* session creation
+        on Windows. `os.lstat` is portable, so this runs on all platforms and
+        pins the branch against a regression back to a descriptor.
+        """
+        # GIVEN a real directory / WHEN validated / THEN it is accepted
+        root = tmp_path / "OpenJD"
+        root.mkdir()
+        _prepare_temp_dir_root_windows(str(root))
+
+    def test_a_non_posix_platform_never_opens_a_descriptor(self, tmp_path: Path) -> None:
+        """The dispatcher must not send Windows down the descriptor path.
+
+        This is the bug itself: `os.open()` on a directory returns EACCES on
+        Windows whatever the flags, so routing Windows through the POSIX
+        validator failed *every* session creation there. Pinned by patching
+        `is_posix` rather than by running on Windows, so a POSIX CI host catches
+        the regression too -- without this, the only signal is a Windows job.
+        """
+        # GIVEN a real directory, and a platform that reports as non-POSIX
+        root = tmp_path / "OpenJD"
+        root.mkdir()
+
+        # WHEN validated
+        with patch("openjd.sessions._tempdir.is_posix", return_value=False):
+            with patch("openjd.sessions._tempdir.os.open") as opener:
+                _prepare_temp_dir_root(str(root))
+
+        # THEN no descriptor was ever taken
+        opener.assert_not_called()
+
+    def test_a_posix_platform_still_uses_a_descriptor(self, tmp_path: Path) -> None:
+        """Negative control for the test above: POSIX must keep the fd path.
+
+        The fd path is what makes the symlink-swap window unexploitable, so a
+        mutation that routed *everything* to the weaker `lstat` validator has to
+        fail something.
+        """
+        # GIVEN a real directory on a platform that reports as POSIX
+        root = tmp_path / "OpenJD"
+        root.mkdir()
+        real_open = os.open
+        opened: list[str] = []
+
+        def recording_open(path: Any, *a: Any, **k: Any) -> int:
+            opened.append(str(path))
+            return real_open(path, *a, **k)
+
+        # WHEN validated
+        with patch("openjd.sessions._tempdir.is_posix", return_value=True):
+            with patch("openjd.sessions._tempdir.os.open", side_effect=recording_open):
+                _prepare_temp_dir_root(str(root))
+
+        # THEN the root was validated through a descriptor
+        assert str(root) in opened
+
+    def test_windows_validator_rejects_a_non_directory(self, tmp_path: Path) -> None:
+        # GIVEN a plain file where the root should be
+        squatter = tmp_path / "OpenJD"
+        squatter.write_text("squat")
+
+        # WHEN / THEN
+        with pytest.raises(RuntimeError, match="real directory"):
+            _prepare_temp_dir_root_windows(str(squatter))
+
+    @pytest.mark.skipif(not is_posix(), reason="symlink creation is POSIX-only here")
+    def test_windows_validator_rejects_a_symlink(self, tmp_path: Path) -> None:
+        """`lstat` must not traverse the link, or a directory symlink would pass.
+
+        Exercised with a POSIX symlink because that is what this host can create;
+        on Windows the same `S_ISDIR` test rejects a directory symlink and
+        `st_reparse_tag` rejects a junction.
+        """
+        # GIVEN
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        link = tmp_path / "OpenJD"
+        link.symlink_to(elsewhere, target_is_directory=True)
+
+        # WHEN / THEN
+        with pytest.raises(RuntimeError, match="real directory"):
+            _prepare_temp_dir_root_windows(str(link))
+
+    def test_windows_validator_reports_an_unreadable_root(self, tmp_path: Path) -> None:
+        # GIVEN a root that cannot be inspected at all
+        missing = tmp_path / "OpenJD"
+
+        # WHEN / THEN: the failure names the path rather than escaping as OSError
+        with pytest.raises(RuntimeError, match="could not be inspected"):
+            _prepare_temp_dir_root_windows(str(missing))
 
     @pytest.mark.skipif(not is_posix(), reason="uid ownership check is POSIX-only")
     def test_accepts_a_root_owned_by_root(self, tmp_path: Path) -> None:

@@ -33,7 +33,7 @@ mode does not depend on how the embedding application happens to be configured.
 """
 
 
-def _prepare_temp_dir_root(temp_dir: str) -> None:
+def _prepare_temp_dir_root_posix(temp_dir: str) -> None:
     """Validate the shared temporary root and set its mode, operating on a single
     file descriptor so the two cannot disagree.
 
@@ -56,15 +56,17 @@ def _prepare_temp_dir_root(temp_dir: str) -> None:
     name afterwards.
 
     ``O_NOFOLLOW`` makes the open itself fail on a symlink, which is why there is
-    no separate ``S_ISLNK`` branch on POSIX. Neither flag exists on Windows, where
-    the ``getattr(..., 0)`` fallbacks make this a plain open and the reparse-point
-    check below carries the equivalent weight.
+    no separate ``S_ISLNK`` branch.
+
+    POSIX only. Windows cannot ``os.open()`` a directory at all -- the CRT
+    rejects it with ``EACCES`` regardless of flags -- so Windows takes the
+    ``lstat`` path in :func:`_prepare_temp_dir_root_windows` instead.
 
     Raises:
-        RuntimeError: if the path is a symlink or reparse point, is not a
-            directory, is owned by another user, or its mode cannot be set.
+        RuntimeError: if the path is a symlink, is not a directory, is owned by
+            another user, or its mode cannot be set.
     """
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY  # type: ignore
     try:
         fd = os.open(temp_dir, flags)
     except OSError as err:
@@ -76,19 +78,18 @@ def _prepare_temp_dir_root(temp_dir: str) -> None:
         )
     try:
         st = os.fstat(fd)
-        if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
+        if not stat.S_ISDIR(st.st_mode):
             raise RuntimeError(
                 f"Refusing to use temporary directory {temp_dir}: it is not a real directory."
             )
-        if is_posix():
-            this_uid = os.geteuid()  # type: ignore
-            # root is accepted so that a system-provisioned root directory works.
-            if st.st_uid not in (this_uid, 0):
-                raise RuntimeError(
-                    f"Refusing to use temporary directory {temp_dir}: it is owned by uid "
-                    f"{st.st_uid}, not by this process' uid ({this_uid}) or root. Another user "
-                    "may have created it. Remove it, or pass an explicit session root directory."
-                )
+        this_uid = os.geteuid()  # type: ignore
+        # root is accepted so that a system-provisioned root directory works.
+        if st.st_uid not in (this_uid, 0):
+            raise RuntimeError(
+                f"Refusing to use temporary directory {temp_dir}: it is owned by uid "
+                f"{st.st_uid}, not by this process' uid ({this_uid}) or root. Another user "
+                "may have created it. Remove it, or pass an explicit session root directory."
+            )
 
         # makedirs()' `mode` is masked by the process umask, so it does not on its
         # own guarantee anything: under umask 0o077 an "explicit" 0o755 lands as
@@ -109,6 +110,56 @@ def _prepare_temp_dir_root(temp_dir: str) -> None:
                 )
     finally:
         os.close(fd)
+
+
+def _prepare_temp_dir_root_windows(temp_dir: str) -> None:
+    """Validate the shared temporary root on Windows.
+
+    Windows cannot open a directory with ``os.open()`` -- the CRT returns
+    ``EACCES`` whatever the flags -- so the single-descriptor approach used on
+    POSIX is not available here. ``os.lstat()`` is the closest equivalent: it
+    does not traverse symlinks or reparse points, so a directory symlink reports
+    ``S_ISLNK`` (failing the ``S_ISDIR`` test) and a junction reports a non-zero
+    ``st_reparse_tag``.
+
+    There is no mode to set: ``OPENJD_TEMPDIR_MODE`` is a POSIX mode, and
+    Windows access to this root is governed by the ACLs it inherits from
+    ``%PROGRAMDATA%``. There is also no uid comparison; ownership here is a SID,
+    and asserting anything about it is left to the Windows-specific code that
+    creates session directories beneath this root.
+
+    This is a weaker check than the POSIX one, and knowingly so: it closes the
+    "the path is not really a directory" case but not a time-of-check race.
+
+    Raises:
+        RuntimeError: if the path is a symlink, reparse point, or not a directory.
+    """
+    try:
+        st = os.lstat(temp_dir)
+    except OSError as err:
+        raise RuntimeError(
+            f"Refusing to use temporary directory {temp_dir}: it could not be inspected ({err}). "
+            "Remove it, or pass an explicit session root directory."
+        )
+    if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
+        raise RuntimeError(
+            f"Refusing to use temporary directory {temp_dir}: it is not a real directory. If it "
+            "is a symbolic link, junction, or not a directory, remove it, or pass an explicit "
+            "session root directory."
+        )
+
+
+def _prepare_temp_dir_root(temp_dir: str) -> None:
+    """Validate the shared temporary root, by whichever means the platform allows.
+
+    See :func:`_prepare_temp_dir_root_posix` and
+    :func:`_prepare_temp_dir_root_windows`; the two differ in strength, not just
+    in mechanism.
+    """
+    if is_posix():
+        _prepare_temp_dir_root_posix(temp_dir)
+    else:
+        _prepare_temp_dir_root_windows(temp_dir)
 
 
 def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
