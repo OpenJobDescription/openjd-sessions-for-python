@@ -201,6 +201,9 @@ class TestPumpExceptionDoesNotAbandonTheChild:
             try:
                 os.waitpid(proc.pid, 0)
             except ChildProcessError:
+                # Already reaped -- which is the outcome this test wants anyway.
+                # Popen's own destructor or the code under test may have got there
+                # first; either way there is no zombie left to collect.
                 pass
 
     def test_the_process_handle_is_still_released(

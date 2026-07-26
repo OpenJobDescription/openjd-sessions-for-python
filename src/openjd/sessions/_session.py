@@ -14,7 +14,7 @@ from os import stat as os_stat
 from pathlib import Path
 from tempfile import mkstemp
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Optional, Type, Union, cast
 
 from openjd.model import (
     FormatStringError,
@@ -1232,16 +1232,13 @@ class Session(object):
         # If a wrap environment is active, inject WrappedAction.* into the symbol
         # table and run its hook instead of the step script's onRun (RFC 0008).
         if wrap_env is not None:
-            # A cross-field invariant, not type-checker narrowing: RFC 0008
-            # requires WrappedStep.Name, so a wrapped run without a step name is
-            # rejected at the top of this method. An explicit raise rather than
-            # `assert` so that `python -O` cannot let a wrapped task through with
-            # `WrappedStep.Name` set to None (R5-6).
-            if step_name is None:  # pragma: no cover - guarded at method entry
-                raise RuntimeError(
-                    "Internal error: a wrap environment is active but no step name was "
-                    "resolved for the task."
-                )
+            # RFC 0008 requires WrappedStep.Name, and a wrapped run without a step
+            # name is already rejected at the top of this method, under this same
+            # `wrap_env is not None` condition. So this is narrowing for the type
+            # checker, not a runtime invariant, and a second runtime check here
+            # would be unreachable -- CodeQL says so, and it is right. Bound once,
+            # where the requirement has been proven, rather than re-checked.
+            wrapped_step_name = cast(str, step_name)
             # Two separate scopes. The wrapped onRun resolves against the STEP's
             # own scope (`symtab`, which carries this task's parameters and the
             # running step's name); the hook resolves against its own table,
@@ -1255,7 +1252,7 @@ class Session(object):
                 inner_script=step_script,
                 symtab=symtab,
                 inject=lambda inner_symtab: self._inject_wrapped_task_symbols(
-                    hook_symtab, step_script, step_name, inner_symtab=inner_symtab
+                    hook_symtab, step_script, wrapped_step_name, inner_symtab=inner_symtab
                 ),
                 fail_message=(
                     f"Failed to resolve the wrapped Task action for {wrap_env.name}'s "

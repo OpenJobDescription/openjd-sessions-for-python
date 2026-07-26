@@ -372,6 +372,10 @@ class TestFindSudoChildProcessGroupId:
                 try:
                     os.killpg(child_pgid, signal.SIGKILL)  # type: ignore
                 except (ProcessLookupError, PermissionError):
+                    # Best-effort teardown. The group is already gone
+                    # (ProcessLookupError) or was never ours to signal
+                    # (PermissionError); either way there is nothing left to clean
+                    # up and failing here would mask the test's real result.
                     pass
 
 

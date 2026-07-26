@@ -420,9 +420,17 @@ class TestTempRootCheckThenUse:
         (parent / "OpenJD").mkdir()
 
         def lowest_free_fd() -> int:
+            """Probe the lowest free descriptor number by taking and releasing one.
+
+            A `with` block is not usable here: the number itself is the
+            measurement, so the descriptor has to be closed before it is returned.
+            `try/finally` guarantees that on every path.
+            """
             fd = os.open(os.devnull, os.O_RDONLY)
-            os.close(fd)
-            return fd
+            try:
+                return fd
+            finally:
+                os.close(fd)
 
         with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
             custom_gettempdir()  # warm up, so first-call allocations do not count

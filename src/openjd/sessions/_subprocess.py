@@ -241,26 +241,25 @@ class LoggingSubprocess(object):
             if self._callback:
                 self._callback()
         finally:
-            # Explicitly delete the Popen in case it's a PopenWindowsAsUser and there's stuff to
-            # deallocate
+            # Drop this object's reference to the Popen, in case it's a
+            # PopenWindowsAsUser and there's stuff to deallocate. `proc` itself is
+            # a function local and dies with the frame; a `del proc` here would be
+            # a no-op, which is what CodeQL's "unnecessary delete" reports.
             proc = self._process
             self._process = None
-            try:
-                # This method owns the subprocess for its whole life, and clearing
-                # `_process` is the point after which nothing else can reach it:
-                # `notify()` and `terminate()` both become permanent no-ops. So
-                # ownership has to be discharged here, on every exit path, not
-                # only on the one that runs `wait()` above.
-                #
-                # An exception out of the stdout pump used to skip both the
-                # `wait()` and the returncode capture while still clearing
-                # `_process` -- leaving a live, unreapable child, no exit code,
-                # and an object reporting neither running nor failed-to-start. A
-                # raising `logging.Filter` reaches this path, and installing one
-                # is a supported use of this library.
-                self._reap(proc)
-            finally:
-                del proc
+            # This method owns the subprocess for its whole life, and clearing
+            # `_process` is the point after which nothing else can reach it:
+            # `notify()` and `terminate()` both become permanent no-ops. So
+            # ownership has to be discharged here, on every exit path, not only on
+            # the one that runs `wait()` above.
+            #
+            # An exception out of the stdout pump used to skip both the `wait()`
+            # and the returncode capture while still clearing `_process` --
+            # leaving a live, unreapable child, no exit code, and an object
+            # reporting neither running nor failed-to-start. A raising
+            # `logging.Filter` reaches this path, and installing one is a
+            # supported use of this library.
+            self._reap(proc)
 
     def _reap(self, proc: Optional[Popen]) -> None:
         """Make sure ``proc`` is dead and reaped, and that its exit code is
