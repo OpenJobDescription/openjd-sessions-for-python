@@ -2226,7 +2226,19 @@ class Session(object):
             action_status = self.action_status
             # for the type checker
             assert action_status is not None
-            self._callback(self._session_id, action_status)
+            # R4-6 fix: Isolate consumer-callback exceptions. Same pattern as
+            # _fail_action in ScriptRunnerBase and _on_process_exit. A consumer
+            # that raises must not turn a handled resolution failure into an
+            # exception escaping the public Session API.
+            try:
+                self._callback(self._session_id, action_status)
+            except Exception as exc:
+                self._logger.error(
+                    f"Exception in session callback: {exc}",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
 
     def _action_callback(self, state: ActionState) -> None:
         """This callback is invoked:

@@ -48,6 +48,7 @@ __all__ = (
     "resolve_effective_cancelation",
     "resolve_optional_int_field",
     "MAX_INT_FIELD_VALUE",
+    "MAX_LET_BINDING_LENGTH",
     "MAX_SCHEDULABLE_TIMEOUT_SECONDS",
 )
 
@@ -86,6 +87,30 @@ platform's ``time_t`` and the exact threshold is not portable.
 A timeout beyond this is indistinguishable from "no timeout", which is what
 openjd-rs's ``Duration``-based timer effectively provides at that magnitude, so
 the action runs unbounded instead of failing. See _timeout_from_seconds."""
+
+MAX_LET_BINDING_LENGTH = 4096
+"""Largest ``let`` binding string this runtime will parse, in characters.
+
+Not a spec limit. openjd-model's expression parser recurses per nesting level
+with no depth guard of its own, so a deeply nested RHS overflows the C stack
+and kills the interpreter with SIGBUS — no exception, no log line, no cleanup.
+A ``let`` RHS is the only template-controlled expression source that is parsed
+*after* model validation accepts it (format strings are parsed during
+model_validate), so it is the only one a submission-time validator cannot
+screen; the bound therefore has to be applied here, at the last gate before
+the parse.
+
+Measured on this branch: a 26,001-character RHS parses safely, a 30,001-
+character one crashes. 4096 is deliberately an order of magnitude inside that
+boundary rather than pinned to it, because the true limit is the platform's
+thread stack size and is not portable. openjd-rs bounds the same risk by
+parsing on a worker thread with an explicit PARSER_THREAD_STACK_SIZE
+(openjd-expr parse.rs) and its conformance suite requires that neither
+implementation *crash* on a too-deep expression (test_expression_depth.rs) —
+rejecting cleanly is conformant.
+
+Remove this in favour of the engine's own guard once the openjd-model pin
+floor carries the parser-stack fix; keep the regression test either way."""
 
 
 def _over_range_message(description: str, value: int) -> str:
@@ -402,8 +427,20 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
 
     Raises:
         ValueError (FormatStringError/ExpressionError): if a binding's
-            expression cannot be evaluated.
+            expression cannot be evaluated, or if a binding is too long to
+            parse safely (see MAX_LET_BINDING_LENGTH).
     """
+    # R4-1 fix: Guard against SIGBUS crash from parser stack overflow. Check
+    # length BEFORE calling evaluate_let_bindings, because the crash happens
+    # in native code with no exception — the process just dies.
+    for binding in let_bindings:
+        if len(binding) > MAX_LET_BINDING_LENGTH:
+            # Truncate the binding text in the error message, since it may be
+            # tens of KB — that's the whole point of rejecting it.
+            raise ValueError(
+                f"let binding {binding[:40]!r}... is {len(binding)} characters, "
+                f"which exceeds the maximum of {MAX_LET_BINDING_LENGTH}"
+            )
     # Single-sourced in openjd.model (parse-memoized; skips malformed
     # bindings; raises ValueError naming the failing binding).
     evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
@@ -620,7 +657,19 @@ class ScriptRunnerBase(ABC):
         )
         self._state_override = ScriptRunnerState.FAILED
         if self._callback is not None:
-            self._callback(ActionState.FAILED)
+            # R4-6 fix: Isolate consumer-callback exceptions. Same pattern as
+            # the completion callback in _on_process_exit. A consumer that
+            # raises must not turn a handled template failure into an exception
+            # escaping the public Session API.
+            try:
+                self._callback(ActionState.FAILED)
+            except Exception as exc:
+                self._logger.error(
+                    f"Exception in action callback: {exc}",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
 
     @abstractmethod
     def cancel(
@@ -677,6 +726,12 @@ class ScriptRunnerBase(ABC):
         return None
 
     def _run(self, args: Sequence[str], time_limit: Optional[timedelta] = None) -> None:
+        # R4-5 fix: Track launch failure outside the lock, dispatch after.
+        # _fail_action invokes the user callback synchronously, and a callback
+        # that calls cancel() would deadlock on self._lock (since
+        # _cancel_with_resolved_method acquires it unconditionally). No callback
+        # may run under self._lock — it is a plain Lock, not an RLock.
+        launch_failure: Optional[str] = None
         with self._lock:
             if self.state != ScriptRunnerState.READY:
                 raise RuntimeError("This cannot be used to run a second subprocess.")
@@ -706,25 +761,38 @@ class ScriptRunnerBase(ABC):
                         args, self._user, self._os_env_vars, str(self._session_working_directory)
                     )
                 except RuntimeError as e:
-                    self._fail_action(str(e))
-                    return
+                    # Record failure, don't dispatch yet — we're under the lock.
+                    launch_failure = str(e)
 
-            subprocess_args = [filename] if is_posix() else args
-            self._process = LoggingSubprocess(
-                logger=self._logger,
-                args=subprocess_args,
-                user=self._user,
-                os_env_vars=self._os_env_vars,
-                working_dir=str(self._session_working_directory),
-            )
+            # Only proceed with subprocess creation if no launch failure occurred
+            if launch_failure is None:
+                subprocess_args = [filename] if is_posix() else args
+                self._process = LoggingSubprocess(
+                    logger=self._logger,
+                    args=subprocess_args,
+                    user=self._user,
+                    os_env_vars=self._os_env_vars,
+                    working_dir=str(self._session_working_directory),
+                )
 
-            if time_limit:
-                self._runtime_limit = Timer(time_limit.total_seconds(), self._on_timelimit)
-                self._runtime_limit.start()
+                if time_limit:
+                    self._runtime_limit = Timer(time_limit.total_seconds(), self._on_timelimit)
+                    self._runtime_limit.start()
 
-            if self._print_section_banner:
-                log_subsection_banner(self._logger, "Phase: Running action")
-            self._run_future = self._pool.submit(self._process.run)
+                if self._print_section_banner:
+                    log_subsection_banner(self._logger, "Phase: Running action")
+                self._run_future = self._pool.submit(self._process.run)
+
+        # Dispatch launch failure outside the lock
+        if launch_failure is not None:
+            self._fail_action(launch_failure)
+            return
+
+        # At this point, launch succeeded so _process and _run_future are set.
+        # Assert for the type checker.
+        assert self._run_future is not None
+        assert self._process is not None
+
         # Intentionally leave the lock section. If the process was *really* fast,
         # then it's possible for the future to have finished before we get to add
         # the done-callback. That results in the done-callback being called from
@@ -1003,7 +1071,14 @@ class ScriptRunnerBase(ABC):
                 return
 
             self._canceled = True
-            self._notify_canceled_action_as_failed = mark_action_failed
+            # R4-G7 fix (F3 live path): Monotonic merge for failure attribution.
+            # If a previous cancel already set mark_action_failed=True (e.g., a
+            # parse failure triggered cancel), a subsequent timeout or manual
+            # cancel must not erase that determination. The action should report
+            # FAILED, not TIMEOUT/CANCELED.
+            self._notify_canceled_action_as_failed = (
+                self._notify_canceled_action_as_failed or mark_action_failed
+            )
             now = datetime.now(timezone.utc)
             now_str = now.strftime(TIME_FORMAT_STR)
             if self._cancel_gracetime_timer is not None:

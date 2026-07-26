@@ -300,7 +300,7 @@ class TestF8ObserverExceptionHandling:
 @pytest.mark.usefixtures("message_queue", "queue_handler")
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific signal handling")
 class TestReview22F4DoubleLoadFix:
-    """Review22-F4: notify/terminate must bind _process once."""
+    """Review22-F4: notify/terminate must bind _process once and pass to helpers."""
 
     def test_notify_binds_process_once(
         self,
@@ -308,7 +308,7 @@ class TestReview22F4DoubleLoadFix:
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
     ) -> None:
-        """Verify notify() binds _process once to avoid TOCTOU race."""
+        """Verify notify() binds _process once and passes to helper (R4-G8 fix)."""
         logger = build_logger(queue_handler)
 
         subprocess = LoggingSubprocess(
@@ -326,8 +326,8 @@ class TestReview22F4DoubleLoadFix:
         with patch.object(subprocess, "_posix_signal_subprocess") as mock_signal:
             subprocess.notify()
 
-            # THEN: Signal was sent (process was accessed correctly)
-            mock_signal.assert_called_once_with(signal_name="term")
+            # THEN: Signal helper was called with the bound process (R4-G8)
+            mock_signal.assert_called_once_with(mock_process, signal_name="term")
 
     def test_terminate_binds_process_once(
         self,
@@ -335,7 +335,7 @@ class TestReview22F4DoubleLoadFix:
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
     ) -> None:
-        """Verify terminate() binds _process once to avoid TOCTOU race."""
+        """Verify terminate() binds _process once and passes to helper (R4-G8 fix)."""
         logger = build_logger(queue_handler)
 
         subprocess = LoggingSubprocess(
@@ -353,5 +353,5 @@ class TestReview22F4DoubleLoadFix:
         with patch.object(subprocess, "_posix_signal_subprocess") as mock_signal:
             subprocess.terminate()
 
-            # THEN: Signal was sent (process was accessed correctly)
-            mock_signal.assert_called_once_with(signal_name="kill")
+            # THEN: Signal helper was called with the bound process (R4-G8)
+            mock_signal.assert_called_once_with(mock_process, signal_name="kill")

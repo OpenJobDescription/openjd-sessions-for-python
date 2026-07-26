@@ -233,9 +233,11 @@ class LoggingSubprocess(object):
         proc = self._process
         if proc is not None and proc.poll() is None:
             if is_posix():
-                self._posix_signal_subprocess(signal_name="term")
+                # R4-G8 fix: Pass the bound proc to helpers to avoid reloading
+                # self._process, which could be None by the time the helper runs.
+                self._posix_signal_subprocess(proc, signal_name="term")
             else:
-                self._windows_notify_subprocess()
+                self._windows_notify_subprocess(proc)
 
     def terminate(self) -> None:
         """The 'Terminate' part of Open Job Description's subprocess cancelation method.
@@ -251,7 +253,8 @@ class LoggingSubprocess(object):
         proc = self._process
         if proc is not None and proc.poll() is None:
             if is_posix():
-                self._posix_signal_subprocess(signal_name="kill")
+                # R4-G8 fix: Pass the bound proc to helpers.
+                self._posix_signal_subprocess(proc, signal_name="kill")
             else:
                 self._logger.info(
                     f"INTERRUPT: Start killing the process tree with the root pid: {proc.pid}",
@@ -470,20 +473,20 @@ class LoggingSubprocess(object):
 
     def _posix_signal_subprocess(
         self,
+        process: Popen,
         signal_name: Literal["term", "kill"],
     ) -> None:
-        """Send a given named signal to the subprocess."""
+        """Send a given named signal to the subprocess.
+
+        Args:
+            process: The Popen object to signal. Passed from caller to avoid
+                reloading self._process, which could be None by now (R4-G8 fix).
+            signal_name: Either "term" for SIGTERM or "kill" for SIGKILL.
+        """
 
         # Hint to mypy to not raise module attribute errors (e.g. missing os.getpgid)
         if sys.platform == "win32":
             raise NotImplementedError("This method is for POSIX hosts only")
-
-        # We can run into a race condition where the process exits (and another thread sets self._process to None)
-        # before the cancellation happens, so we swap to a local variable to ensure a cancellation that is not needed,
-        # does not raise an exception here.
-        process = self._process
-        # Convince the type checker that accessing process is okay
-        assert process is not None
 
         # Note: A limitation of this implementation is that it will only sigkill
         # processes that are in the same process-group as the command that we ran.
@@ -614,11 +617,13 @@ class LoggingSubprocess(object):
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
 
-    def _windows_notify_subprocess(self) -> None:
-        """Sends a CTRL_BREAK_EVENT signal to the subprocess"""
-        # Convince the type checker that accessing _process is okay
-        assert self._process is not None
+    def _windows_notify_subprocess(self, process: Popen) -> None:
+        """Sends a CTRL_BREAK_EVENT signal to the subprocess.
 
+        Args:
+            process: The Popen object to signal. Passed from caller to avoid
+                reloading self._process, which could be None by now (R4-G8 fix).
+        """
         # CTRL-C handler is disabled by default when CREATE_NEW_PROCESS_GROUP is passed.
         # We send CTRL-BREAK as handler for it cannnot be disabled.
         # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
@@ -626,18 +631,18 @@ class LoggingSubprocess(object):
         # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#remarks
         # https://stackoverflow.com/questions/35772001/how-to-handle-a-signal-sigint-on-a-windows-os-machine/35792192#35792192
         self._logger.info(
-            f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}",
+            f"INTERRUPT: Sending CTRL_BREAK_EVENT to {process.pid}",
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
 
-        # _process will be running in new console, we run another process to attach to it and send signal
+        # process will be running in new console, we run another process to attach to it and send signal
         cmd = [
             # When running in a service context, we want to call the non-service Python binary
             sys.executable.lower().replace("pythonservice.exe", "python.exe"),
             str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
-            str(self._process.pid),
+            str(process.pid),
         ]
-        process = LoggingSubprocess(
+        signal_subprocess = LoggingSubprocess(
             logger=self._logger,
             args=cmd,
             encoding=self._encoding,
@@ -648,11 +653,11 @@ class LoggingSubprocess(object):
         )
 
         # Blocking call
-        process.run()
+        signal_subprocess.run()
 
-        if process.exit_code != 0:
+        if signal_subprocess.exit_code != 0:
             self._logger.warning(
-                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}",
+                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {process.pid}",
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
                 ),
