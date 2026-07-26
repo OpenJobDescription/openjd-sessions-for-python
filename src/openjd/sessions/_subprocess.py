@@ -9,7 +9,7 @@ from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 from queue import Queue, Empty
-from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
+from subprocess import DEVNULL, PIPE, STDOUT, Popen, TimeoutExpired, list2cmdline, run
 from threading import Event, Thread
 from typing import Callable, Literal, Optional, Sequence, cast, Any
 
@@ -48,6 +48,15 @@ WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH = (
 
 LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
 STDOUT_END_GRACETIME_SECONDS = 5
+
+ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS = 30
+"""How long to wait for a subprocess we are abandoning to actually exit.
+
+Only used on the path where :meth:`LoggingSubprocess.run` is leaving without
+having waited on the child -- see :meth:`LoggingSubprocess._reap`. Bounded rather
+than infinite because that path runs on the runner's pool worker: a child that
+somehow survives SIGKILL (uninterruptible I/O, say) must not hang the runner's
+future as well as leaking the process."""
 
 
 class LoggingSubprocess(object):
@@ -236,7 +245,78 @@ class LoggingSubprocess(object):
             # deallocate
             proc = self._process
             self._process = None
-            del proc
+            try:
+                # This method owns the subprocess for its whole life, and clearing
+                # `_process` is the point after which nothing else can reach it:
+                # `notify()` and `terminate()` both become permanent no-ops. So
+                # ownership has to be discharged here, on every exit path, not
+                # only on the one that runs `wait()` above.
+                #
+                # An exception out of the stdout pump used to skip both the
+                # `wait()` and the returncode capture while still clearing
+                # `_process` -- leaving a live, unreapable child, no exit code,
+                # and an object reporting neither running nor failed-to-start. A
+                # raising `logging.Filter` reaches this path, and installing one
+                # is a supported use of this library.
+                self._reap(proc)
+            finally:
+                del proc
+
+    def _reap(self, proc: Optional[Popen]) -> None:
+        """Make sure ``proc`` is dead and reaped, and that its exit code is
+        recorded, however :meth:`run` is leaving.
+
+        A no-op on the normal path, where ``run`` has already waited and captured
+        the returncode.
+        """
+        if proc is None:
+            return
+        if proc.poll() is None:
+            # Still running, and we are on our way out: nothing will be able to
+            # signal it once `_process` is cleared. Terminating is the lesser
+            # evil -- the alternative is an orphan holding the session directory
+            # and, for a cross-user action, running as the job user with no
+            # owner.
+            self._logger.error(
+                f"Abandoning the subprocess {proc.pid} before it exited; terminating it so it "
+                "is not orphaned.",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                ),
+            )
+            try:
+                self._terminate_process(proc)
+            except Exception as e:  # noqa: BLE001
+                self._logger.error(
+                    f"Could not terminate the abandoned subprocess {proc.pid}: {e}",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
+            try:
+                # Bounded: a SIGKILLed child is reaped promptly, and this runs on
+                # the pool worker, so an unbounded wait here would hang the
+                # runner's future rather than surface anything useful.
+                proc.wait(timeout=ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS)
+            except TimeoutExpired:
+                self._logger.error(
+                    f"Subprocess {proc.pid} did not exit within "
+                    f"{ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS}s of being terminated; it is left "
+                    "unreaped.",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
+        # Record the exit status. Unconditional on purpose: `Popen.returncode` is
+        # populated by the poll()/wait() above and is the authority either way --
+        # on the normal path `run` has already assigned the same value, and on the
+        # abandoned path this is the only assignment. It is None only if the child
+        # outlived the terminate timeout, where "unknown" is the honest answer.
+        #
+        # An `if self._returncode is None:` guard here would read as defensive but
+        # could never change the outcome, and a mutation test proved it: removing
+        # it left every test passing. An unfalsifiable check is worse than none.
+        self._returncode = proc.returncode
 
     def notify(self) -> None:
         """The 'Notify' part of Open Job Description's subprocess cancelation method.
@@ -273,15 +353,23 @@ class LoggingSubprocess(object):
         # Review22-F4 fix: Bind _process once. See notify() for rationale.
         proc = self._process
         if proc is not None and proc.poll() is None:
-            if is_posix():
-                # R4-G8 fix: Pass the bound proc to helpers.
-                self._posix_signal_subprocess(proc, signal_name="kill")
-            else:
-                self._logger.info(
-                    f"INTERRUPT: Start killing the process tree with the root pid: {proc.pid}",
-                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-                )
-                kill_windows_process_tree(self._logger, proc.pid, signal_subprocesses=True)
+            self._terminate_process(proc)
+
+    def _terminate_process(self, process: Popen) -> None:
+        """Deliver the terminate signal to ``process``.
+
+        Split out of :meth:`terminate` so that :meth:`run`'s ``finally`` can reach
+        it after ``self._process`` has been cleared -- it takes the Popen as an
+        argument for the same reason the platform helpers do (R4-G8).
+        """
+        if is_posix():
+            self._posix_signal_subprocess(process, signal_name="kill")
+        else:
+            self._logger.info(
+                f"INTERRUPT: Start killing the process tree with the root pid: {process.pid}",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
+            kill_windows_process_tree(self._logger, process.pid, signal_subprocesses=True)
 
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""
