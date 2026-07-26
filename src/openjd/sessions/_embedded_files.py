@@ -66,6 +66,28 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
     return data
 
 
+def chown_group(path: Path, group: str) -> None:
+    """Set ``path``'s group ownership, reporting failure as ``OSError``.
+
+    ``shutil.chown`` raises ``LookupError`` when the group name does not resolve,
+    and ``LookupError`` is neither ``OSError`` nor ``ValueError``. Every handler
+    around a file-materialization or session-directory failure in this package
+    catches some combination of ``OSError``/``ValueError``/``RuntimeError``, so an
+    unknown group escaped all of them and surfaced as a bare ``LookupError`` out
+    of the public Session API. ``PosixSessionUser`` does not validate its
+    ``group``, so a caller only has to pass a group that does not exist.
+
+    Translated here, at the two call sites, rather than by widening each handler:
+    a group that cannot be resolved *is* a failure to change ownership, the
+    callers already treat that as ``OSError``, and this way a handler added later
+    is covered without anyone having to remember.
+    """
+    try:
+        chown(path, group=group)
+    except LookupError as err:
+        raise OSError(f"Could not set the group of {str(path)} to '{group}': {err}") from err
+
+
 def _unsupported_embedded_file_model(file: EmbeddedFileType) -> RuntimeError:
     """The error for an embedded file from a schema this class does not implement.
 
@@ -160,7 +182,7 @@ def write_file_for_user(
         if user is not None:
             user = cast(PosixSessionUser, user)
             # Set the group of the file
-            chown(filename, group=user.group)
+            chown_group(filename, user.group)
             # Update the permissions to include the group after the group is changed
             # Note: Only after changing group for security in case the group-ownership
             # change fails.

@@ -3,6 +3,7 @@
 import os
 import random
 import string
+import uuid
 from logging import INFO, getLogger
 from logging.handlers import QueueHandler
 from queue import Empty, SimpleQueue
@@ -17,6 +18,9 @@ from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._logging import LoggerAdapter
 from openjd.sessions._action_filter import ActionMonitoringFilter
 from openjd.model import RevisionExtensions, SpecificationRevision
+
+if is_posix():
+    import grp
 
 if is_windows():
     from openjd.sessions._win32._helpers import (  # type: ignore
@@ -60,6 +64,34 @@ def pytest_collection_modifyitems(config, items):
         config.option.markexpr = "not requires_cap_kill"
     else:
         config.option.markexpr = mark_expr
+
+
+def nonexistent_group_name() -> str:
+    """A group name that cannot resolve on any host.
+
+    Randomized rather than hardcoded so that it cannot collide with a real group
+    on a developer's machine or in a test container.
+    """
+    return f"openjd-no-such-group-{uuid.uuid4().hex}"
+
+
+def resolvable_member_groups() -> list[tuple[int, str]]:
+    """The (gid, name) of every group this process is a member of and that has a
+    name in the group database.
+
+    Discovered at runtime on purpose: this suite runs on macOS and Linux hosts
+    (and inside test containers) whose group tables have nothing in common, so no
+    group name can be hardcoded. The KeyError branch matters: a process can hold a
+    gid that the group database has no entry for, and asking for its name raises.
+    """
+    groups: list[tuple[int, str]] = []
+    for gid in sorted(set(os.getgroups()) | {os.getegid()}):  # type: ignore
+        try:
+            groups.append((gid, grp.getgrgid(gid).gr_name))  # type: ignore
+        except KeyError:
+            # A gid the process holds that has no entry in the group database.
+            continue
+    return groups
 
 
 def create_unique_logger_name(prefix: str = "", seed: Optional[str] = None) -> str:

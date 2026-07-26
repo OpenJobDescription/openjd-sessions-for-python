@@ -10,6 +10,12 @@ from typing import Optional
 from .._logging import LoggerAdapter, LogContent, LogExtraInfo
 from .._os_checker import is_posix, is_linux
 
+PGREP_NO_MATCH = 1
+"""``pgrep``'s exit status for "no processes matched".
+
+Distinct from a genuine failure (>=2 for a usage or operational error). See
+:func:`find_child_process_id_pgrep`."""
+
 
 class FindSignalTargetError(Exception):
     """Exception when unable to detect the signal target"""
@@ -65,18 +71,36 @@ def find_sudo_child_process_group_id(
     # quickly and we may never find the child process.
     sudo_child_pid: Optional[int] = None
     sudo_child_pgid: Optional[int] = None
+    last_scan_error: Optional[FindSignalTargetError] = None
     try:
         while now - start < timeout_seconds:
             if not sudo_child_pid:
-                if is_linux():
-                    sudo_child_pid = find_sudo_child_process_id_procfs(
-                        sudo_pid=sudo_process.pid,
-                        logger=logger,
-                    )
-                else:
-                    sudo_child_pid = find_child_process_id_pgrep(
-                        sudo_pid=sudo_process.pid,
-                    )
+                try:
+                    if is_linux():
+                        sudo_child_pid = find_sudo_child_process_id_procfs(
+                            sudo_pid=sudo_process.pid,
+                            logger=logger,
+                        )
+                    else:
+                        sudo_child_pid = find_child_process_id_pgrep(
+                            sudo_pid=sudo_process.pid,
+                        )
+                except FindSignalTargetError as e:
+                    # A single bad scan must not end the retries. Everything this
+                    # loop is racing is transient by nature: the procfs scan sees
+                    # more than one child while sudo's fork is still settling, and
+                    # a `pgrep` invocation can fail for reasons that do not recur.
+                    # This `except` used to sit outside the `while`, so the first
+                    # such observation aborted the whole search and the process
+                    # group was never recorded -- leaving a later cancel with
+                    # nothing to signal.
+                    #
+                    # Remembered rather than discarded so that a timeout can say
+                    # what kept going wrong.
+                    #
+                    # No `sudo_child_pid = None` here: the scan only runs when it
+                    # is already falsy, so the assignment would be unfalsifiable.
+                    last_scan_error = e
 
             if sudo_child_pid:
                 try:
@@ -96,7 +120,8 @@ def find_sudo_child_process_group_id(
             time.sleep(min(0.05, timeout_seconds - (now - start)))
             now = time.monotonic()
         if not sudo_child_pid or not sudo_child_pgid:
-            raise FindSignalTargetError("unable to detect subprocess before timeout")
+            detail = f" (last scan error: {last_scan_error})" if last_scan_error else ""
+            raise FindSignalTargetError(f"unable to detect subprocess before timeout{detail}")
     except FindSignalTargetError as e:
         logger.warning(
             f"Unable to determine signal target: {e}",
@@ -155,8 +180,29 @@ def find_child_process_id_pgrep(
         stdin=DEVNULL,
         text=True,
     )
+    if pgrep_result.returncode == PGREP_NO_MATCH:
+        # "No processes matched" is the expected answer for most of the retry
+        # window, not an error: sudo has forked but the kernel has not finished
+        # creating the workload yet. Returning None keeps the caller's retry loop
+        # going, which is what the procfs implementation of this same lookup
+        # already does for the identical situation.
+        #
+        # Raising here instead aborted the whole scan on the first empty poll,
+        # because the caller's `except FindSignalTargetError` sits OUTSIDE its
+        # retry `while`. Measured on macOS: the very first scan at ~25ms returned
+        # None for a child that appeared at ~300ms and was found correctly once it
+        # existed. So on every non-Linux POSIX host, a cross-user launch recorded
+        # no process group at all -- and a later cancel then had nothing to
+        # signal.
+        return None
     if pgrep_result.returncode != 0:
-        raise FindSignalTargetError("Unable to query child processes of sudo process")
+        # stderr is merged into stdout by the caller's `stderr=STDOUT`, so this is
+        # the only place the reason is available. Without it the message named an
+        # exit code and nothing else, which is not enough to act on.
+        raise FindSignalTargetError(
+            f"Unable to query child processes of sudo process (pgrep exited "
+            f"{pgrep_result.returncode}): {pgrep_result.stdout.strip()!r}"
+        )
     results = pgrep_result.stdout.splitlines()
     if len(results) > 1:
         raise FindSignalTargetError(f"Expected a single child process of sudo, but found {results}")

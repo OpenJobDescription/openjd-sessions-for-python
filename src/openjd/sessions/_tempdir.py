@@ -5,7 +5,8 @@ import stat
 import sys
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from pathlib import Path
-from shutil import chown, rmtree
+from shutil import rmtree
+from ._embedded_files import chown_group
 from tempfile import gettempdir, mkdtemp
 from typing import Any, Optional, cast
 
@@ -235,33 +236,47 @@ class TempDir:
         except OSError as err:
             raise RuntimeError(f"Could not create temp directory within {str(dir)}: {str(err)}")
 
-        # Change the owner
-        if user:
-            if is_posix():
-                user = cast(PosixSessionUser, user)
-                # Change ownership
-                try:
-                    chown(self.path, group=user.group)
-                except OSError as err:
-                    raise RuntimeError(
-                        f"Could not change ownership of directory '{str(dir)}' (error: {str(err)}). Please ensure that uid {os.geteuid()} is a member of group {user.group}."  # type: ignore
-                    )
-                # Update the permissions to include the group after the group is changed
-                # Note: Only after changing group for security in case the group-ownership
-                # change fails.
-                os.chmod(self.path, mode=stat.S_IRWXU | stat.S_IRWXG)
-            elif is_windows():
-                user = cast(WindowsSessionUser, user)
-                try:
-                    WindowsPermissionHelper.set_permissions(
-                        str(self.path),
-                        principals_full_control=[get_process_user()],
-                        principals_modify_access=[user.user],
-                    )
-                except Exception as err:
-                    raise RuntimeError(
-                        f"Could not change permissions of directory '{str(dir)}' (error: {str(err)})"
-                    )
+        # Change the owner.
+        #
+        # Wrapped so that a failure here does not leave the mkdtemp directory
+        # behind: construction has failed, so the caller has no handle to clean up
+        # with, and this directory sits under a shared root that nothing else ever
+        # prunes. Reachable from a mis-typed `PosixSessionUser.group` -- which is
+        # not validated anywhere -- and not only from a permissions problem.
+        try:
+            if user:
+                if is_posix():
+                    user = cast(PosixSessionUser, user)
+                    # Change ownership
+                    try:
+                        # chown_group, not shutil.chown: an unresolvable group name
+                        # raises LookupError, which this handler would not catch.
+                        chown_group(self.path, user.group)
+                    except OSError as err:
+                        raise RuntimeError(
+                            f"Could not change ownership of directory '{str(dir)}' (error: {str(err)}). Please ensure that uid {os.geteuid()} is a member of group {user.group}."  # type: ignore
+                        )
+                    # Update the permissions to include the group after the group is changed
+                    # Note: Only after changing group for security in case the group-ownership
+                    # change fails.
+                    os.chmod(self.path, mode=stat.S_IRWXU | stat.S_IRWXG)
+                elif is_windows():
+                    user = cast(WindowsSessionUser, user)
+                    try:
+                        WindowsPermissionHelper.set_permissions(
+                            str(self.path),
+                            principals_full_control=[get_process_user()],
+                            principals_modify_access=[user.user],
+                        )
+                    except Exception as err:
+                        raise RuntimeError(
+                            f"Could not change permissions of directory '{str(dir)}' (error: {str(err)})"
+                        )
+        except BaseException:
+            # Best-effort: the failure being reported is the interesting one, so a
+            # cleanup problem must not replace it.
+            rmtree(self.path, ignore_errors=True)
+            raise
 
     def cleanup(self) -> None:
         """Deletes the temporary directory and all of its contents.
