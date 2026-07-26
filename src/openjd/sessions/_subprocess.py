@@ -227,7 +227,11 @@ class LoggingSubprocess(object):
         TODO: Send the signal to every direct and transitive child of the parent
         process.
         """
-        if self._process is not None and self._process.poll() is None:
+        # Review22-F4 fix: Bind _process once. Double-load is a TOCTOU race:
+        # the None check and poll() call read _process separately, allowing
+        # another thread to set it to None between them.
+        proc = self._process
+        if proc is not None and proc.poll() is None:
             if is_posix():
                 self._posix_signal_subprocess(signal_name="term")
             else:
@@ -243,15 +247,17 @@ class LoggingSubprocess(object):
         TODO: Send the signal to every direct and transitive child of the parent
         process.
         """
-        if self._process is not None and self._process.poll() is None:
+        # Review22-F4 fix: Bind _process once. See notify() for rationale.
+        proc = self._process
+        if proc is not None and proc.poll() is None:
             if is_posix():
                 self._posix_signal_subprocess(signal_name="kill")
             else:
                 self._logger.info(
-                    f"INTERRUPT: Start killing the process tree with the root pid: {self._process.pid}",
+                    f"INTERRUPT: Start killing the process tree with the root pid: {proc.pid}",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
-                kill_windows_process_tree(self._logger, self._process.pid, signal_subprocesses=True)
+                kill_windows_process_tree(self._logger, proc.pid, signal_subprocesses=True)
 
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""

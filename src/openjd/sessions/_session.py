@@ -657,10 +657,18 @@ class Session(object):
         """
         if self.state != SessionState.RUNNING:
             raise RuntimeError("No actions are running")
-        # For the type checker
-        assert self._runner is not None
+        # Review22-F3 fix: Snapshot _runner before using it. The state check
+        # above and the _runner access below are not atomic; a completion
+        # racing this call could set _runner = None after we pass the state
+        # check. Snapshotting here avoids a bare AssertionError.
+        runner = self._runner
+        if runner is None:
+            # Race: action completed between state check and here. No-op rather
+            # than raise, since the caller's intent (cancel the running action)
+            # is already satisfied.
+            return
 
-        self._runner.cancel(time_limit=time_limit, mark_action_failed=mark_action_failed)
+        runner.cancel(time_limit=time_limit, mark_action_failed=mark_action_failed)
 
     def _make_env_script_runner(
         self,
@@ -2238,6 +2246,17 @@ class Session(object):
         self._action_exit_code = self._runner.exit_code
         self._action_state = state
 
+        # F5 fix: Snapshot action_status BEFORE publishing READY. If we set
+        # _state = READY first, another thread polling session.state could see
+        # READY but action_status would still reflect the old (stale or
+        # incomplete) snapshot. By snapshotting here, the callback receives the
+        # definitive ActionStatus that corresponds to the terminal state.
+        #
+        # Note: We snapshot unconditionally (not guarded by `if self._callback`)
+        # because action_status is cheap and some tests check exact callback
+        # invocation patterns including the __bool__ check count.
+        action_status = self.action_status
+
         if state != ActionState.RUNNING:
             # Decide which between-action state to enter.
             if self._ending_only or self._action_state != ActionState.SUCCESS:
@@ -2247,10 +2266,7 @@ class Session(object):
             else:
                 self._state = SessionState.READY
 
-        if self._callback:
-            action_status = self.action_status
-            # for the type checker
-            assert action_status is not None
+        if self._callback and action_status is not None:
             self._callback(self._session_id, action_status)
 
     def _evaluate_current_session_env_vars(

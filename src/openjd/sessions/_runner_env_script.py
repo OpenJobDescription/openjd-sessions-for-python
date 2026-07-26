@@ -272,12 +272,14 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
     ) -> None:
-        if self._action is None:
-            # Nothing to do.
-            return
-
-        # Cancel with the effective method resolved at launch time by
-        # _run_action, against the action's own final scope (the script's
-        # lets and Env.File.* symbols, plus WrappedAction.* for a wrap
-        # hook) — openjd-rs parity.
+        # Always route through the base class handoff, even before _action is
+        # assigned. A cancel landing during environment-action setup (embedded-
+        # file writes, let evaluation) must be recorded in _pending_cancel and
+        # applied when the subprocess launches — F1 fix: the old `_action is
+        # None` guard returned early without entering the pending-cancel path,
+        # losing the cancel entirely during the setup window.
+        #
+        # _cancel_with_resolved_method handles the pre-launch case: it records
+        # the request in _pending_cancel when the subprocess hasn't started,
+        # and _run applies it once the child exists.
         self._cancel_with_resolved_method(time_limit, mark_action_failed)

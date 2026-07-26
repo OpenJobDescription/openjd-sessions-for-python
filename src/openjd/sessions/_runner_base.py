@@ -589,7 +589,23 @@ class ScriptRunnerBase(ABC):
         """Performs a clean shutdown on the runner. This shutsdown the internal
         ThreadPoolExectutor.
         """
-        self._pool.shutdown()
+        # F7 fix: Detect self-join. If shutdown() is called from the pool's
+        # worker thread (e.g., from _on_process_exit -> _action_callback ->
+        # cleanup -> runner.shutdown), calling _pool.shutdown(wait=True) would
+        # deadlock because the thread is trying to join itself. In that case,
+        # defer to a background thread or skip the wait.
+        import threading
+
+        # Check if current thread is the pool's worker thread. The pool has
+        # max_workers=1, so if a future is running, _threads has one element.
+        pool_threads: set[threading.Thread] = getattr(self._pool, "_threads", set())
+        current = threading.current_thread()
+        if current in pool_threads:
+            # We're inside the worker thread. Use wait=False to avoid deadlock.
+            # The pool will be garbage-collected eventually.
+            self._pool.shutdown(wait=False)
+        else:
+            self._pool.shutdown()
 
     def _fail_action(self, message: str) -> None:
         """Fail the action through the normal failure path: surface the
@@ -936,7 +952,24 @@ class ScriptRunnerBase(ABC):
                 return
             process = self._process
             if process is None or not process.has_started:
-                self._pending_cancel = (time_limit, mark_action_failed)
+                # F3 fix: Monotonic merge for duplicate pending cancels. If a
+                # cancel is already pending, merge the new request: take the
+                # minimum time_limit (tighter deadline wins, treating None as
+                # unlimited), and OR the mark_action_failed flags (once failed,
+                # always failed).
+                if self._pending_cancel is not None:
+                    prev_limit, prev_failed = self._pending_cancel
+                    # Merge time limits: None means unlimited, so a defined limit beats None
+                    if time_limit is None:
+                        merged_limit = prev_limit
+                    elif prev_limit is None:
+                        merged_limit = time_limit
+                    else:
+                        merged_limit = min(time_limit, prev_limit)
+                    merged_failed = mark_action_failed or prev_failed
+                    self._pending_cancel = (merged_limit, merged_failed)
+                else:
+                    self._pending_cancel = (time_limit, mark_action_failed)
                 return
             method = self._resolved_cancel_method
         if method is None:  # pragma: no cover - defensive
@@ -957,11 +990,18 @@ class ScriptRunnerBase(ABC):
             # pending cancel instead — an early return here rather than an
             # assert, so no bare AssertionError can reach the public API.
             return
-        # Nothing to do if it's not running.
-        if not self._process.is_running:
-            return
 
         with self._lock:
+            # F4 fix: Check liveness under the lock. Without this, a completion
+            # racing a cancel/timeout could see is_running=True outside the lock,
+            # enter here, and then find is_running=False (or worse, still True
+            # but the callback has already fired) — no linearization point.
+            # Moving the check inside the lock lets _on_process_exit's clearing
+            # of _pending_cancel act as the arbiter: if the process exited, any
+            # pending cancel was already consumed there.
+            if not self._process.is_running:
+                return
+
             self._canceled = True
             self._notify_canceled_action_as_failed = mark_action_failed
             now = datetime.now(timezone.utc)
@@ -1015,9 +1055,32 @@ class ScriptRunnerBase(ABC):
                 #      when we'll send the SIGKILL)
                 grace_end_time_str = self._cancel_gracetime_end.strftime(TIME_FORMAT_STR)
                 notify_end = json.dumps({"NotifyEnd": grace_end_time_str})
-                write_file_for_user(
-                    self._session_working_directory / "cancel_info.json", notify_end, self._user
-                )
+                try:
+                    write_file_for_user(
+                        self._session_working_directory / "cancel_info.json", notify_end, self._user
+                    )
+                except OSError as err:
+                    # F6 fix: If we cannot write the cancel_info.json (disk full, permission
+                    # denied, etc.), log and fall back to immediate termination. A script
+                    # waiting on that file would hang forever otherwise.
+                    self._logger.warning(
+                        f"Failed to write cancel_info.json: {err}. Falling back to immediate termination.",
+                        extra=LogExtraInfo(
+                            openjd_log_content=LogContent.PROCESS_CONTROL
+                            | LogContent.EXCEPTION_INFO
+                        ),
+                    )
+                    try:
+                        self._process.terminate()
+                    except OSError as term_err:  # pragma: nocover
+                        self._logger.warning(
+                            f"Fallback termination also failed: {term_err}",
+                            extra=LogExtraInfo(
+                                openjd_log_content=LogContent.PROCESS_CONTROL
+                                | LogContent.EXCEPTION_INFO
+                            ),
+                        )
+                    return
                 self._logger.info(
                     f"Grace period ends at {grace_end_time_str}",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
@@ -1046,6 +1109,13 @@ class ScriptRunnerBase(ABC):
         """This is invoked as a callback when run_future is done."""
         assert self._run_future is not None
         with self._lock:
+            # F2 fix: Claim _pending_cancel atomically before signalling completion.
+            # A cancel racing completion would otherwise see the process still
+            # "running" (in _cancel_with_resolved_method) and hand off to _cancel,
+            # which then finds is_running=False and no-ops. By consuming the
+            # pending here we prevent that lost-cancel window.
+            self._pending_cancel = None
+
             if self._runtime_limit is not None:
                 self._runtime_limit.cancel()
                 self._runtime_limit = None
@@ -1062,8 +1132,20 @@ class ScriptRunnerBase(ABC):
                     ),
                 )
 
-            if self._callback is not None:
+        # F8 fix: Invoke callback outside the lock and wrap in try/except. An
+        # observer exception must not prevent the child process from being
+        # reaped or cause resource leaks. The callback is invoked outside the
+        # lock since it may be slow and shouldn't block other operations.
+        if self._callback is not None:
+            try:
                 self._callback(ActionState(self.state.value))
+            except Exception as exc:
+                self._logger.error(
+                    f"Exception in action callback: {exc}",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
 
     def _on_notify_period_end(self) -> None:
         """This is invoked when the grace period in a NOTIFY_THEN_TERMINATE
