@@ -8,7 +8,7 @@ from logging.handlers import QueueHandler
 from pathlib import Path
 from queue import SimpleQueue
 from typing import Optional, cast
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -650,38 +650,97 @@ class TestScriptRunnerBase:
         assert "Log from test 0" in messages
         assert "Log from test 9" not in messages
 
-    @pytest.mark.usefixtures("message_queue", "queue_handler")
     @pytest.mark.parametrize(
-        argnames=("default_timeout_seconds", "action_timeout_seconds"),
+        argnames=("default_timeout_seconds", "action_timeout_seconds", "expected_seconds"),
         argvalues=(
-            pytest.param(1, 5, id="action-timeout-prevails"),
-            pytest.param(2, None, id="default-applied"),
-            pytest.param(None, None, id="no-timeout"),
+            pytest.param(1, 5, 5, id="action-timeout-prevails"),
+            pytest.param(5, 1, 1, id="action-timeout-prevails-when-smaller"),
+            pytest.param(2, None, 2, id="default-applied"),
+            pytest.param(None, 7, 7, id="action-only"),
+            pytest.param(None, None, None, id="no-timeout"),
         ),
     )
-    def test_run_action_default_timeout(
+    def test_run_action_effective_timeout(
         self,
         tmp_path: Path,
-        message_queue: SimpleQueue,
-        queue_handler: QueueHandler,
         default_timeout_seconds: Optional[int],
         action_timeout_seconds: Optional[int],
+        expected_seconds: Optional[int],
         python_exe: str,
     ) -> None:
-        # Tests that the effective timeout is applied correctly given a supplied default timeout
-        # and an optional timeout defined on the action
+        """The effective time limit is the action's timeout if it has one, else the
+        caller's default, else none at all.
 
+        Asserts the time limit `_run_action` hands to `_run`, with no subprocess
+        and no wall clock involved.
+
+        This replaces an end-to-end version that started a child printing one line
+        per second and asserted a +/-1 second window on its output
+        (`"Log from test {T-1}" in messages`). That coupled three unrelated
+        things -- timeout *selection*, `threading.Timer` scheduling, and child
+        process startup latency -- and only the first is what this test is named
+        for. The Timer is armed before the child is submitted to the pool, so the
+        Timer's clock starts before the interpreter even launches; any host slow
+        enough to delay startup past a second failed the assertion while the
+        product behaved correctly. Measured: injecting a 1.5s startup delay
+        against a 2s timeout fails the old assertion with the runner correctly in
+        TIMEOUT. It was the suite's most persistent false red.
+        """
         # GIVEN
-        expected_effective_timeout_seconds: Optional[int] = None
-        if action_timeout_seconds is not None:
-            expected_effective_timeout_seconds = action_timeout_seconds
-        elif default_timeout_seconds is not None:
-            expected_effective_timeout_seconds = default_timeout_seconds
         default_timeout = (
             timedelta(seconds=default_timeout_seconds)
             if default_timeout_seconds is not None
             else None
         )
+        action = Action_2023_09(
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[ArgString_2023_09("-c"), ArgString_2023_09("pass")],
+            timeout=action_timeout_seconds,
+        )
+        symtab = SymbolTable(source={"Task.PythonInterpreter": python_exe})
+        captured: list[Optional[timedelta]] = []
+
+        with TerminatingRunner(logger=MagicMock(), session_working_directory=tmp_path) as runner:
+            # WHEN
+            with patch.object(
+                runner,
+                "_run",
+                side_effect=lambda args, time_limit=None: captured.append(time_limit),
+            ):
+                runner._run_action(action, symtab, default_timeout=default_timeout)
+
+        # THEN
+        assert len(captured) == 1, "the action was not launched exactly once"
+        expected = timedelta(seconds=expected_seconds) if expected_seconds is not None else None
+        assert captured[0] == expected
+
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    @pytest.mark.parametrize(
+        argnames=("action_timeout_seconds", "expected_state"),
+        argvalues=(
+            pytest.param(2, ScriptRunnerState.TIMEOUT, id="timeout-terminates-the-action"),
+            pytest.param(None, ScriptRunnerState.SUCCESS, id="no-timeout-runs-to-completion"),
+        ),
+    )
+    def test_run_action_timeout_is_enforced(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        action_timeout_seconds: Optional[int],
+        expected_state: ScriptRunnerState,
+        python_exe: str,
+    ) -> None:
+        """A declared timeout really does terminate the action, and no timeout
+        really does let it finish.
+
+        The end-to-end half of the coverage above, kept deliberately loose: it
+        asserts only the terminal state and that the child did or did not reach its
+        last line. It says nothing about *when* the timeout landed, because the
+        exact second the child reaches depends on how promptly the host scheduled
+        it -- which is what made the previous version of this test flaky.
+        """
+        # GIVEN: a child that prints one line a second for 20 seconds
         action = Action_2023_09(
             command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
             args=[ArgString_2023_09("{{Task.ScriptFile}}")],
@@ -697,23 +756,16 @@ class TestScriptRunnerBase:
         logger = build_logger(queue_handler)
         with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
             # WHEN
-            runner._run_action(action, symtab, default_timeout=default_timeout)
-            # wait for the process to exit
+            runner._run_action(action, symtab)
             while runner.state == ScriptRunnerState.RUNNING:
                 time.sleep(0.2)
 
         # THEN
-        if expected_effective_timeout_seconds is not None:
-            assert runner.state == ScriptRunnerState.TIMEOUT
-        else:
-            assert runner.state == ScriptRunnerState.SUCCESS
+        assert runner.state == expected_state
         messages = collect_queue_messages(message_queue)
-        # The application prints out 0, ..., 19 once a second for 20s .
-        # If it ended early, then we printed the first but not the last.
-        print(messages)
-        if expected_effective_timeout_seconds is not None:
-            assert f"Log from test {expected_effective_timeout_seconds - 1}" in messages
-            assert f"Log from test {expected_effective_timeout_seconds + 1}" not in messages
+        if expected_state is ScriptRunnerState.TIMEOUT:
+            # It was cut short. Which line it got to is a scheduling detail.
+            assert "Log from test 19" not in messages
         else:
             assert "Log from test 19" in messages
 

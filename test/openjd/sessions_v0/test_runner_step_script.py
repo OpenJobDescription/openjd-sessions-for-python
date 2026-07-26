@@ -475,11 +475,24 @@ class TestCancelRacingLaunchIsSerialized:
             return real_start(subproc)
 
         def _cancel_in_window() -> None:
-            in_window.wait(timeout=30)
-            assert runner._process is not None
-            assert runner._process.has_started is False
-            runner.cancel()
-            canceller_done.set()
+            # try/finally so canceller_done is set no matter what. This runs on its
+            # own thread, so an exception here would otherwise leave
+            # _start_after_cancel waiting out its full 30s and the assertions below
+            # reporting SUCCESS -- a confusing failure a long way from its cause.
+            try:
+                in_window.wait(timeout=30)
+                # Deliberately no assertion on runner._process. This hook runs on
+                # the pool thread, and `_run` publishes _process and _run_future
+                # together *after* submitting to the pool, so at this instant
+                # _process may legitimately still be None. Asserting otherwise made
+                # this test fail about 1 run in 4 even in isolation: the assertion
+                # killed its own canceller thread. Both windows -- before _process
+                # is published, and after it exists but before it has started --
+                # must record the cancel rather than drop it, and that is what the
+                # assertions after the run check.
+                runner.cancel()
+            finally:
+                canceller_done.set()
 
         canceller = threading.Thread(target=_cancel_in_window, daemon=True)
 
