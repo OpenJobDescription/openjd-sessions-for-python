@@ -15,6 +15,27 @@ from ._logging import LOG, LogContent, LogExtraInfo
 __all__ = ("ActionMessageKind", "ActionMonitoringFilter", "redact_openjd_redacted_env_requests")
 
 
+def _describe_exception(exc: BaseException) -> str:
+    """Render an exception for a log line without trusting it to be renderable.
+
+    A consumer-supplied callback may raise an exception whose ``__str__`` or
+    ``__repr__`` itself raises. Every containment site in this module puts the
+    exception into a message, so rendering it naively re-creates the exact escape
+    the containment exists to prevent -- the exception then propagates from inside
+    the ``except`` block, out of ``filter()``, and into the thread forwarding the
+    subprocess's stdout.
+    """
+    try:
+        return str(exc)
+    except Exception:
+        pass
+    try:
+        return repr(exc)
+    except Exception:
+        pass
+    return f"<unrenderable {type(exc).__name__}>"
+
+
 def redact_openjd_redacted_env_requests(command_str: str) -> str:
     """Redact sensitive information in command strings before they're processed by the regular redaction mechanism.
 
@@ -78,27 +99,28 @@ openjd_env_actions_filter_regex = "^(openjd_env|openjd_redacted_env|openjd_unset
 openjd_env_actions_filter_matcher = re.compile(openjd_env_actions_filter_regex)
 
 # A regex for matching the assignment of a value to an environment variable
-# Note on the anchors: these use \Z, not $. `$` also matches immediately before
-# a trailing newline, so "FOO\n" satisfies an `$`-anchored name pattern and this
-# runtime would go on to unset a variable whose name contains a newline -- a name
-# no operating system can hold. \Z matches only at the true end of the string.
+#
+# Note on the anchors: these use \Z, not $, because `$` also matches immediately
+# before a trailing newline -- so an `$`-anchored name pattern accepts "FOO\n",
+# a name no operating system can hold. \Z matches only at the true end of the
+# string.
+#
+# Honest scope: this is defence in depth, not a fix for a reachable defect. The
+# outer `filter_regex` below captures the message body with `(.+)$`, and `.` never
+# crosses a newline, so a trailing newline is already stripped before any name
+# reaches these patterns. \Z is used so that these patterns remain correct on
+# their own terms if that outer capture ever changes.
+#
 # The VALUE half deliberately stays permissive: a multi-line value delivered
-# through the JSON form (openjd_env: "FOO=a\nb") is supported behaviour, so the
-# separator hygiene a value needs belongs at each serialization boundary, not
-# here.
+# through the JSON form (openjd_env: "FOO=a\nb") is supported, tested behaviour,
+# so the separator hygiene a value needs belongs at each serialization boundary,
+# not here.
 envvar_set_regex_str = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*\\Z"  # Variable name
 envvar_set_regex_json = '^(")?[A-Za-z_][A-Za-z0-9_]*' "=" ".*\\Z"  # Variable name
 envvar_set_matcher_str = re.compile(envvar_set_regex_str)
 envvar_set_matcher_json = re.compile(envvar_set_regex_json)
 envvar_unset_regex = "^[A-Za-z_][A-Za-z0-9_]*\\Z"
 envvar_unset_matcher = re.compile(envvar_unset_regex)
-
-# The set of characters that can never legally appear in an environment variable
-# NAME, and that would change the meaning of any line-based or NUL-delimited
-# rendering of one. A name is validated against envvar_*_regex above before it
-# reaches a callback, but the JSON form is decoded AFTER that match, so the
-# decoded name is re-checked with this.
-_ENVVAR_NAME_FORBIDDEN = ("\n", "\r", "\0", "=")
 
 
 # This is a reworking/merging of TaskStatusFilter and FailureFilter
@@ -362,11 +384,16 @@ class ActionMonitoringFilter(logging.Filter):
                     # unreaped. Same isolation as the Session's terminal
                     # callbacks; keep the record in the log so the failure is
                     # visible in the action's own output.
+                    #
+                    # _describe_exception, not f"{e}": rendering a hostile
+                    # exception can itself raise, which would re-open this very
+                    # escape from inside the handler for it.
+                    detail = _describe_exception(e)
                     LOG.error(
-                        f"Open Job Description: Exception in the action message callback: {e}",
+                        f"Open Job Description: Exception in the action message callback: {detail}",
                         extra=LogExtraInfo(openjd_log_content=LogContent.EXCEPTION_INFO),
                     )
-                    record.msg = record.msg + f" -- ERROR: {str(e)}"
+                    record.msg = record.msg + f" -- ERROR: {detail}"
                     return True
                 return not self._suppress_filtered
 
@@ -394,11 +421,12 @@ class ActionMonitoringFilter(logging.Filter):
             # exception reach the stdout pump thread).
             try:
                 self.apply_message_redaction(record)
-            except Exception as e:  # pragma: nocover - defensive
+            except Exception as e:
                 record.msg = "*" * 8
                 record.args = ()
                 LOG.error(
-                    f"Open Job Description: Log redaction failed; message suppressed: {e}",
+                    "Open Job Description: Log redaction failed; message suppressed: "
+                    f"{_describe_exception(e)}",
                     extra=LogExtraInfo(openjd_log_content=LogContent.EXCEPTION_INFO),
                 )
 
@@ -415,7 +443,8 @@ class ActionMonitoringFilter(logging.Filter):
             self._callback(kind, value, cancel_and_fail)
         except Exception as e:
             LOG.error(
-                f"Open Job Description: Exception in the action message callback: {e}",
+                "Open Job Description: Exception in the action message callback: "
+                f"{_describe_exception(e)}",
                 extra=LogExtraInfo(openjd_log_content=LogContent.EXCEPTION_INFO),
             )
 
@@ -502,12 +531,6 @@ class ActionMonitoringFilter(logging.Filter):
                     raise ValueError(
                         f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
                     )
-            # Re-check the NAME after decoding. The regex above matched the raw
-            # message, so for the JSON form it validated the escaped text; JSON
-            # decoding happens afterwards and could in principle yield a name
-            # this runtime should never hand onwards.
-            if any(c in name for c in _ENVVAR_NAME_FORBIDDEN):
-                return "", "", False, equals_position, None
             return name, value, True, equals_position, original_value
         except json.JSONDecodeError as e:
             raise ValueError(

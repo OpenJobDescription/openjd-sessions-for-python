@@ -519,6 +519,15 @@ class ScriptRunnerBase(ABC):
     """True iff the subprocess was canceled but action needs to be notified as FAILED.
     """
 
+    _launched: bool
+    """True once a launch has been *attempted*, successfully or not.
+
+    Backs the single-use guard in :meth:`_run`. Deliberately a latch of its own
+    rather than something inferred from :attr:`state`: a runner that tried to
+    launch and failed must never be reusable, and tying that rule to the state
+    classification made it break whenever the classification changed.
+    """
+
     _pending_cancel: Optional[tuple[Optional[timedelta], bool]]
     """A cancel that arrived before the subprocess existed, as
     ``(time_limit, mark_action_failed)``.
@@ -618,6 +627,7 @@ class ScriptRunnerBase(ABC):
         self._state_override = None
         self._resolved_cancel_method = None
         self._pending_cancel = None
+        self._launched = False
         self._print_section_banner = True
 
     # Context manager for use in our tests
@@ -754,8 +764,22 @@ class ScriptRunnerBase(ABC):
         # may run under self._lock — it is a plain Lock, not an RLock.
         launch_failure: Optional[str] = None
         with self._lock:
-            if self.state != ScriptRunnerState.READY:
+            # The single-use guard is latched on `_launched`, NOT derived from
+            # `state`. Deriving it from `state` made the guard depend on every
+            # future change to that property's classification: when the R5-6
+            # change made `state` report READY for a launch that had failed after
+            # `_process` was assigned, this guard silently opened and a second
+            # subprocess was launched over the first, orphaning it. A
+            # "has a launch been attempted" latch cannot drift that way.
+            #
+            # `state` is still consulted, because it carries the `_state_override`
+            # that `_fail_action` sets -- a runner whose setup already failed is
+            # not READY either.
+            if self._launched or self.state != ScriptRunnerState.READY:
                 raise RuntimeError("This cannot be used to run a second subprocess.")
+            # Set before anything that can fail: a runner that has *attempted* a
+            # launch must never be reusable, whether or not the attempt worked.
+            self._launched = True
             if is_posix():
                 script = self._generate_command_shell_script(args)
                 filehandle, filename = mkstemp(
@@ -788,7 +812,7 @@ class ScriptRunnerBase(ABC):
             # Only proceed with subprocess creation if no launch failure occurred
             if launch_failure is None:
                 subprocess_args = [filename] if is_posix() else args
-                self._process = LoggingSubprocess(
+                process = LoggingSubprocess(
                     logger=self._logger,
                     args=subprocess_args,
                     user=self._user,
@@ -802,7 +826,17 @@ class ScriptRunnerBase(ABC):
 
                 if self._print_section_banner:
                     log_subsection_banner(self._logger, "Phase: Running action")
-                self._run_future = self._pool.submit(self._process.run)
+                run_future = self._pool.submit(process.run)
+
+                # Publish the pair together, and only once both exist. `state` is
+                # read without the lock, so assigning `self._process` before the
+                # future existed left a window -- on the ordinary success path,
+                # not only on failure -- in which a polling consumer observed a
+                # process with no future. That combination is what the R5-6 change
+                # then had to classify, and misclassifying it is what opened the
+                # guard above. Removing the window removes the question.
+                self._process = process
+                self._run_future = run_future
 
         # Dispatch launch failure outside the lock
         if launch_failure is not None:
@@ -875,10 +909,17 @@ class ScriptRunnerBase(ABC):
                     # subprocess through Popen's `env=`, which does not go
                     # through a shell, so nothing that used to work stops
                     # working.
+                    # The warning does not promise the variable still arrives.
+                    # For a same-user action it does, via Popen's `env=`. For a
+                    # cross-user action it does not: the subprocess is launched
+                    # through `sudo -u <user> -i`, and `-i` starts a login shell
+                    # that resets the environment, so this script's `export` lines
+                    # are the only channel that reaches the workload.
                     self._logger.warning(
                         f"Not exporting environment variable {name!r} from the action's shell "
-                        "script: the name is not a valid POSIX shell identifier. The variable is "
-                        "still passed to the subprocess directly.",
+                        "script: the name is not a valid POSIX shell identifier, which /bin/sh "
+                        "cannot express. For an action run as another user this means the "
+                        "variable will not reach the subprocess at all.",
                         extra=LogExtraInfo(openjd_log_content=LogContent.PARAMETER_INFO),
                     )
                     continue
@@ -1240,13 +1281,14 @@ class ScriptRunnerBase(ABC):
 
     def _on_process_exit(self, future: Future) -> None:
         """This is invoked as a callback when run_future is done."""
-        # R5-6: use the future the completion actually fired for, rather than
-        # asserting on the instance attribute. This runs on the pool worker (or,
-        # for a very fast process, on the launching thread), so an AssertionError
-        # here would only surface through threading.excepthook -- and under
-        # `python -O` the assert is stripped and the `.exception()` read below
-        # becomes an AttributeError in the same unobservable place.
-        run_future = self._run_future if self._run_future is not None else future
+        # R5-6: read the exception from the future the completion actually fired
+        # for. This runs on the pool worker (or, for a very fast process, on the
+        # launching thread), so an AssertionError on `self._run_future` would only
+        # surface through threading.excepthook -- and under `python -O` the assert
+        # is stripped and the `.exception()` read below becomes an AttributeError
+        # in the same unobservable place. `future` is always the right object;
+        # `self._run_future` can additionally be cleared by cleanup().
+        run_future = future
         with self._lock:
             # F2 fix: Claim _pending_cancel atomically before signalling completion.
             # A cancel racing completion would otherwise see the process still
@@ -1277,7 +1319,7 @@ class ScriptRunnerBase(ABC):
         # lock since it may be slow and shouldn't block other operations.
         if self._callback is not None:
             try:
-                self._callback(ActionState(self.state.value))
+                self._callback(self._terminal_action_state())
             except Exception as exc:
                 self._logger.error(
                     f"Exception in action callback: {exc}",
@@ -1285,6 +1327,34 @@ class ScriptRunnerBase(ABC):
                         openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
                     ),
                 )
+
+    def _terminal_action_state(self) -> ActionState:
+        """The :class:`ActionState` to publish now that the action is over.
+
+        ``ActionState`` has no member for ``ScriptRunnerState.READY`` or
+        ``CANCELING``, so ``ActionState(self.state.value)`` raises ``ValueError``
+        for either. That mattered: the F8 ``try/except`` around the callback
+        catches the ValueError and logs it, so the consumer receives **no
+        terminal callback at all** and waits forever on an action that has
+        finished. Reached when the runner's state cannot be classified -- e.g.
+        the process/future pair left inconsistent by a failed launch.
+
+        The action is over by the time we are called, so an unclassifiable state
+        is reported as FAILED. Publishing a wrong-but-terminal state is strictly
+        better than publishing nothing.
+        """
+        state = self.state
+        try:
+            return ActionState(state.value)
+        except ValueError:
+            self._logger.error(
+                f"Action completed in the non-terminal state '{state.value}'; reporting it as "
+                "FAILED. This indicates an internal error in this runtime.",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                ),
+            )
+            return ActionState.FAILED
 
     def _on_notify_period_end(self) -> None:
         """This is invoked when the grace period in a NOTIFY_THEN_TERMINATE

@@ -32,9 +32,9 @@ mode does not depend on how the embedding application happens to be configured.
 """
 
 
-def _validate_temp_dir_ownership(temp_dir: str) -> None:
-    """Refuse to use the shared temporary root unless it is a real directory
-    owned by this process' user (or root).
+def _prepare_temp_dir_root(temp_dir: str) -> None:
+    """Validate the shared temporary root and set its mode, operating on a single
+    file descriptor so the two cannot disagree.
 
     Why this exists: the root is a *fixed, predictable* path
     (``<tempdir>/OpenJD``) and on POSIX its parent is typically world-writable
@@ -45,36 +45,69 @@ def _validate_temp_dir_ownership(temp_dir: str) -> None:
     restricts deletion within ``/tmp`` itself, not within an attacker-owned
     ``/tmp/OpenJD``.
 
-    ``os.lstat`` rather than ``os.stat``, because the whole point is to see a
-    symlink rather than follow it.
+    Why a descriptor rather than the path: an earlier version of this validated
+    with ``os.lstat(path)`` and then called ``os.stat(path)``/``os.chmod(path)``.
+    Both of those resolve the *name* again and follow symlinks, so replacing the
+    entry with a symlink in between defeated the check entirely -- and the chmod
+    then widened the link's target to 0o755. Opening once with ``O_NOFOLLOW`` and
+    ``O_DIRECTORY`` and using ``fstat``/``fchmod`` means every decision and every
+    modification applies to the same inode we validated, whatever happens to the
+    name afterwards.
+
+    ``O_NOFOLLOW`` makes the open itself fail on a symlink, which is why there is
+    no separate ``S_ISLNK`` branch on POSIX. Neither flag exists on Windows, where
+    the ``getattr(..., 0)`` fallbacks make this a plain open and the reparse-point
+    check below carries the equivalent weight.
 
     Raises:
-        RuntimeError: if the path is a symlink/reparse point, is not a
-            directory, or is owned by another user.
+        RuntimeError: if the path is a symlink or reparse point, is not a
+            directory, is owned by another user, or its mode cannot be set.
     """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_DIRECTORY", 0)
     try:
-        st = os.lstat(temp_dir)
+        fd = os.open(temp_dir, flags)
     except OSError as err:
-        raise RuntimeError(f"Could not inspect the temporary directory {temp_dir}: {err}")
-
-    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
+        # ELOOP here is the O_NOFOLLOW refusal; ENOTDIR is O_DIRECTORY's.
         raise RuntimeError(
-            f"Refusing to use temporary directory {temp_dir}: it is a link or reparse point "
-            "rather than a real directory. Remove it, or pass an explicit session root directory."
+            f"Refusing to use temporary directory {temp_dir}: it could not be opened as a real "
+            f"directory ({err}). If it is a symbolic link or not a directory, remove it, or pass "
+            "an explicit session root directory."
         )
-    if not stat.S_ISDIR(st.st_mode):
-        raise RuntimeError(
-            f"Refusing to use temporary directory {temp_dir}: it exists but is not a directory."
-        )
-    if is_posix():
-        this_uid = os.geteuid()
-        # root is accepted so that a system-provisioned root directory works.
-        if st.st_uid not in (this_uid, 0):
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode) or getattr(st, "st_reparse_tag", 0) != 0:
             raise RuntimeError(
-                f"Refusing to use temporary directory {temp_dir}: it is owned by uid "
-                f"{st.st_uid}, not by this process' uid ({this_uid}) or root. Another user "
-                "may have created it. Remove it, or pass an explicit session root directory."
+                f"Refusing to use temporary directory {temp_dir}: it is not a real directory."
             )
+        if is_posix():
+            this_uid = os.geteuid()
+            # root is accepted so that a system-provisioned root directory works.
+            if st.st_uid not in (this_uid, 0):
+                raise RuntimeError(
+                    f"Refusing to use temporary directory {temp_dir}: it is owned by uid "
+                    f"{st.st_uid}, not by this process' uid ({this_uid}) or root. Another user "
+                    "may have created it. Remove it, or pass an explicit session root directory."
+                )
+
+        # makedirs()' `mode` is masked by the process umask, so it does not on its
+        # own guarantee anything: under umask 0o077 an "explicit" 0o755 lands as
+        # 0o700, and a job user could then not traverse into its own session
+        # directory. Set the mode outright. Conditional because a
+        # system-provisioned root may be owned by root with the right mode
+        # already, where the call would fail for no reason.
+        if stat.S_IMODE(st.st_mode) != stat.S_IMODE(OPENJD_TEMPDIR_MODE):
+            try:
+                # fchmod, not chmod: applies to the validated inode, not to
+                # whatever the name resolves to now.
+                os.fchmod(fd, OPENJD_TEMPDIR_MODE)
+            except OSError as err:
+                raise RuntimeError(
+                    f"Could not set permissions on temporary directory {temp_dir}: {err}. "
+                    "Session working directories created beneath it may not be reachable by a "
+                    "job user."
+                )
+    finally:
+        os.close(fd)
 
 
 def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
@@ -95,7 +128,7 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
     Raises:
         RuntimeError: If the directory could not be created, or if it already
             exists and is not a directory owned by this process' user (see
-            :func:`_validate_temp_dir_ownership`).
+            :func:`_prepare_temp_dir_root`).
     """
     if is_windows():
         program_data_path = os.getenv("PROGRAMDATA")
@@ -119,25 +152,9 @@ def custom_gettempdir(logger: Optional[LoggerAdapter] = None) -> str:
 
     # R5-3 fix: exist_ok=True accepts whatever is already at this predictable
     # path -- another local user's directory, or a symlink pointing elsewhere.
-    # Validate BEFORE the chmod below, so we never modify an entry that turns out
-    # not to be ours.
-    _validate_temp_dir_ownership(temp_dir)
-
-    # makedirs()' `mode` is masked by the process umask, so it does not on its own
-    # guarantee anything: under umask 0o077 the "explicit" 0o755 above lands as
-    # 0o700, and a job user could then not traverse into its own session
-    # directory. Set the mode outright. Conditional because a
-    # system-provisioned root may be owned by root with the right mode already,
-    # where chmod would fail for no reason.
-    try:
-        current_mode = stat.S_IMODE(os.stat(temp_dir).st_mode)
-        if current_mode != stat.S_IMODE(OPENJD_TEMPDIR_MODE):
-            os.chmod(temp_dir, mode=OPENJD_TEMPDIR_MODE)
-    except OSError as err:
-        raise RuntimeError(
-            f"Could not set permissions on temporary directory {temp_dir}: {err}. Session "
-            "working directories created beneath it may not be reachable by a job user."
-        )
+    # Validate and set the mode through one descriptor, so the entry cannot be
+    # swapped between the two.
+    _prepare_temp_dir_root(temp_dir)
     return temp_dir
 
 

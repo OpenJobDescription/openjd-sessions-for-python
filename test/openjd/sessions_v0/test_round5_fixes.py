@@ -322,26 +322,39 @@ class TestSib1EnvVarNameAnchoring:
         assert len(env_calls) == 1
         assert env_calls[0][0][1] == {"name": "FOO", "value": "BAR\nBAZ"}
 
-    def test_a_separator_cannot_reach_a_decoded_name(self) -> None:
-        """Defence in depth: the regex matches the *raw* message, but JSON
-        decoding happens afterwards, so the decoded name is re-checked."""
-        # GIVEN a filter whose callback records what it is handed
-        callback = MagicMock()
-        f = ActionMonitoringFilter(session_id="foo", callback=callback)
-
-        # WHEN every ENV message it sees is processed
-        for msg in (
+    @pytest.mark.parametrize(
+        "msg",
+        [
             'openjd_env: "FOO\\nBAR=baz"',
             'openjd_env: "FOO\\u000aBAR=baz"',
             'openjd_env: "FOO\\u0000BAR=baz"',
-        ):
-            f.filter(_make_record(msg))
+        ],
+    )
+    def test_a_separator_cannot_reach_a_decoded_name(self, msg: str) -> None:
+        """A name carrying a separator must be rejected outright, not passed on.
 
-        # THEN no name carrying a separator was ever handed onwards
-        for call in callback.call_args_list:
-            value = call[0][1]
-            if isinstance(value, dict):
-                assert not any(c in value["name"] for c in ("\n", "\r", "\0", "="))
+        Rewritten after an audit: the previous version looped over the recorded
+        calls asserting a property of any dict it found, and since these inputs
+        produce no ENV dict at all, its assertion body never executed. It passed
+        against a deliberately broken implementation. Assert the rejection
+        directly instead.
+        """
+        # GIVEN
+        callback = MagicMock()
+        f = ActionMonitoringFilter(session_id="foo", callback=callback)
+
+        # WHEN
+        f.filter(_make_record(msg))
+
+        # THEN: no environment variable was defined, and the failure was reported.
+        env_defs = [
+            c
+            for c in callback.call_args_list
+            if c[0][0] == ActionMessageKind.ENV and isinstance(c[0][1], dict)
+        ]
+        assert env_defs == []
+        assert callback.call_args_list, "the parse failure must be reported to the consumer"
+        assert callback.call_args_list[-1][0][2] is True  # cancel-and-fail
 
 
 # ===========================================================================
@@ -378,9 +391,10 @@ class TestR53TempRootHardening:
         parent.mkdir()
         (parent / "OpenJD").symlink_to(elsewhere, target_is_directory=True)
 
-        # WHEN / THEN: we refuse rather than creating sessions inside it
+        # WHEN / THEN: we refuse rather than creating sessions inside it. The
+        # refusal now comes from O_NOFOLLOW on the open itself (see REG-3).
         with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
-            with pytest.raises(RuntimeError, match="link or reparse point"):
+            with pytest.raises(RuntimeError, match="real directory"):
                 custom_gettempdir()
 
     def test_rejects_a_root_that_is_not_a_directory(self, tmp_path: Path) -> None:
@@ -394,29 +408,39 @@ class TestR53TempRootHardening:
             with pytest.raises(RuntimeError):
                 custom_gettempdir()
 
-    @pytest.mark.skipif(not is_posix(), reason="uid ownership check is POSIX-only")
-    def test_rejects_a_root_owned_by_another_user(self, tmp_path: Path) -> None:
-        # GIVEN: the root exists but lstat reports a different owner
-        parent = tmp_path / "parent"
-        parent.mkdir()
-        (parent / "OpenJD").mkdir()
-        real_lstat = os.lstat
-        foreign_uid = os.geteuid() + 12345
+    @staticmethod
+    def _fstat_reporting_uid(uid: int) -> Any:
+        """Wrap os.fstat so the root directory appears owned by `uid`.
+
+        Patches fstat rather than lstat: the implementation validates through a
+        descriptor now (see REG-3), so an lstat mock would not be consulted and
+        the test would vacuously pass.
+        """
+        real_fstat = os.fstat
 
         class _Stat:
             def __init__(self, base: os.stat_result) -> None:
                 self.st_mode = base.st_mode
-                self.st_uid = foreign_uid
+                self.st_uid = uid
 
-        def fake_lstat(path: Any, *a: Any, **k: Any) -> Any:
-            base = real_lstat(path, *a, **k)
-            if str(path).endswith("OpenJD"):
-                return _Stat(base)
-            return base
+        def fake_fstat(fd: int, *a: Any, **k: Any) -> Any:
+            return _Stat(real_fstat(fd, *a, **k))
+
+        return fake_fstat
+
+    @pytest.mark.skipif(not is_posix(), reason="uid ownership check is POSIX-only")
+    def test_rejects_a_root_owned_by_another_user(self, tmp_path: Path) -> None:
+        # GIVEN: the root exists but is owned by a different uid
+        parent = tmp_path / "parent"
+        parent.mkdir()
+        (parent / "OpenJD").mkdir()
 
         # WHEN / THEN
         with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
-            with patch("openjd.sessions._tempdir.os.lstat", side_effect=fake_lstat):
+            with patch(
+                "openjd.sessions._tempdir.os.fstat",
+                side_effect=self._fstat_reporting_uid(os.geteuid() + 12345),
+            ):
                 with pytest.raises(RuntimeError, match="owned by uid"):
                     custom_gettempdir()
 
@@ -427,22 +451,12 @@ class TestR53TempRootHardening:
         parent = tmp_path / "parent"
         parent.mkdir()
         (parent / "OpenJD").mkdir()
-        real_lstat = os.lstat
-
-        class _Stat:
-            def __init__(self, base: os.stat_result) -> None:
-                self.st_mode = base.st_mode
-                self.st_uid = 0
-
-        def fake_lstat(path: Any, *a: Any, **k: Any) -> Any:
-            base = real_lstat(path, *a, **k)
-            if str(path).endswith("OpenJD"):
-                return _Stat(base)
-            return base
 
         # WHEN / THEN: no exception
         with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
-            with patch("openjd.sessions._tempdir.os.lstat", side_effect=fake_lstat):
+            with patch(
+                "openjd.sessions._tempdir.os.fstat", side_effect=self._fstat_reporting_uid(0)
+            ):
                 assert custom_gettempdir() == str(parent / "OpenJD")
 
 
