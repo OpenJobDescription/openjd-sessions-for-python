@@ -915,18 +915,21 @@ class Session(object):
 
         if wrap_env is not None:
             # The wrapped onEnter resolves against the INNER environment's
-            # own scope; the hook itself resolves against `symtab`, and its
-            # own script's lets/files are evaluated by the script runner
-            # from wrap_env.script (see _try_inject_wrapped_symbols). On
+            # own scope (`symtab`, which carries the step context and
+            # extra_let_bindings that environment was entered with); the hook
+            # resolves against its own table, which carries none of them -- see
+            # _build_wrap_hook_scope. Its own script's lets/files are evaluated
+            # into that table by the script runner from wrap_env.script. On
             # failure the environment stays in the entered list, exactly as
             # when enter() itself fails, so the caller's cleanup exits it
             # as usual.
+            hook_symtab = self._build_wrap_hook_scope(environment.revision, symtab)
             if not self._try_inject_wrapped_symbols(
                 scope=EmbeddedFilesScope.ENV,
                 inner_script=environment.script,
                 symtab=symtab,
                 inject=lambda inner_symtab: self._inject_wrapped_env_symbols(
-                    symtab, environment, on_enter_action, inner_symtab=inner_symtab
+                    hook_symtab, environment, on_enter_action, inner_symtab=inner_symtab
                 ),
                 fail_message=(
                     f"Failed to resolve the wrapped onEnter action of "
@@ -934,7 +937,7 @@ class Session(object):
                 ),
             ):
                 return identifier
-            if not self._seed_wrap_env_scope(symtab, wrap_env):
+            if not self._seed_wrap_env_scope(hook_symtab, wrap_env):
                 return identifier
             try:
                 wrap_file_records = self._get_wrap_env_file_records(wrap_env)
@@ -946,7 +949,7 @@ class Session(object):
             self._runner = self._make_env_script_runner(
                 environment_script=wrap_env.script,
                 os_env_vars=action_env_vars,
-                symtab=symtab,
+                symtab=hook_symtab,
                 preallocated_file_records=wrap_file_records,
             )
             # Sets the subprocess running; returns once it has started, or has
@@ -1092,12 +1095,13 @@ class Session(object):
             # See the onWrapEnvEnter path (_try_inject_wrapped_symbols). On
             # failure the environment was already removed from tracking
             # above, matching how a failed exit() behaves.
+            hook_symtab = self._build_wrap_hook_scope(environment.revision, symtab)
             if not self._try_inject_wrapped_symbols(
                 scope=EmbeddedFilesScope.ENV,
                 inner_script=environment.script,
                 symtab=symtab,
                 inject=lambda inner_symtab: self._inject_wrapped_env_symbols(
-                    symtab,
+                    hook_symtab,
                     environment,
                     on_exit_action,
                     session_env_list=wrapped_session_env_list,
@@ -1109,7 +1113,7 @@ class Session(object):
                 ),
             ):
                 return
-            if not self._seed_wrap_env_scope(symtab, wrap_env):
+            if not self._seed_wrap_env_scope(hook_symtab, wrap_env):
                 return
             try:
                 wrap_file_records = self._get_wrap_env_file_records(wrap_env)
@@ -1121,7 +1125,7 @@ class Session(object):
             self._runner = self._make_env_script_runner(
                 environment_script=wrap_env.script,
                 os_env_vars=action_env_vars,
-                symtab=symtab,
+                symtab=hook_symtab,
                 preallocated_file_records=wrap_file_records,
             )
             # Set RUNNING first: wrap_env_exit() may fail immediately and set
@@ -1238,16 +1242,20 @@ class Session(object):
                     "Internal error: a wrap environment is active but no step name was "
                     "resolved for the task."
                 )
-            # The wrapped onRun resolves against the STEP's own scope; the
-            # hook resolves against `symtab`, and the wrap environment's own
-            # lets/files are evaluated by the script runner from
-            # wrap_env.script (see _try_inject_wrapped_symbols).
+            # Two separate scopes. The wrapped onRun resolves against the STEP's
+            # own scope (`symtab`, which carries this task's parameters and the
+            # running step's name); the hook resolves against its own table,
+            # which deliberately carries none of that -- see
+            # _build_wrap_hook_scope. The wrap environment's own lets/files are
+            # evaluated into the hook's table by the script runner from
+            # wrap_env.script.
+            hook_symtab = self._build_wrap_hook_scope(step_script.revision, symtab)
             if not self._try_inject_wrapped_symbols(
                 scope=EmbeddedFilesScope.STEP,
                 inner_script=step_script,
                 symtab=symtab,
                 inject=lambda inner_symtab: self._inject_wrapped_task_symbols(
-                    symtab, step_script, step_name, inner_symtab=inner_symtab
+                    hook_symtab, step_script, step_name, inner_symtab=inner_symtab
                 ),
                 fail_message=(
                     f"Failed to resolve the wrapped Task action for {wrap_env.name}'s "
@@ -1256,9 +1264,13 @@ class Session(object):
             ):
                 return
 
-            # Only now that the wrapped action has resolved in its own scope:
-            # give the hook the step context its environment was entered with.
-            if not self._seed_wrap_env_scope(symtab, wrap_env):
+            # Give the hook the step context its OWN environment was entered
+            # with. Ordering is no longer load-bearing here: `hook_symtab` is a
+            # separate table and is never the base of
+            # `_build_wrapped_inner_scope`, so seeding it cannot reach the
+            # wrapped action's scope whenever it happens. It stays after
+            # injection to keep all three hook paths reading the same way.
+            if not self._seed_wrap_env_scope(hook_symtab, wrap_env):
                 return
 
             try:
@@ -1271,7 +1283,7 @@ class Session(object):
             self._runner = self._make_env_script_runner(
                 environment_script=wrap_env.script,
                 os_env_vars=action_env_vars,
-                symtab=symtab,
+                symtab=hook_symtab,
                 preallocated_file_records=wrap_file_records,
             )
             # Note: unlike enter_environment()/exit_environment(), which set
@@ -1662,6 +1674,53 @@ class Session(object):
                 f"Wrap environment '{wrap_env.name}' is not in this Session's entered stack."
             )
         return identifier
+
+    def _build_wrap_hook_scope(
+        self, version: SpecificationRevision, session_symtab: SymbolTable
+    ) -> SymbolTable:
+        """The scope an RFC 0008 wrap hook resolves in.
+
+        Built fresh from session scope rather than derived from the inner
+        entity's table, and that distinction is the whole point. The inner
+        entity's table carries symbols belonging to the wrapped work: a task's
+        ``Task.Param.*``/``Task.RawParam.*``, the running step's ``Step.Name``,
+        and the ``extra_let_bindings`` the *inner* environment was entered with.
+        A wrap environment must not be able to read any of them.
+
+        :meth:`_build_wrapped_inner_scope` already blocks the wrap -> inner
+        direction by resolving the wrapped action against a copy. This is the
+        other direction, which was open: the hook used to resolve against the
+        inner entity's own table, so ``{{Task.Param.Frame}}`` in a hook's args
+        resolved to the wrapped task's frame number and ``{{Step.Name}}`` to the
+        running step. RFC 0008 supplies ``WrappedStep.Name`` precisely because
+        ``Step.Name`` is not meant to be reachable from a hook, and the model
+        does not reject either reference in an environment script, so this was
+        the only gate.
+
+        What a hook legitimately gets: session scope (``Session.*``,
+        ``Job.Name``, ``Param.*``/``RawParam.*``), the path-mapping symbols, the
+        wrap environment's *own* enter-time step context (applied afterwards by
+        :meth:`_seed_wrap_env_scope`), the ``WrappedAction.*`` overlay, and its
+        own script-level ``let`` bindings and embedded files (evaluated by the
+        runner).
+
+        The path-mapping symbols are copied rather than re-materialized: the
+        rules file has already been written for this action, and both scopes must
+        name the same file.
+        """
+        hook_symtab = self._symbol_table(version)
+        for key in (
+            ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value,
+            ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value,
+        ):
+            # _materialize_path_mapping sets the value and its EXPR type
+            # together, so one membership check covers both. The check itself is
+            # not decoration: this method is also called on a table that has not
+            # been through path mapping.
+            if key in session_symtab:
+                hook_symtab[key] = session_symtab[key]
+                hook_symtab.expr_types[key] = session_symtab.expr_types[key]
+        return hook_symtab
 
     def _seed_wrap_env_scope(self, symtab: SymbolTable, wrap_env: EnvironmentModel) -> bool:
         """Re-seed the scope a wrap hook resolves in with the step context the
