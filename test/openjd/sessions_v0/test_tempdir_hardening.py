@@ -96,7 +96,7 @@ class TestSharedTempRootValidation:
         with patch("openjd.sessions._tempdir.gettempdir", return_value=str(parent)):
             with patch(
                 "openjd.sessions._tempdir.os.fstat",
-                side_effect=self._fstat_reporting_uid(os.geteuid() + 12345),
+                side_effect=self._fstat_reporting_uid(os.geteuid() + 12345),  # type: ignore
             ):
                 with pytest.raises(RuntimeError, match="owned by uid"):
                     custom_gettempdir()

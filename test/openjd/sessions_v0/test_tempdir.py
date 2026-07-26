@@ -159,7 +159,7 @@ class TestTempDirPosix:
         assert stat.S_IMODE(statinfo.st_mode) == stat.S_IRWXU | stat.S_IRWXG
 
     @pytest.mark.skipif(
-        os.geteuid() == 0 if is_posix() else True,
+        os.geteuid() == 0 if is_posix() else True,  # type: ignore
         reason="root is not subject to directory permissions",
     )
     def test_cleanup_failure_does_not_replace_the_ownership_error(self, tmp_path: Path) -> None:

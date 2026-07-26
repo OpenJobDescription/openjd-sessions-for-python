@@ -81,7 +81,7 @@ def _prepare_temp_dir_root(temp_dir: str) -> None:
                 f"Refusing to use temporary directory {temp_dir}: it is not a real directory."
             )
         if is_posix():
-            this_uid = os.geteuid()
+            this_uid = os.geteuid()  # type: ignore
             # root is accepted so that a system-provisioned root directory works.
             if st.st_uid not in (this_uid, 0):
                 raise RuntimeError(
@@ -100,7 +100,7 @@ def _prepare_temp_dir_root(temp_dir: str) -> None:
             try:
                 # fchmod, not chmod: applies to the validated inode, not to
                 # whatever the name resolves to now.
-                os.fchmod(fd, OPENJD_TEMPDIR_MODE)
+                os.fchmod(fd, OPENJD_TEMPDIR_MODE)  # type: ignore
             except OSError as err:
                 raise RuntimeError(
                     f"Could not set permissions on temporary directory {temp_dir}: {err}. "

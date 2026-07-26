@@ -136,7 +136,7 @@ class TestPumpExceptionDoesNotAbandonTheChild:
 
         # THEN: a real exit status, not None. SIGKILL shows as -SIGKILL.
         assert proc.exit_code is not None
-        assert proc.exit_code == -signal.SIGKILL
+        assert proc.exit_code == -signal.SIGKILL  # type: ignore
 
     def test_a_child_that_exited_on_its_own_keeps_its_own_exit_code(
         self, exploding_logger: Any, python_exe: str
@@ -153,7 +153,7 @@ class TestPumpExceptionDoesNotAbandonTheChild:
         # THEN: whichever way the race went, the recorded code is a real one and
         # never None. If the child had already exited, it must be its own 7.
         assert proc.exit_code is not None
-        assert proc.exit_code in (7, -signal.SIGKILL)
+        assert proc.exit_code in (7, -signal.SIGKILL)  # type: ignore
 
     def test_a_reap_failure_does_not_replace_the_original_exception(
         self, exploding_logger: Any, python_exe: str
@@ -197,7 +197,7 @@ class TestPumpExceptionDoesNotAbandonTheChild:
 
         # Clean up the child the failed terminate left behind.
         if proc.pid is not None and _pid_alive(proc.pid):
-            os.kill(proc.pid, signal.SIGKILL)
+            os.kill(proc.pid, signal.SIGKILL)  # type: ignore
             try:
                 os.waitpid(proc.pid, 0)
             except ChildProcessError:

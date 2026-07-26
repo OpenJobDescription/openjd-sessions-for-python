@@ -523,7 +523,7 @@ class TestFindSudoChildProcessGroupIdProcessGroupRaces:
         departed.kill()
         departed.wait()
         with pytest.raises(ProcessLookupError):
-            os.getpgid(departed.pid)
+            os.getpgid(departed.pid)  # type: ignore
         sudo_process = sleeper()
         logger = build_logger(queue_handler)
         scan = Mock(return_value=departed.pid)
@@ -563,7 +563,7 @@ class TestFindSudoChildProcessGroupIdProcessGroupRaces:
         # GIVEN a live process in the same process group as the stand-in for sudo
         sudo_process = sleeper()
         sibling = sleeper()
-        assert os.getpgid(sibling.pid) == os.getpgid(
+        assert os.getpgid(sibling.pid) == os.getpgid(  # type: ignore
             sudo_process.pid
         ), "test setup: the two processes were expected to share a process group"
         logger = build_logger(queue_handler)
@@ -619,7 +619,7 @@ class TestFindSudoChildProcessGroupIdProcessGroupRaces:
 
         # The delay gives this assertion ample room: the child has to start a
         # Python interpreter and sleep 0.5s before it can change groups.
-        assert os.getpgid(child.pid) == os.getpgid(
+        assert os.getpgid(child.pid) == os.getpgid(  # type: ignore
             sudo_process.pid
         ), "test setup: the child was expected to start in sudo's process group"
 
@@ -641,6 +641,6 @@ class TestFindSudoChildProcessGroupIdProcessGroupRaces:
             f"observed one (exit code: {child.poll()}, stderr: {stderr_of(child)!r})"
         )
         assert result == reported_pgid
-        assert result != os.getpgid(sudo_process.pid)
+        assert result != os.getpgid(sudo_process.pid)  # type: ignore
         # AND nothing was logged: retrying past the shared group is not a failure.
         assert collect_queue_messages(message_queue) == []
