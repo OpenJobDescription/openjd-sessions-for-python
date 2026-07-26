@@ -21,6 +21,7 @@ from openjd.sessions._subprocess import LoggingSubprocess
 from openjd.sessions import _subprocess as subprocess_impl_mod
 
 from .conftest import (
+    serial_process,
     build_logger,
     collect_queue_messages,
     has_posix_target_user,
@@ -230,6 +231,7 @@ class TestLoggingSubprocessSameUser:
         # THEN
         callback_mock.assert_called_once()
 
+    @serial_process
     def test_notify_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
     ) -> None:
@@ -271,6 +273,7 @@ class TestLoggingSubprocessSameUser:
         assert "Log from test 9" not in all_messages
         assert subproc.exit_code != 0
 
+    @serial_process
     def test_terminate_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
     ) -> None:
@@ -317,6 +320,7 @@ class TestLoggingSubprocessSameUser:
         os.environ.get("CODEBUILD_BUILD_ID", None) is not None,
         reason="This test is failing exclusively in codebuild; unblocking, and will root cause later.",
     )
+    @serial_process
     def test_terminate_ends_process_tree(
         self,
         message_queue: SimpleQueue,

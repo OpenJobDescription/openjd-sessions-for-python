@@ -21,6 +21,7 @@ from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 
 from .conftest import (
+    serial_process,
     has_posix_target_user,
     has_windows_user,
     WIN_SET_TEST_ENV_VARS_MESSAGE,
@@ -28,6 +29,7 @@ from .conftest import (
 )
 
 
+@serial_process
 class TestRunSubprocess:
     """Tests for the Session.run_subprocess method."""
 

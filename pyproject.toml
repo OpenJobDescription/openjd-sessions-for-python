@@ -155,6 +155,11 @@ addopts = [
     "--cov-report=xml:build/coverage/coverage.xml",
     "--cov-report=term-missing",
     "--numprocesses=auto",
+    # loadgroup, not the default load: it honours @pytest.mark.xdist_group, which
+    # the tests that race a real subprocess against the wall clock rely on to run
+    # serially with respect to each other (see conftest.serial_process). Behaves
+    # exactly like `load` for every test that is not in a group.
+    "--dist=loadgroup",
     "--timeout=30",
     "--log-format=%(asctime)s.%(msecs)03d %(levelname)s %(filename)20s:%(lineno)-3s %(message)s",
     "--log-date-format=%H:%M:%S"

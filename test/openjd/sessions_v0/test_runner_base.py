@@ -39,6 +39,7 @@ from openjd.sessions._runner_base import (
 from openjd.sessions._tempdir import TempDir
 
 from .conftest import (
+    serial_process,
     build_logger,
     collect_queue_messages,
     has_posix_target_user,
@@ -609,6 +610,7 @@ class TestScriptRunnerBase:
             with pytest.raises(RuntimeError):
                 runner._run([python_exe, "-c", "print('hello')"])
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action(
         self,
@@ -714,37 +716,29 @@ class TestScriptRunnerBase:
         expected = timedelta(seconds=expected_seconds) if expected_seconds is not None else None
         assert captured[0] == expected
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
-    @pytest.mark.parametrize(
-        argnames=("action_timeout_seconds", "expected_state"),
-        argvalues=(
-            pytest.param(2, ScriptRunnerState.TIMEOUT, id="timeout-terminates-the-action"),
-            pytest.param(None, ScriptRunnerState.SUCCESS, id="no-timeout-runs-to-completion"),
-        ),
-    )
-    def test_run_action_timeout_is_enforced(
+    def test_run_action_timeout_terminates_the_action(
         self,
         tmp_path: Path,
         message_queue: SimpleQueue,
         queue_handler: QueueHandler,
-        action_timeout_seconds: Optional[int],
-        expected_state: ScriptRunnerState,
         python_exe: str,
     ) -> None:
-        """A declared timeout really does terminate the action, and no timeout
-        really does let it finish.
+        """A declared timeout really does terminate the action.
 
-        The end-to-end half of the coverage above, kept deliberately loose: it
-        asserts only the terminal state and that the child did or did not reach its
-        last line. It says nothing about *when* the timeout landed, because the
-        exact second the child reaches depends on how promptly the host scheduled
-        it -- which is what made the previous version of this test flaky.
+        The end-to-end half of the coverage above, kept deliberately loose: the
+        terminal state, and that the child did not reach its last line. It says
+        nothing about *when* the timeout landed, because which second the child
+        reaches depends on how promptly the host scheduled it -- that assumption is
+        what made the previous version of this test flaky.
         """
-        # GIVEN: a child that prints one line a second for 20 seconds
+        # GIVEN: a child that prints one line a second for 20 seconds, and a
+        # timeout that will cut it short
         action = Action_2023_09(
             command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
             args=[ArgString_2023_09("{{Task.ScriptFile}}")],
-            timeout=action_timeout_seconds,
+            timeout=2,
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
@@ -761,13 +755,48 @@ class TestScriptRunnerBase:
                 time.sleep(0.2)
 
         # THEN
-        assert runner.state == expected_state
-        messages = collect_queue_messages(message_queue)
-        if expected_state is ScriptRunnerState.TIMEOUT:
-            # It was cut short. Which line it got to is a scheduling detail.
-            assert "Log from test 19" not in messages
-        else:
-            assert "Log from test 19" in messages
+        assert runner.state == ScriptRunnerState.TIMEOUT
+        assert "Log from test 19" not in collect_queue_messages(message_queue)
+
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    def test_run_action_without_timeout_runs_to_completion(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+    ) -> None:
+        """No timeout means no time limit is imposed: the action finishes on its
+        own terms.
+
+        Uses a child that exits after a fraction of a second rather than the
+        20-second one. Running a 20-second child to completion made this the single
+        slowest test in the suite by a factor of three, and it was the whole
+        critical path under `-n auto` -- while proving nothing that a short child
+        does not. What is being asserted is that no timer cut the action short, and
+        a child that exits on its own shows that either way.
+        """
+        # GIVEN: a short-lived child, and no timeout on the action or the caller
+        action = Action_2023_09(
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[
+                ArgString_2023_09("-c"),
+                ArgString_2023_09("import time; time.sleep(0.5); print('finished')"),
+            ],
+            timeout=None,
+        )
+        symtab = SymbolTable(source={"Task.PythonInterpreter": python_exe})
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            # WHEN
+            runner._run_action(action, symtab, default_timeout=None)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.05)
+
+        # THEN: it ran to its own end, and its last output arrived.
+        assert runner.state == ScriptRunnerState.SUCCESS
+        assert runner.exit_code == 0
+        assert "finished" in collect_queue_messages(message_queue)
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     @pytest.mark.parametrize(
@@ -875,6 +904,7 @@ class TestScriptRunnerBase:
         messages = collect_queue_messages(message_queue)
         assert any(m.startswith("openjd_fail") for m in messages)
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_terminate(
         self,
@@ -910,6 +940,7 @@ class TestScriptRunnerBase:
         # Didn't get to the end of the application run
         assert "Log from test 9" not in messages
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_run_with_time_limit(
@@ -942,6 +973,7 @@ class TestScriptRunnerBase:
         # Didn't get to the end of the application run
         assert "Log from test 9" not in messages
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_notify(
         self,
@@ -1105,6 +1137,7 @@ class TestScriptRunnerBase:
             cap_kill_was_effective == cap_kill_effective_after_cancel
         ), "CAP_KILL added/removed from effetive set and persisted after cancelation"
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_double_cancel_notify(
         self,

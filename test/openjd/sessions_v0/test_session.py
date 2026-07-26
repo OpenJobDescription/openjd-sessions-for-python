@@ -66,6 +66,7 @@ from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
 
 from .conftest import (
+    serial_process,
     has_posix_target_user,
     has_windows_user,
     WIN_SET_TEST_ENV_VARS_MESSAGE,
@@ -954,6 +955,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             )
 
 
+@serial_process
 class TestSessionCancel:
     """Test that cancelation will cancel the currently running Script."""
 

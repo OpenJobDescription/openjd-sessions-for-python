@@ -42,6 +42,8 @@ from openjd.model.v2023_09 import (
 from openjd.sessions import ActionState, ActionStatus, Session, SessionState
 from openjd.sessions._os_checker import is_posix
 
+from .conftest import serial_process
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -485,6 +487,7 @@ class TestLaunchTimeCancelationResolution:
 # ---------------------------------------------------------------------------
 
 
+@serial_process
 class TestWrapCancelationDelivery:
     """The launch-time-resolution refactor removed cancel()'s ability to derive
     the cancel method itself, so nothing but this test covers the wiring from

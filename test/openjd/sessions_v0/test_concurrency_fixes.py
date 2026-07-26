@@ -31,6 +31,7 @@ from openjd.sessions._runner_env_script import EnvironmentScriptRunner
 from openjd.sessions._subprocess import LoggingSubprocess
 
 from .conftest import build_logger
+from .conftest import serial_process
 
 
 @pytest.mark.usefixtures("message_queue", "queue_handler")
@@ -299,6 +300,7 @@ class TestF8ObserverExceptionHandling:
 
 @pytest.mark.usefixtures("message_queue", "queue_handler")
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-specific signal handling")
+@serial_process
 class TestReview22F4DoubleLoadFix:
     """Review22-F4: notify/terminate must bind _process once and pass to helpers."""
 

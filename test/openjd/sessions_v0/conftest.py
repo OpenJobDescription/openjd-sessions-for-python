@@ -3,6 +3,7 @@
 import os
 import random
 import string
+import time
 import uuid
 from logging import INFO, getLogger
 from logging.handlers import QueueHandler
@@ -64,6 +65,79 @@ def pytest_collection_modifyitems(config, items):
         config.option.markexpr = "not requires_cap_kill"
     else:
         config.option.markexpr = mark_expr
+
+
+SERIAL_PROCESS_GROUP = "serial_process"
+
+serial_process = pytest.mark.xdist_group(SERIAL_PROCESS_GROUP)
+"""Mark for tests that race a real subprocess against wall-clock expectations.
+
+Applied to a class or a test, it pins every such test onto ONE xdist worker, so
+they run serially with respect to each other instead of competing for CPU with
+eleven siblings that are each also sleeping on a child process.
+
+Why this is needed: these tests start a child, cancel or time it out, and assert
+on the outcome. The assertions are correct, but they assume the child and the
+runtime get scheduled reasonably promptly. Under `-n auto` on a loaded host that
+assumption fails, and the whole cancel/terminate family goes red together while
+the product is behaving correctly -- observed as 14 simultaneous failures in a
+108-second run that all passed serially. The failure mode is indistinguishable
+from a real cancel regression, which is the expensive part: it trains you to
+re-run rather than to read.
+
+Requires `--dist=loadgroup` (set in pyproject.toml). With plain `--dist=load` the
+marker is silently ignored -- see `test_conftest_serial_process.py`, which fails
+if that ever regresses.
+
+This is not a substitute for fixing genuinely flaky assertions. Where a test
+asserted something it had no business asserting -- a +/-1 second window on a
+child's output, say -- that assertion was removed rather than protected by this.
+"""
+
+
+@pytest.fixture(autouse=True)
+def _quiesce_after_process_test(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    """Between serial-process tests, wait for the timers and threads the previous
+    one created to actually go away.
+
+    A `ScriptRunnerBase` leaves a `threading.Timer` running for the whole of an
+    unexpired timeout or cancel grace period, and a `ThreadPoolExecutor` worker
+    behind it. A test that finishes early -- because it cancelled its child -- can
+    therefore hand a live 30-second timer and a busy thread to whatever runs next.
+    Serialising the tests only helps if they also stop overlapping in that way.
+
+    Cancels stray timers, then waits briefly for the thread count to settle. Does
+    not assert: a leftover thread is not necessarily this test's fault, and turning
+    that into a failure here would report it against the wrong test. It is logged
+    so it is visible when it matters.
+    """
+    marker = request.node.get_closest_marker("xdist_group")
+    if marker is None or SERIAL_PROCESS_GROUP not in marker.args:
+        yield
+        return
+
+    import threading
+
+    before = threading.active_count()
+    yield
+
+    for thread in threading.enumerate():
+        if isinstance(thread, threading.Timer) and thread.is_alive():
+            thread.cancel()
+
+    # Deliberately short. Some tests legitimately leave a daemon stdout-reader
+    # thread behind that never exits (documented in LoggingSubprocess), so a
+    # generous budget here is spent in full on every one of them -- measured at 5s
+    # of pure teardown for a single test. One second is enough for a cancelled
+    # timer and a pool worker to wind down, which is what this is for.
+    deadline = time.monotonic() + 1.0
+    while threading.active_count() > before and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if threading.active_count() > before:
+        print(
+            f"\n[quiesce] {request.node.name} left "
+            f"{threading.active_count() - before} extra thread(s) running"
+        )
 
 
 def nonexistent_group_name() -> str:
