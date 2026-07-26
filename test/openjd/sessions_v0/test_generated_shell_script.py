@@ -33,11 +33,6 @@ class _Runner(ScriptRunnerBase):
         pass
 
 
-# ===========================================================================
-# R5-1 -- redaction must not leave record.args populated
-# ===========================================================================
-
-
 @pytest.mark.skipif(not is_posix(), reason="the generated shell script is POSIX-only")
 class TestGeneratedShellScriptQuoting:
     """The generated script is `exec`'d by /bin/sh, so a single unquoted
@@ -182,8 +177,3 @@ class TestGeneratedShellScriptQuoting:
             lines.append(message_queue.get().getMessage())
         assert "VAL=present" in lines
         assert proc.exit_code == 0
-
-
-# ===========================================================================
-# R5-6 -- invariant-bearing checks must survive `python -O`
-# ===========================================================================

@@ -137,11 +137,6 @@ class TestRedactionDoesNotLeakViaRecordArgs:
         assert record.getMessage() == "value is plain"
 
 
-# ===========================================================================
-# R5-2 -- consumer callback exceptions must not escape filter()
-# ===========================================================================
-
-
 class TestFilterContainsConsumerCallbackFailures:
     """R5-2: this filter runs on the thread forwarding the subprocess's stdout.
 
@@ -257,11 +252,6 @@ class TestFilterContainsConsumerCallbackFailures:
             assert session.action_status.state == ActionState.SUCCESS
 
 
-# ===========================================================================
-# SIB-1 -- env var name anchoring (sibling of R5-5, found during this round)
-# ===========================================================================
-
-
 class TestEnvVarNameAnchoring:
     """`$` also matches immediately before a trailing newline, so an
     `$`-anchored NAME pattern accepted "FOO\\n" -- a name no OS can hold.
@@ -334,11 +324,6 @@ class TestEnvVarNameAnchoring:
         assert callback.call_args_list[-1][0][2] is True  # cancel-and-fail
 
 
-# ===========================================================================
-# R5-3 -- the shared temporary root must be validated before use
-# ===========================================================================
-
-
 class TestContainmentDoesNotReRaise:
     def test_handler_path_contains_an_unrenderable_exception(self) -> None:
         # GIVEN: a consumer callback raising an exception that cannot be rendered
@@ -378,8 +363,3 @@ class TestContainmentDoesNotReRaise:
 
         # THEN
         assert "a perfectly ordinary boom" in record.getMessage()
-
-
-# ===========================================================================
-# REG-3 -- the R5-3 validation must not be defeatable by a symlink swap
-# ===========================================================================

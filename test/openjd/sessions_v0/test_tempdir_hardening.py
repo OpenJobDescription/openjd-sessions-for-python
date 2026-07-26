@@ -168,12 +168,20 @@ class TestSharedTempRootValidation:
         # THEN no descriptor was ever taken
         opener.assert_not_called()
 
+    @pytest.mark.skipif(
+        not is_posix(), reason="forces the POSIX branch, whose O_NOFOLLOW/O_DIRECTORY are absent"
+    )
     def test_a_posix_platform_still_uses_a_descriptor(self, tmp_path: Path) -> None:
         """Negative control for the test above: POSIX must keep the fd path.
 
         The fd path is what makes the symlink-swap window unexploitable, so a
         mutation that routed *everything* to the weaker `lstat` validator has to
         fail something.
+
+        POSIX-only, and not merely by preference: it drives the POSIX branch
+        directly, and that branch names `os.O_NOFOLLOW`/`os.O_DIRECTORY`, which
+        do not exist on every Windows build. The mutation this controls for is
+        only ever evaluated on a POSIX host anyway.
         """
         # GIVEN a real directory on a platform that reports as POSIX
         root = tmp_path / "OpenJD"
@@ -244,11 +252,6 @@ class TestSharedTempRootValidation:
                 assert custom_gettempdir() == str(parent / "OpenJD")
 
 
-# ===========================================================================
-# R5-7 -- cleanup must report WHY each path could not be deleted
-# ===========================================================================
-
-
 class TestCleanupErrorReporting:
     """R5-7: the old handler accepted the exception and discarded it, leaving a
     list of bare paths -- on the one code path where "permission denied" versus
@@ -288,11 +291,6 @@ class TestCleanupErrorReporting:
 
         # THEN
         assert not d.path.exists()
-
-
-# ===========================================================================
-# R5-4 / R5-5 -- nothing unquoted may reach /bin/sh
-# ===========================================================================
 
 
 @pytest.mark.skipif(not is_posix(), reason="symlink swap and fchmod semantics are POSIX here")

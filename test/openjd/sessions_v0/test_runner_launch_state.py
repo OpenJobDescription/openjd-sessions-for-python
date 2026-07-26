@@ -29,11 +29,6 @@ class _Runner(ScriptRunnerBase):
         pass
 
 
-# ===========================================================================
-# R5-1 -- redaction must not leave record.args populated
-# ===========================================================================
-
-
 class TestFailedLaunchDoesNotCorruptRunnerState:
     """A launch that fails after the subprocess object exists must not leave the
     runner looking reusable, and a completed action must always publish a
@@ -206,8 +201,3 @@ class TestFailedLaunchDoesNotCorruptRunnerState:
             assert ActionState.SUCCESS in published
         finally:
             runner.shutdown()
-
-
-# ===========================================================================
-# REG-2 -- the R5-2 containment must not itself re-raise
-# ===========================================================================

@@ -40,11 +40,6 @@ class _Runner(ScriptRunnerBase):
         pass
 
 
-# ===========================================================================
-# R5-1 -- redaction must not leave record.args populated
-# ===========================================================================
-
-
 class TestInvariantsSurviveOptimizedMode:
     """R5-6: `assert` is stripped under `python -O`, which is a legitimate
     production deployment mode. Checks that carry a real runtime invariant must
@@ -148,8 +143,3 @@ class TestInvariantsSurviveOptimizedMode:
         assert len(records) == 1
         assert isinstance(records[0], _FileRecord)
         assert records[0].filename.read_text() == "hello"
-
-
-# ===========================================================================
-# R5-9 -- an unknown process group must be recorded as unknown
-# ===========================================================================
