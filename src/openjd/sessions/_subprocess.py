@@ -351,7 +351,18 @@ class LoggingSubprocess(object):
         """
         # Review22-F4 fix: Bind _process once. See notify() for rationale.
         proc = self._process
-        if proc is not None and proc.poll() is None:
+        # Deliberately NOT gated on `proc.poll() is None`. The signal target is a
+        # process *group*, and killpg still reaches surviving members after the
+        # group leader has exited and been reaped -- which is precisely the shape
+        # a wrap environment produces (a wrapper that execs and returns while its
+        # workload lives on). Gating on leader liveness made this a no-op exactly
+        # when the recorded _sudo_child_process_group_id was the only handle left
+        # on the survivors, orphaning them past terminal publication.
+        #
+        # openjd-rs never gates: every cancel/timeout/reap-failure path calls
+        # send_terminate(pid) -> killpg unconditionally (subprocess.rs), and its
+        # is_process_alive() probe is #[allow(dead_code)] for this reason.
+        if proc is not None:
             self._terminate_process(proc)
 
     def _terminate_process(self, process: Popen) -> None:
