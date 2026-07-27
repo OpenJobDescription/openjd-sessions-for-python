@@ -883,7 +883,14 @@ class Session(object):
         # Must be called _after_ we append to _environments_entered
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
 
-        self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            # The identifier is still returned on a pre-start failure: the
+            # environment is on the entered stack, so the caller must be able to
+            # exit it. Same contract as the resolve-variables failure above.
+            return identifier
 
         # Note: RUNNING is set below, immediately before the runner is asked to
         # start, and never before `self._runner` exists. `cancel_action()` is a
@@ -1045,7 +1052,11 @@ class Session(object):
         self._running_environment_identifier = identifier
 
         symtab = self._symbol_table(environment.revision)
-        self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            return
 
         # Re-seed the owning step's name (Step.Name, RFC 0005 EXPR) and
         # re-apply the extra `let` bindings this environment was entered with
@@ -1222,7 +1233,11 @@ class Session(object):
         if step_name is not None:
             symtab["Step.Name"] = step_name
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
-        self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            return
 
         # Note: the step script's EXPR `let` bindings (RFC 0005) are evaluated
         # by the script runner, after embedded-file paths are allocated (so
@@ -1356,7 +1371,11 @@ class Session(object):
         if os_env_vars:
             action_env_vars.update(**os_env_vars)
 
-        self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            return
 
         # Note: the step script's EXPR `let` bindings (RFC 0005) are evaluated
         # by the script runner, after embedded-file paths are allocated.
@@ -2135,9 +2154,20 @@ class Session(object):
             ParameterValueType.BOOL.value
         )
         rules_json = json.dumps(rules_dict)
-        file_handle, filename = mkstemp(dir=self.working_directory, suffix=".json", text=True)
-        os.close(file_handle)
-        write_file_for_user(Path(filename), rules_json, self._user)
+        # An OSError here used to escape run_task/enter_environment/exit_environment
+        # with no callback and no ActionStatus, because all three call this before
+        # their runner exists. openjd-rs propagates the same failure as
+        # SessionError::WorkingDirectory and every call site maps it to
+        # fail_action_setup(), which publishes FAILED and notifies -- so translate
+        # to a RuntimeError the callers already turn into that terminal status.
+        try:
+            file_handle, filename = mkstemp(dir=self.working_directory, suffix=".json", text=True)
+            os.close(file_handle)
+            write_file_for_user(Path(filename), rules_json, self._user)
+        except Exception as err:
+            raise RuntimeError(
+                f"Could not write the path mapping rules file in {self.working_directory}: {err}"
+            ) from err
         symtab[ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value] = str(filename)
         symtab.expr_types[ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value] = (
             ParameterValueType.PATH.value
