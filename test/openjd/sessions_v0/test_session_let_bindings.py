@@ -19,6 +19,7 @@ from __future__ import annotations
 import sys
 import time
 import uuid
+from unittest.mock import patch as mock_patch
 from typing import Any
 
 import pytest
@@ -521,3 +522,55 @@ class TestEmbeddedFileSymbolsArePathTyped:
             assert status is not None
             assert status.state == ActionState.SUCCESS
             assert any("PARENT=" in m and "embedded_files" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
+# A failure writing the path-mapping rules file must FAIL the action via the
+# callback path, never raise out of the public Session API.
+# ---------------------------------------------------------------------------
+class TestPathMappingRulesFileWriteFailure:
+    """`_materialize_path_mapping` had no failure path.
+
+    All four call sites run before their runner exists, so an OSError from
+    `mkstemp` or `write_file_for_user` escaped `enter_environment` / `run_task` /
+    `exit_environment` with no callback and no ActionStatus -- the caller was
+    left with no terminal state to observe.
+
+    openjd-rs supplies the contract: `std::fs::write` maps to
+    `SessionError::WorkingDirectory` and every call site maps that to
+    `fail_action_setup()`, which publishes Failed and notifies.
+    """
+
+    def test_a_write_failure_fails_the_action_instead_of_raising(self) -> None:
+        # GIVEN: the rules-file write cannot succeed
+        callback_events: list[ActionStatus] = []
+
+        def callback(session_id: str, status: ActionStatus) -> None:
+            callback_events.append(status)
+
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        environment = Environment_2023_09.model_validate(
+            {
+                "name": "AnyEnv",
+                "script": {"actions": {"onEnter": {"command": "echo", "args": ["entered"]}}},
+            },
+            context=context,
+        )
+        with Session(
+            session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
+        ) as session:
+            with mock_patch(
+                "openjd.sessions._session.write_file_for_user",
+                side_effect=OSError(13, "Permission denied"),
+            ):
+                # WHEN: entering must not raise
+                identifier = session.enter_environment(environment=environment)
+
+            # THEN: a terminal FAILED status naming the working directory, and a
+            # session the caller can still unwind.
+            assert identifier is not None
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert status.fail_message is not None
+            assert "path mapping rules" in status.fail_message

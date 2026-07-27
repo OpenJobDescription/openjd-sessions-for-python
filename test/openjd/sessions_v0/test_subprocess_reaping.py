@@ -338,3 +338,48 @@ class TestReapUnitBehaviour:
         finally:
             popen.kill()
             popen.wait()
+
+
+class TestTerminateDoesNotDependOnLeaderLiveness:
+    """`terminate()` must still signal after the group leader has exited.
+
+    The signal target is a process *group*, and killpg still reaches surviving
+    members once the leader has exited and been reaped. Gating the call on
+    `proc.poll() is None` made it a no-op in exactly the case where the recorded
+    group was the only remaining handle on those survivors -- which is the shape
+    a wrap environment produces, a wrapper that execs and returns while its
+    workload lives on. The children then outlived terminal publication.
+
+    openjd-rs never gates: every cancel/timeout/reap-failure path calls
+    `send_terminate(pid)` -> killpg unconditionally, and its `is_process_alive()`
+    probe is `#[allow(dead_code)]` for this reason.
+    """
+
+    def test_signal_is_sent_even_when_poll_reports_the_leader_gone(self) -> None:
+        # GIVEN a subprocess whose leader has already exited
+        subproc = LoggingSubprocess(logger=MagicMock(), args=["unused"])
+        departed = MagicMock()
+        departed.poll.return_value = 0  # reaped; a live workload may remain
+        subproc._process = departed
+
+        # WHEN
+        with patch.object(subproc, "_terminate_process") as terminate_process:
+            subproc.terminate()
+
+        # THEN: the group is still signalled
+        terminate_process.assert_called_once_with(departed)
+
+    def test_nothing_is_signalled_once_the_process_is_released(self) -> None:
+        """Negative control: `run()`'s finally clears `_process` after reaping,
+        and terminate() must stay a no-op from then on -- otherwise the pid
+        could be recycled and an unrelated group signalled."""
+        # GIVEN a subprocess that has released its handle
+        subproc = LoggingSubprocess(logger=MagicMock(), args=["unused"])
+        subproc._process = None
+
+        # WHEN
+        with patch.object(subproc, "_terminate_process") as terminate_process:
+            subproc.terminate()
+
+        # THEN
+        terminate_process.assert_not_called()
