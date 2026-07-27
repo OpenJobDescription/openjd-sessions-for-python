@@ -150,21 +150,15 @@ class TestInjectWrappedTaskSymbols:
         # simplify_ordered_changes) AND the declarative variables:-map seed.
         session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
         try:
-            from openjd.sessions._session import (
-                EnvironmentVariableSetChange,
-                SimplifiedEnvironmentVariableChanges,
+            # Seeded through the session-lifetime map that now backs this symbol.
+            # Previously this fabricated an entry in `_environments_entered` plus
+            # a `_created_env_vars` record, which is the per-entered view that
+            # feeds the child *process* environment -- not this symbol. That
+            # bypassed the production writers, which is why it kept passing while
+            # WrappedAction.Environment violated RFC 0008's session-lifetime MUST.
+            session._session_env_vars.update(
+                {"DECLARED": "from-variables-map", "FOO": "bar", "BAZ": "qux"}
             )
-
-            fake_id = "env-1"
-            session._environments_entered.append(fake_id)
-            changes = SimplifiedEnvironmentVariableChanges({"DECLARED": "from-variables-map"})
-            changes.simplify_ordered_changes(
-                [
-                    EnvironmentVariableSetChange(name="FOO", value="bar"),
-                    EnvironmentVariableSetChange(name="BAZ", value="qux"),
-                ]
-            )
-            session._created_env_vars[fake_id] = changes
 
             symtab = SymbolTable()
             script = _step_script("echo", ["hi"])
