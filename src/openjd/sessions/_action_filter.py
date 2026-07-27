@@ -509,33 +509,28 @@ class ActionMonitoringFilter(logging.Filter):
         if equals_position == -1:
             return "", "", False, -1, None
 
-        # Check if the message is valid
-        is_valid = envvar_set_matcher_str.match(message) or envvar_set_matcher_json.match(message)
-
-        if not is_valid:
+        # Check if the message is valid. Bound once: the plain-string match decides
+        # both validity and which parse branch to take below.
+        str_match = envvar_set_matcher_str.match(message)
+        if not (str_match or envvar_set_matcher_json.match(message)):
             return "", "", False, equals_position, None
 
         # Parse the variable name and value
-        try:
-            original_value = None
-            if envvar_set_matcher_str.match(message):
-                name, _, value = message.partition("=")
-            else:
-                # Handle JSON format
-                try:
-                    # Store the original value before JSON parsing
-                    original_value = message[equals_position + 1 :]
-                    message_json_str = json.loads(message)
-                    name, _, value = message_json_str.partition("=")
-                except json.JSONDecodeError as e:
-                    raise ValueError(
-                        f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
-                    )
-            return name, value, True, equals_position, original_value
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
-            )
+        original_value = None
+        if str_match:
+            name, _, value = message.partition("=")
+        else:
+            # Handle JSON format
+            try:
+                # Store the original value before JSON parsing
+                original_value = message[equals_position + 1 :]
+                message_json_str = json.loads(message)
+                name, _, value = message_json_str.partition("=")
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
+                )
+        return name, value, True, equals_position, original_value
 
     def _handle_env_error(self, error_message: str, is_redacted: bool = False) -> None:
         """Handle errors in environment variable processing.

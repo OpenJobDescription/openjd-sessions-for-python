@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from threading import Lock, Timer
-from typing import Any, Callable, Optional, Sequence, Type, cast
+from typing import Any, Callable, Literal, Optional, Sequence, Type, cast
 from types import TracebackType
 from tempfile import mkstemp
 
@@ -1145,6 +1145,34 @@ class ScriptRunnerBase(ABC):
         # Called outside the lock: _cancel takes it itself.
         self._cancel(method, time_limit, mark_action_failed)
 
+    def _signal_process(
+        self, process: LoggingSubprocess, method: Literal["terminate", "notify"]
+    ) -> None:
+        """Send ``method`` to ``process``, warning rather than raising if it fails.
+
+        ``process`` is a parameter rather than a read of ``self._process`` so the
+        notify-period timer can pass the lock-free local snapshot it already
+        holds, instead of re-reading an attribute another thread may have
+        cleared.
+
+        An ``OSError`` here is close to impossible -- if we could start the
+        process we can signal it -- but a cancel path is the wrong place to
+        raise: the caller is already unwinding a cancel, and losing the
+        surrounding bookkeeping to a signal failure is worse than a warning.
+        """
+        try:
+            if method == "notify":
+                process.notify()
+            else:
+                process.terminate()
+        except OSError as err:  # pragma: nocover
+            self._logger.warning(
+                f"Cancelation could not send {method} signal to process {process.pid}: {str(err)}",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                ),
+            )
+
     def _cancel(
         self,
         method: CancelMethod,
@@ -1191,17 +1219,7 @@ class ScriptRunnerBase(ABC):
                     f"Canceling subprocess {str(self._process.pid)} via termination method at {now_str}.",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
-                try:
-                    self._process.terminate()
-                except OSError as err:  # pragma: nocover
-                    # Being paranoid. Won't happen... if we could start the process, then we can send it a signal
-                    self._logger.warning(
-                        f"Cancelation could not send terminate signal to process {self._process.pid}: {str(err)}",
-                        extra=LogExtraInfo(
-                            openjd_log_content=LogContent.PROCESS_CONTROL
-                            | LogContent.EXCEPTION_INFO
-                        ),
-                    )
+                self._signal_process(self._process, "terminate")
             else:
                 self._logger.info(
                     f"Canceling subprocess {str(self._process.pid)} via notify then terminate method at {now_str}.",
@@ -1261,17 +1279,7 @@ class ScriptRunnerBase(ABC):
                 )
 
                 # 2) Send the notify
-                try:
-                    self._process.notify()
-                except OSError as err:  # pragma: nocover
-                    # Being paranoid. Won't happen... if we could start the process, then we can send it a signal
-                    self._logger.warning(
-                        f"Cancelation could not send notify signal to process {self._process.pid}: {str(err)}",
-                        extra=LogExtraInfo(
-                            openjd_log_content=LogContent.PROCESS_CONTROL
-                            | LogContent.EXCEPTION_INFO
-                        ),
-                    )
+                self._signal_process(self._process, "notify")
 
                 # 4) Set up the timer to send the terminate signal
                 self._cancel_gracetime_timer = Timer(
@@ -1376,16 +1384,7 @@ class ScriptRunnerBase(ABC):
             datetime.now(timezone.utc).strftime(TIME_FORMAT_STR),
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
-        try:
-            process.terminate()
-        except OSError as err:  # pragma: nocover
-            # Being paranoid. Won't happen... if we could start the process, then we can send it a kill signal
-            self._logger.warning(
-                f"Cancelation could not send terminate signal to process {process.pid}: {str(err)}",
-                extra=LogExtraInfo(
-                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
-                ),
-            )
+        self._signal_process(process, "terminate")
 
     def _on_timelimit(self) -> None:
         """Callback that is invoked when the runtime limit of the running
