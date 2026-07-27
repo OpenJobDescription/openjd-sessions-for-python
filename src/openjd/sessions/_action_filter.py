@@ -95,7 +95,14 @@ filter_regex = (
 )
 filter_matcher = re.compile(filter_regex)
 
-openjd_env_actions_filter_regex = "^(openjd_env|openjd_redacted_env|openjd_unset_env)"
+# The near-miss detector for env macros. The trailing `(?::|\s|\Z)` is
+# load-bearing: without it any line merely *starting with* one of these tokens
+# is reported as a malformed macro and FAILS the action, so a script logging
+# `openjd_environment: ready` or `openjd_env_setup: done` kills its own task.
+# openjd-rs anchors the same three tokens on `:`, a space, or end-of-string
+# (action_filter.rs is_malformed_env_command, whose comment names exactly this
+# false positive), so this is parity as well as a bug fix.
+openjd_env_actions_filter_regex = r"^(openjd_env|openjd_redacted_env|openjd_unset_env)(?::|\s|\Z)"
 openjd_env_actions_filter_matcher = re.compile(openjd_env_actions_filter_regex)
 
 # A regex for matching the assignment of a value to an environment variable
