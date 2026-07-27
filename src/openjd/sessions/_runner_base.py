@@ -1251,7 +1251,14 @@ class ScriptRunnerBase(ABC):
                     write_file_for_user(
                         self._session_working_directory / "cancel_info.json", notify_end, self._user
                     )
-                except OSError as err:
+                except Exception as err:
+                    # `Exception`, not `OSError`: write_file_for_user reaches
+                    # WindowsPermissionHelper, which raises RuntimeError (not an
+                    # OSError) when it cannot set an ACL for an impersonated user.
+                    # With the narrower handler that escaped here and unwound the
+                    # runtime-limit Timer thread -- no notify, no grace timer, a
+                    # live child, and the timeout silently unenforced.
+                    #
                     # F6 fix: If we cannot write the cancel_info.json (disk full, permission
                     # denied, etc.), log and fall back to immediate termination. A script
                     # waiting on that file would hang forever otherwise.
