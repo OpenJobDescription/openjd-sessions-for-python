@@ -6,22 +6,15 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from openjd.model import SymbolTable
-from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
 from openjd.model.v2023_09 import StepScript as StepScript_2023_09
-from openjd.model.v2023_09 import (
-    CancelationMethodNotifyThenTerminate as CancelationMethodNotifyThenTerminate_2023_09,
-)
 from ._embedded_files import EmbeddedFilesScope
 from ._logging import log_subsection_banner
 from ._runner_base import (
-    CancelMethod,
-    NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
-    TerminateCancelMethod,
 )
 from ._session_user import SessionUser
-from ._types import ActionState, StepScriptModel
+from ._types import TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS, ActionState, StepScriptModel
 
 __all__ = ("StepScriptRunner",)
 
@@ -104,7 +97,11 @@ class StepScriptRunner(ScriptRunnerBase):
 
         # For the type checker.
         assert isinstance(self._script, StepScript_2023_09)
-        # Write any embedded files to disk
+        let_bindings = self._script.let
+        # Write any embedded files to disk. File paths are allocated before
+        # the script's EXPR `let` bindings evaluate (so bindings can reference
+        # Task.File.*), and contents are written after (so `data` can
+        # reference let-bound values) — mirroring the openjd-rs runner.
         if self._script.embeddedFiles is not None:
             symtab = SymbolTable(source=self._symtab)
             self._materialize_files(
@@ -112,39 +109,28 @@ class StepScriptRunner(ScriptRunnerBase):
                 self._script.embeddedFiles,
                 self._session_files_directory,
                 symtab,
+                let_bindings=let_bindings,
             )
             if self.state == ScriptRunnerState.FAILED:
+                return
+        elif let_bindings:
+            symtab = SymbolTable(source=self._symtab)
+            if not self._apply_let_bindings_or_fail(symtab, let_bindings):
                 return
         else:
             symtab = self._symtab
 
         # Construct the command by evalutating the format strings in the command
-        self._run_action(self._script.actions.onRun, symtab)
+        self._run_action(
+            self._script.actions.onRun,
+            symtab,
+            default_notify_period_seconds=TASK_RUN_DEFAULT_NOTIFY_PERIOD_SECONDS,
+        )
 
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
     ) -> None:
-        # For the type checker.
-        assert isinstance(self._script, StepScript_2023_09)
-
-        method: CancelMethod
-        if (
-            self._script.actions.onRun.cancelation is None
-            or self._script.actions.onRun.cancelation.mode == CancelationMode_2023_09.TERMINATE
-        ):
-            # Note: Default cancelation for a 2023-09 Step Script is Terminate
-            method = TerminateCancelMethod()
-        else:
-            model_cancel_method = self._script.actions.onRun.cancelation
-            # For the type checker
-            assert isinstance(model_cancel_method, CancelationMethodNotifyThenTerminate_2023_09)
-            if model_cancel_method.notifyPeriodInSeconds is None:
-                # Default grace period is 120s for a 2023-09 Step Script's notify cancel
-                method = NotifyCancelMethod(terminate_delay=timedelta(seconds=120))
-            else:
-                method = NotifyCancelMethod(
-                    terminate_delay=timedelta(seconds=model_cancel_method.notifyPeriodInSeconds)  # type: ignore[arg-type]
-                )
-
-        # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit, mark_action_failed)
+        # Cancel with the effective method resolved at launch time by
+        # _run_action, against the action's own final scope (its lets and
+        # Task.File.* symbols) — openjd-rs parity.
+        self._cancel_with_resolved_method(time_limit, mark_action_failed)

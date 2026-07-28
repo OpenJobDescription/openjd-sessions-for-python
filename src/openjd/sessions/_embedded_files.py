@@ -66,6 +66,48 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
     return data
 
 
+def chown_group(path: Path, group: str) -> None:
+    """Set ``path``'s group ownership, reporting failure as ``OSError``.
+
+    ``shutil.chown`` raises ``LookupError`` when the group name does not resolve,
+    and ``LookupError`` is neither ``OSError`` nor ``ValueError``. Every handler
+    around a file-materialization or session-directory failure in this package
+    catches some combination of ``OSError``/``ValueError``/``RuntimeError``, so an
+    unknown group escaped all of them and surfaced as a bare ``LookupError`` out
+    of the public Session API. ``PosixSessionUser`` does not validate its
+    ``group``, so a caller only has to pass a group that does not exist.
+
+    Translated here, at the two call sites, rather than by widening each handler:
+    a group that cannot be resolved *is* a failure to change ownership, the
+    callers already treat that as ``OSError``, and this way a handler added later
+    is covered without anyone having to remember.
+    """
+    try:
+        chown(path, group=group)
+    except LookupError as err:
+        raise OSError(f"Could not set the group of {str(path)} to '{group}': {err}") from err
+
+
+def _unsupported_embedded_file_model(file: EmbeddedFileType) -> RuntimeError:
+    """The error for an embedded file from a schema this class does not implement.
+
+    Returned rather than raised so that call sites can keep the
+    ``if not isinstance(...): raise`` shape, which narrows the type for mypy
+    exactly as an ``assert isinstance`` did while still being enforced under
+    ``python -O`` (R5-6). These three checks are genuine runtime invariants, not
+    type-checker narrowing: with them stripped, the call sites would read
+    ``.filename``/``.data``/``.runnable`` off an object of an unknown shape and
+    materialize a file from whatever they happened to find, instead of stopping.
+
+    When a new schema version is added, this is the seam that grows the
+    per-version dispatch.
+    """
+    return RuntimeError(
+        f"Unsupported embedded file model '{type(file).__name__}'. This runtime implements the "
+        "2023-09 schema only."
+    )
+
+
 def _validate_embedded_filename(filename: str) -> None:
     """Validate that an embedded file's ``filename`` is a single path component
     (a basename) with no directory pathing, as required by the OpenJD
@@ -140,7 +182,7 @@ def write_file_for_user(
         if user is not None:
             user = cast(PosixSessionUser, user)
             # Set the group of the file
-            chown(filename, group=user.group)
+            chown_group(filename, user.group)
             # Update the permissions to include the group after the group is changed
             # Note: Only after changing group for security in case the group-ownership
             # change fails.
@@ -209,11 +251,40 @@ class EmbeddedFiles:
         self._user = user
 
     def materialize(self, files: EmbeddedFilesListType, symtab: SymbolTable) -> None:
-        if self._scope == EmbeddedFilesScope.ENV:
-            self._logger.info("Writing embedded files for Environment to disk.")
-        else:
-            self._logger.info("Writing embedded files for Task to disk.")
+        records = self.allocate_file_paths(files, symtab)
+        self.write_file_contents(records, symtab)
 
+    def allocate_file_paths(
+        self, files: EmbeddedFilesListType, symtab: SymbolTable
+    ) -> list[_FileRecord]:
+        """Allocate the on-disk paths for the embedded files and define their
+        ``Env.File.*``/``Task.File.*`` symbols in ``symtab``, without writing
+        the file contents.
+
+        Splitting allocation from :meth:`write_file_contents` lets the runner
+        evaluate EXPR ``let`` bindings between the two phases (RFC 0005): a
+        file's *path* never depends on ``let`` values (``filename`` is a plain
+        string), so the ``Env.File.*``/``Task.File.*`` symbols are available
+        to the bindings, while a file's ``data`` is written afterwards so it
+        can reference let-bound values. Mirrors the openjd-rs runners.
+        """
+        self._log_scoped("Allocating embedded file paths for")
+        records = self.allocate_records(files)
+        self._define_symbols(records, symtab)
+        return records
+
+    def allocate_records(self, files: EmbeddedFilesListType) -> list["_FileRecord"]:
+        """Allocate the on-disk paths for the embedded files, without logging
+        or defining any symbols.
+
+        Used by the Session to pre-allocate a wrap environment's file records
+        once (RFC 0008); each wrap-hook invocation then defines the symbols
+        and logs through :meth:`register_file_paths` against its own symbol
+        table.
+
+        Raises:
+            RuntimeError: If a file path could not be allocated.
+        """
         try:
             records = list[_FileRecord]()
             # Generate the symbol table values and filenames
@@ -221,18 +292,54 @@ class EmbeddedFiles:
                 # Raises: OSError
                 symbol, filename = self._get_symtab_entry(file)
                 records.append(_FileRecord(symbol=symbol, filename=filename, file=file))
+            return records
+        except (OSError, ValueError) as err:
+            raise RuntimeError(f"Could not write embedded file: {err}")
 
-            # Add symbols to the symbol table
-            for record in records:
-                symtab[record.symbol] = str(record.filename)
-                self._logger.info(
-                    f"Mapping: {record.symbol} -> {record.filename}",
-                    extra=LogExtraInfo(
-                        openjd_log_content=LogContent.FILE_PATH | LogContent.PARAMETER_INFO
-                    ),
-                )
+    def register_file_paths(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
+        """Define the ``Env.File.*``/``Task.File.*`` symbols in ``symtab``
+        for already-allocated records, without allocating new paths.
 
-            # Write the files to disk.
+        Used to reuse a wrap environment's embedded-file records across
+        wrap-hook invocations (RFC 0008): the on-disk paths are allocated
+        once so the symbols stay stable and unnamed files do not accumulate,
+        while the contents are re-resolved and rewritten per invocation via
+        :meth:`write_file_contents`.
+        """
+        self._log_scoped("Reusing embedded file paths for")
+        self._define_symbols(records, symtab)
+
+    def _log_scoped(self, message: str) -> None:
+        """Log ``message`` qualified by this collection's scope.
+
+        The phase messages are kept accurate on purpose: allocation reserves
+        paths, registration only defines symbols, and only
+        :meth:`write_file_contents` writes content.
+        """
+        scope = "Environment" if self._scope == EmbeddedFilesScope.ENV else "Task"
+        self._logger.info(f"{message} {scope}.")
+
+    def _define_symbols(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
+        # Add symbols to the symbol table. For EXPR evaluation the
+        # Env.File.*/Task.File.* symbols are host-format path values
+        # (property access like `.parent` works), matching openjd-rs;
+        # the legacy (non-EXPR) interpolation path ignores the type and
+        # keeps the string form.
+        for record in records:
+            symtab[record.symbol] = str(record.filename)
+            symtab.expr_types[record.symbol] = "PATH"
+            self._logger.info(
+                f"Mapping: {record.symbol} -> {record.filename}",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.FILE_PATH | LogContent.PARAMETER_INFO
+                ),
+            )
+
+    def write_file_contents(self, records: list["_FileRecord"], symtab: SymbolTable) -> None:
+        """Resolve each allocated file's ``data`` against ``symtab`` and write
+        it to disk. See :meth:`allocate_file_paths`."""
+        self._log_scoped("Writing embedded files to disk for")
+        try:
             for record in records:
                 # Raises: OSError
                 self._materialize_file(record.filename, record.file, symtab)
@@ -253,7 +360,8 @@ class EmbeddedFiles:
         """
         # When adding a new schema, start this method with a check for which
         # model 'file' belongs to -- that'll tell us the schema version.
-        assert isinstance(file, EmbeddedFileText_2023_09)
+        if not isinstance(file, EmbeddedFileText_2023_09):
+            raise _unsupported_embedded_file_model(file)
 
         if self._scope == EmbeddedFilesScope.ENV:
             return ValueReferenceConstants_2023_09.ENV_FILE_PREFIX.value
@@ -274,7 +382,8 @@ class EmbeddedFiles:
                 value - The absolute filename of the file to manifest.
         """
 
-        assert isinstance(file, EmbeddedFileText_2023_09)
+        if not isinstance(file, EmbeddedFileText_2023_09):
+            raise _unsupported_embedded_file_model(file)
 
         # Figure out what filename to use for the given embedded file.
         # This will either be provided in the given 'file' or we will
@@ -314,7 +423,8 @@ class EmbeddedFiles:
         Make the file executable if the file settings indicate that we should.
         """
 
-        assert isinstance(file, EmbeddedFileText_2023_09)
+        if not isinstance(file, EmbeddedFileText_2023_09):
+            raise _unsupported_embedded_file_model(file)
 
         execute_permissions = 0
         if file.runnable:

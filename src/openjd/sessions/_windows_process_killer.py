@@ -60,8 +60,21 @@ def _suspend_process_tree(
     if not suspend_subprocesses:
         return
 
-    # Recursively suspend child processes.
-    for child in process.children():
+    # Recursively suspend child processes. A process that exited between being
+    # discovered and being walked has no children to suspend, and must not fail
+    # the cancel: psutil raises NoSuchProcess ("process PID not found") here, and
+    # this runs on the run future, so the exception would surface as a failed
+    # action for a subprocess that in fact completed.
+    try:
+        children = process.children()
+    except NoSuchProcess:
+        logger.info(
+            f"Process {process.pid} exited before its children could be listed.",
+            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+        )
+        return
+
+    for child in children:
         _suspend_process_tree(
             logger, child, all_processes, procs_cannot_suspend, suspend_subprocesses
         )

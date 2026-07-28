@@ -15,6 +15,27 @@ from ._logging import LOG, LogContent, LogExtraInfo
 __all__ = ("ActionMessageKind", "ActionMonitoringFilter", "redact_openjd_redacted_env_requests")
 
 
+def _describe_exception(exc: BaseException) -> str:
+    """Render an exception for a log line without trusting it to be renderable.
+
+    A consumer-supplied callback may raise an exception whose ``__str__`` or
+    ``__repr__`` itself raises. Every containment site in this module puts the
+    exception into a message, so rendering it naively re-creates the exact escape
+    the containment exists to prevent -- the exception then propagates from inside
+    the ``except`` block, out of ``filter()``, and into the thread forwarding the
+    subprocess's stdout.
+    """
+    try:
+        return str(exc)
+    except Exception:
+        pass
+    try:
+        return repr(exc)
+    except Exception:
+        pass
+    return f"<unrenderable {type(exc).__name__}>"
+
+
 def redact_openjd_redacted_env_requests(command_str: str) -> str:
     """Redact sensitive information in command strings before they're processed by the regular redaction mechanism.
 
@@ -78,11 +99,27 @@ openjd_env_actions_filter_regex = "^(openjd_env|openjd_redacted_env|openjd_unset
 openjd_env_actions_filter_matcher = re.compile(openjd_env_actions_filter_regex)
 
 # A regex for matching the assignment of a value to an environment variable
-envvar_set_regex_str = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*$"  # Variable name
-envvar_set_regex_json = '^(")?[A-Za-z_][A-Za-z0-9_]*' "=" ".*$"  # Variable name
+#
+# Note on the anchors: these use \Z, not $, because `$` also matches immediately
+# before a trailing newline -- so an `$`-anchored name pattern accepts "FOO\n",
+# a name no operating system can hold. \Z matches only at the true end of the
+# string.
+#
+# Honest scope: this is defence in depth, not a fix for a reachable defect. The
+# outer `filter_regex` below captures the message body with `(.+)$`, and `.` never
+# crosses a newline, so a trailing newline is already stripped before any name
+# reaches these patterns. \Z is used so that these patterns remain correct on
+# their own terms if that outer capture ever changes.
+#
+# The VALUE half deliberately stays permissive: a multi-line value delivered
+# through the JSON form (openjd_env: "FOO=a\nb") is supported, tested behaviour,
+# so the separator hygiene a value needs belongs at each serialization boundary,
+# not here.
+envvar_set_regex_str = "^[A-Za-z_][A-Za-z0-9_]*" "=" ".*\\Z"  # Variable name
+envvar_set_regex_json = '^(")?[A-Za-z_][A-Za-z0-9_]*' "=" ".*\\Z"  # Variable name
 envvar_set_matcher_str = re.compile(envvar_set_regex_str)
 envvar_set_matcher_json = re.compile(envvar_set_regex_json)
-envvar_unset_regex = "^[A-Za-z_][A-Za-z0-9_]*$"
+envvar_unset_regex = "^[A-Za-z_][A-Za-z0-9_]*\\Z"
 envvar_unset_matcher = re.compile(envvar_unset_regex)
 
 
@@ -191,7 +228,7 @@ class ActionMonitoringFilter(logging.Filter):
             or "REDACTED_ENV_VARS" in self._revision_extensions.extensions
         )
 
-    def apply_message_redaction(self, record: logging.LogRecord):
+    def apply_message_redaction(self, record: logging.LogRecord) -> None:
         """Redact the log message if it contains any substrings which have been registered for redaction
 
         Args:
@@ -200,21 +237,36 @@ class ActionMonitoringFilter(logging.Filter):
         # Check if we need to redact any sensitive values from the log message
         if (self._redacted_values or self._redacted_lines) and isinstance(record.msg, str):
 
-            # If we have args, first do string formatting, then redact
-            try:
-                record.msg = record.msg % record.args
-                record.args = ()  # Clear args since we've done the formatting
-            except Exception:
-                # If string formatting fails, fall back to just redacting the message
-                LOG.warning(
-                    "Failed to format log message for redaction. Proceeding with redaction on unformatted message."
-                )
+            # Fold `args` into `msg` and clear them UNCONDITIONALLY before
+            # scanning (R5-1 fix). The redaction below only ever inspects
+            # `record.msg`, and a downstream handler calls record.getMessage(),
+            # which re-runs `msg % args`. So any path that leaves `args`
+            # populated re-interpolates the un-scanned original into the emitted
+            # line -- a secret carried in `args` would be emitted verbatim. The
+            # `finally` is the load-bearing part: `args` must end up empty on the
+            # failure path too, not just on the success path.
+            if record.args:
+                try:
+                    record.msg = record.msg % record.args
+                except Exception:
+                    # The record's own formatting is broken, so getMessage()
+                    # would raise inside the handler and Python's logging would
+                    # dump the raw args to stderr, outside this filter's reach.
+                    # Fold them in textually instead: the record stays emittable
+                    # AND every byte of it goes through the scan below.
+                    record.msg = f"{record.msg} {record.args!r}"
+                    LOG.warning(
+                        "Failed to format log message for redaction. Redacting the message with its "
+                        "arguments appended instead.",
+                        extra=LogExtraInfo(openjd_log_content=LogContent.COMMAND_OUTPUT),
+                    )
+                finally:
+                    record.args = ()
 
             # Check if the entire message matches a line in the redacted_lines set
             if record.msg in self._redacted_lines:
                 record.msg = "*" * 8
-                record.args = ()
-                return True
+                return
 
             # Find all segments that need redaction
             segments_to_redact = []
@@ -254,7 +306,6 @@ class ActionMonitoringFilter(logging.Filter):
                 for start, end in reversed(merged_segments):
                     msg_chars[start:end] = list("*" * 8)  # Always use 8 asterisks for redaction
                 record.msg = "".join(msg_chars)
-                record.args = ()
 
     def filter(self, record: logging.LogRecord) -> bool:
         """Called automatically by Python's logging subsystem when a log record
@@ -323,6 +374,27 @@ class ActionMonitoringFilter(logging.Filter):
                     record.msg = record.msg + f" -- ERROR: {str(e)}"
                     # There was an error. Don't suppress the message from the log.
                     return True
+                except Exception as e:
+                    # R5-2 fix: `handler` invokes the consumer-supplied callback,
+                    # which may raise anything. Anything other than ValueError
+                    # used to propagate out of filter(), into Python's logging
+                    # machinery, and into the stdout pump thread that called
+                    # logger.info() -- killing the pump, silently dropping the
+                    # rest of the subprocess's output, and leaving the child
+                    # unreaped. Same isolation as the Session's terminal
+                    # callbacks; keep the record in the log so the failure is
+                    # visible in the action's own output.
+                    #
+                    # _describe_exception, not f"{e}": rendering a hostile
+                    # exception can itself raise, which would re-open this very
+                    # escape from inside the handler for it.
+                    detail = _describe_exception(e)
+                    LOG.error(
+                        f"Open Job Description: Exception in the action message callback: {detail}",
+                        extra=LogExtraInfo(openjd_log_content=LogContent.EXCEPTION_INFO),
+                    )
+                    record.msg = record.msg + f" -- ERROR: {detail}"
+                    return True
                 return not self._suppress_filtered
 
             # Check for "almost" matching openjd_env and openjd_unset_env commands
@@ -335,13 +407,46 @@ class ActionMonitoringFilter(logging.Filter):
                 record.msg = record.msg + f" -- ERROR: {err_message}"
 
                 # Callback to cancel the action and mark it as FAILED
-                self._callback(ActionMessageKind.FAIL, err_message, True)
+                # R5-2 fix: isolated for the same reason as the handler call
+                # above -- this is the one consumer-callback invocation in this
+                # method that is not routed through `handler`.
+                self._invoke_callback(ActionMessageKind.FAIL, err_message, True)
                 return True
 
             return True
         finally:
-            # Always check for redaction before returning
-            self.apply_message_redaction(record)
+            # Always check for redaction before returning. Fail closed: if the
+            # redaction control itself raises, blank the message rather than
+            # letting an unscanned record through (and rather than letting the
+            # exception reach the stdout pump thread).
+            try:
+                self.apply_message_redaction(record)
+            except Exception as e:
+                record.msg = "*" * 8
+                record.args = ()
+                LOG.error(
+                    "Open Job Description: Log redaction failed; message suppressed: "
+                    f"{_describe_exception(e)}",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.EXCEPTION_INFO),
+                )
+
+    def _invoke_callback(self, kind: ActionMessageKind, value: Any, cancel_and_fail: bool) -> None:
+        """Invoke the consumer-supplied callback, isolating any exception it
+        raises (R5-2).
+
+        This filter runs on the thread that is forwarding the subprocess's stdout
+        to the log, so an exception escaping here unwinds
+        ``LoggingSubprocess.run()`` before the child is waited on. Consumer bugs
+        must not cost us the output stream or process ownership.
+        """
+        try:
+            self._callback(kind, value, cancel_and_fail)
+        except Exception as e:
+            LOG.error(
+                "Open Job Description: Exception in the action message callback: "
+                f"{_describe_exception(e)}",
+                extra=LogExtraInfo(openjd_log_content=LogContent.EXCEPTION_INFO),
+            )
 
     def _handle_progress(self, message: str) -> None:
         """Local handling of Progress messages. Processes the message and then
@@ -404,33 +509,28 @@ class ActionMonitoringFilter(logging.Filter):
         if equals_position == -1:
             return "", "", False, -1, None
 
-        # Check if the message is valid
-        is_valid = envvar_set_matcher_str.match(message) or envvar_set_matcher_json.match(message)
-
-        if not is_valid:
+        # Check if the message is valid. Bound once: the plain-string match decides
+        # both validity and which parse branch to take below.
+        str_match = envvar_set_matcher_str.match(message)
+        if not (str_match or envvar_set_matcher_json.match(message)):
             return "", "", False, equals_position, None
 
         # Parse the variable name and value
-        try:
-            original_value = None
-            if envvar_set_matcher_str.match(message):
-                name, _, value = message.partition("=")
-            else:
-                # Handle JSON format
-                try:
-                    # Store the original value before JSON parsing
-                    original_value = message[equals_position + 1 :]
-                    message_json_str = json.loads(message)
-                    name, _, value = message_json_str.partition("=")
-                except json.JSONDecodeError as e:
-                    raise ValueError(
-                        f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
-                    )
-            return name, value, True, equals_position, original_value
-        except json.JSONDecodeError as e:
-            raise ValueError(
-                f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
-            )
+        original_value = None
+        if str_match:
+            name, _, value = message.partition("=")
+        else:
+            # Handle JSON format
+            try:
+                # Store the original value before JSON parsing
+                original_value = message[equals_position + 1 :]
+                message_json_str = json.loads(message)
+                name, _, value = message_json_str.partition("=")
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"Unterminated string starting at: line {e.lineno} column {e.colno} (char {e.pos})"
+                )
+        return name, value, True, equals_position, original_value
 
     def _handle_env_error(self, error_message: str, is_redacted: bool = False) -> None:
         """Handle errors in environment variable processing.

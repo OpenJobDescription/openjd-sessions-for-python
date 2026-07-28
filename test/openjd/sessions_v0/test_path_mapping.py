@@ -535,3 +535,179 @@ class TestPathMapping:
     def test_from_dict_failure(self, dict_rule):
         with pytest.raises(ValueError):
             PathMappingRule.from_dict(dict_rule)
+
+
+class TestUriPathMapping:
+    """RFC 0006 §2.3.2 (EXPR): URI-form source paths.
+
+    Per RFC 3986 the scheme and authority match case-insensitively while the
+    path portion matches case-sensitively, on whole path components. openjd-rs
+    implements the prefix comparison with ``str::eq_ignore_ascii_case``, so the
+    fold must be ASCII-only here too.
+    """
+
+    def _rule(self, source: str, destination: str = "/local") -> PathMappingRule:
+        # Construct directly with a PurePosixPath destination rather than going
+        # through from_dict, which builds a host-flavoured PurePath -- on Windows
+        # that renders "/local" as "\\local" and the expectations below would
+        # have to be host-dependent for no reason. os_name is patched to posix in
+        # each test, so the child separator is "/" on both hosts.
+        return PathMappingRule(
+            source_path_format=PathFormat.URI,
+            source_path=source,
+            destination_path=PurePosixPath(destination),
+        )
+
+    @pytest.mark.parametrize(
+        "given, expected",
+        [
+            pytest.param("s3://bucket/prefix/f.obj", (True, "/local/f.obj"), id="child-file"),
+            pytest.param("s3://bucket/prefix", (True, "/local"), id="exact-source"),
+            pytest.param("S3://BUCKET/prefix/f.obj", (True, "/local/f.obj"), id="ascii-fold"),
+            pytest.param(
+                "s3://bucket/PREFIX/f.obj",
+                (False, "s3://bucket/PREFIX/f.obj"),
+                id="path-is-case-sensitive",
+            ),
+            pytest.param(
+                "s3://other/prefix/f.obj",
+                (False, "s3://other/prefix/f.obj"),
+                id="different-authority",
+            ),
+            pytest.param(
+                "s3://bucket/prefixed/f.obj",
+                (False, "s3://bucket/prefixed/f.obj"),
+                id="not-a-component-boundary",
+            ),
+        ],
+    )
+    def test_apply_uri(self, given: str, expected: tuple[bool, str]) -> None:
+        # GIVEN
+        rule = self._rule("s3://bucket/prefix")
+
+        # WHEN / THEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            assert rule.apply(path=given) == expected
+
+    def test_scheme_authority_fold_is_ascii_only(self) -> None:
+        """A non-ASCII authority must not fold to an ASCII one.
+
+        U+212A KELVIN SIGN lower-cases to ASCII 'k' under ``str.lower()``, so a
+        Unicode fold would make these two authorities match — where openjd-rs's
+        ``eq_ignore_ascii_case`` keeps them distinct.
+        """
+        # GIVEN
+        rule = self._rule("s3://bucket\u212a")
+
+        # WHEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            matched, result = rule.apply(path="s3://bucketk/f.obj")
+
+        # THEN
+        assert matched is False
+        assert result == "s3://bucketk/f.obj"
+
+    def test_non_ascii_authority_still_matches_itself(self) -> None:
+        # GIVEN
+        rule = self._rule("s3://bucket\u212a")
+
+        # WHEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            matched, result = rule.apply(path="S3://BUCKET\u212a/f.obj")
+
+        # THEN: ASCII letters fold, the non-ASCII character compares as itself
+        assert matched is True
+        assert result == "/local/f.obj"
+
+
+class TestWindowsAsciiOnlyFold:
+    """Windows path rules match case-insensitively, but over ASCII only.
+
+    `PureWindowsPath.is_relative_to()` folds with `str.lower()`, which also folds
+    non-ASCII characters, so a homoglyph in a submitted path would remap here
+    while the EXPR engine's `apply_path_mapping()` and openjd-rs -- both using an
+    ASCII-only fold -- leave it alone. RFC 0006 2.3.2 says the two are the same
+    transformation.
+    """
+
+    def _rule(self, source: str) -> PathMappingRule:
+        return PathMappingRule(
+            source_path_format=PathFormat.WINDOWS,
+            source_path=PureWindowsPath(source),
+            destination_path=PurePosixPath("/mnt/assets"),
+        )
+
+    def test_non_ascii_homoglyph_does_not_match(self) -> None:
+        # GIVEN: a rule whose source ends in ASCII 'k'
+        rule = self._rule("C:\\assets\\k")
+
+        # WHEN: the input uses U+212A KELVIN SIGN, which str.lower() folds to 'k'
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            matched, result = rule.apply(path="C:\\assets\\\u212a\\shot.exr")
+
+        # THEN: no match, matching the engine and openjd-rs
+        assert matched is False
+        assert result == "C:\\assets\\\u212a\\shot.exr"
+
+    @pytest.mark.parametrize(
+        "given, expected",
+        [
+            pytest.param("C:\\assets\\shot.exr", (True, "/mnt/assets/shot.exr"), id="plain"),
+            pytest.param(
+                "C:\\ASSETS\\shot.exr", (True, "/mnt/assets/shot.exr"), id="ascii-fold-still-works"
+            ),
+            pytest.param(
+                "C:/assets/scenes/", (True, "/mnt/assets/scenes/"), id="forward-slash-trailing"
+            ),
+            pytest.param("C:\\assets\\", (True, "/mnt/assets/"), id="backslash-trailing"),
+            pytest.param(
+                "D:\\assets\\shot.exr", (False, "D:\\assets\\shot.exr"), id="different-drive"
+            ),
+            pytest.param(
+                "C:\\assetsmore\\x", (False, "C:\\assetsmore\\x"), id="not-a-component-boundary"
+            ),
+        ],
+    )
+    def test_windows_matching(self, given: str, expected: tuple[bool, str]) -> None:
+        # GIVEN
+        rule = self._rule("C:\\assets")
+
+        # WHEN / THEN
+        with patch.object(path_mapping_impl_mod, "os_name", OSName.POSIX.value):
+            assert rule.apply(path=given) == expected
+
+
+class TestUriRuleValidation:
+    """A URI-format rule's source_path must carry a real scheme.
+
+    The EXPR engine requires one, and these rules are handed to it via the
+    session's host context -- so a malformed rule has to be rejected where the
+    offending value can still be named, not later from inside `Session()`.
+    """
+
+    @pytest.mark.parametrize(
+        "source",
+        ["s3:/bucket", "notauri", "://bucket", "1s3://bucket", "", "s_3://bucket"],
+    )
+    def test_malformed_uri_source_rejected(self, source: str) -> None:
+        with pytest.raises(ValueError, match="must begin with"):
+            PathMappingRule.from_dict(
+                rule={
+                    "source_path_format": "URI",
+                    "source_path": source,
+                    "destination_path": "/local",
+                }
+            )
+
+    @pytest.mark.parametrize(
+        "source", ["s3://bucket/a", "file:///x", "nfs://host:2049/export", "S3://Bucket"]
+    )
+    def test_well_formed_uri_source_accepted(self, source: str) -> None:
+        rule = PathMappingRule.from_dict(
+            rule={
+                "source_path_format": "URI",
+                "source_path": source,
+                "destination_path": "/local",
+            }
+        )
+        assert rule.source_path == source

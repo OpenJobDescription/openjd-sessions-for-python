@@ -66,6 +66,7 @@ from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._windows_permission_helper import WindowsPermissionHelper
 
 from .conftest import (
+    serial_process,
     has_posix_target_user,
     has_windows_user,
     WIN_SET_TEST_ENV_VARS_MESSAGE,
@@ -954,6 +955,7 @@ class TestSessionRunTask_2023_09:  # noqa: N801
             )
 
 
+@serial_process
 class TestSessionCancel:
     """Test that cancelation will cancel the currently running Script."""
 
@@ -3900,3 +3902,44 @@ class TestSessionRunTaskWithoutSessionEnv_2023_09:  # noqa: N801
             # THEN - All entered environment variables should be ignored
             assert session.action_status == ActionStatus(state=ActionState.SUCCESS, exit_code=0)
             assert "FOO=NOT_SET" in caplog.messages
+
+
+class TestSessionEmittedLogLinesDoNotTriggerCancel:
+    """The action-message filter is attached to the session logger, so it also
+    sees lines the session itself logs while no action is running.
+
+    A task parameter whose name starts with ``openjd_env`` makes ``run_task``'s
+    own parameter-logging line look like a malformed env macro. The filter then
+    asks the session to cancel a running action -- and there isn't one, so
+    ``cancel_action`` used to raise ``RuntimeError`` out of ``logger.info`` and
+    out of the public API, with no callback and the task never run.
+    """
+
+    @pytest.mark.parametrize(
+        "param_name",
+        ["openjd_env", "openjd_unset_env", "openjd_redacted_env", "openjd_envX"],
+    )
+    def test_parameter_named_like_an_env_macro_does_not_raise(self, param_name: str) -> None:
+        # GIVEN
+        script = StepScript_2023_09(
+            actions=StepActions_2023_09(
+                onRun=Action_2023_09(
+                    command=CommandString_2023_09("echo"),
+                    args=[ArgString_2023_09("ok")],
+                )
+            )
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN: the parameter name collides with the macro prefix
+            session.run_task(
+                step_script=script,
+                task_parameter_values={
+                    param_name: ParameterValue(type=ParameterValueType.STRING, value="x")
+                },
+            )
+            while session.state == SessionState.RUNNING:
+                time.sleep(0.05)
+
+            # THEN: the task ran normally
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS

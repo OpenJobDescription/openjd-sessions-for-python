@@ -8,7 +8,7 @@ from logging.handlers import QueueHandler
 from pathlib import Path
 from queue import SimpleQueue
 from typing import Optional, cast
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -30,6 +30,7 @@ from openjd.sessions._embedded_files import EmbeddedFilesScope
 from openjd.sessions._os_checker import is_posix, is_windows
 
 from openjd.sessions._runner_base import (
+    MAX_INT_FIELD_VALUE,
     NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
@@ -38,6 +39,7 @@ from openjd.sessions._runner_base import (
 from openjd.sessions._tempdir import TempDir
 
 from .conftest import (
+    serial_process,
     build_logger,
     collect_queue_messages,
     has_posix_target_user,
@@ -608,6 +610,7 @@ class TestScriptRunnerBase:
             with pytest.raises(RuntimeError):
                 runner._run([python_exe, "-c", "print('hello')"])
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action(
         self,
@@ -649,33 +652,43 @@ class TestScriptRunnerBase:
         assert "Log from test 0" in messages
         assert "Log from test 9" not in messages
 
-    @pytest.mark.usefixtures("message_queue", "queue_handler")
     @pytest.mark.parametrize(
-        argnames=("default_timeout_seconds", "action_timeout_seconds"),
+        argnames=("default_timeout_seconds", "action_timeout_seconds", "expected_seconds"),
         argvalues=(
-            pytest.param(1, 5, id="action-timeout-prevails"),
-            pytest.param(2, None, id="default-applied"),
-            pytest.param(None, None, id="no-timeout"),
+            pytest.param(1, 5, 5, id="action-timeout-prevails"),
+            pytest.param(5, 1, 1, id="action-timeout-prevails-when-smaller"),
+            pytest.param(2, None, 2, id="default-applied"),
+            pytest.param(None, 7, 7, id="action-only"),
+            pytest.param(None, None, None, id="no-timeout"),
         ),
     )
-    def test_run_action_default_timeout(
+    def test_run_action_effective_timeout(
         self,
         tmp_path: Path,
-        message_queue: SimpleQueue,
-        queue_handler: QueueHandler,
         default_timeout_seconds: Optional[int],
         action_timeout_seconds: Optional[int],
+        expected_seconds: Optional[int],
         python_exe: str,
     ) -> None:
-        # Tests that the effective timeout is applied correctly given a supplied default timeout
-        # and an optional timeout defined on the action
+        """The effective time limit is the action's timeout if it has one, else the
+        caller's default, else none at all.
 
+        Asserts the time limit `_run_action` hands to `_run`, with no subprocess
+        and no wall clock involved.
+
+        This replaces an end-to-end version that started a child printing one line
+        per second and asserted a +/-1 second window on its output
+        (`"Log from test {T-1}" in messages`). That coupled three unrelated
+        things -- timeout *selection*, `threading.Timer` scheduling, and child
+        process startup latency -- and only the first is what this test is named
+        for. The Timer is armed before the child is submitted to the pool, so the
+        Timer's clock starts before the interpreter even launches; any host slow
+        enough to delay startup past a second failed the assertion while the
+        product behaved correctly. Measured: injecting a 1.5s startup delay
+        against a 2s timeout fails the old assertion with the runner correctly in
+        TIMEOUT. It was the suite's most persistent false red.
+        """
         # GIVEN
-        expected_effective_timeout_seconds: Optional[int] = None
-        if action_timeout_seconds is not None:
-            expected_effective_timeout_seconds = action_timeout_seconds
-        elif default_timeout_seconds is not None:
-            expected_effective_timeout_seconds = default_timeout_seconds
         default_timeout = (
             timedelta(seconds=default_timeout_seconds)
             if default_timeout_seconds is not None
@@ -683,8 +696,49 @@ class TestScriptRunnerBase:
         )
         action = Action_2023_09(
             command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
-            args=[ArgString_2023_09("{{Task.ScriptFile}}")],
+            args=[ArgString_2023_09("-c"), ArgString_2023_09("pass")],
             timeout=action_timeout_seconds,
+        )
+        symtab = SymbolTable(source={"Task.PythonInterpreter": python_exe})
+        captured: list[Optional[timedelta]] = []
+
+        with TerminatingRunner(logger=MagicMock(), session_working_directory=tmp_path) as runner:
+            # WHEN
+            with patch.object(
+                runner,
+                "_run",
+                side_effect=lambda args, time_limit=None: captured.append(time_limit),
+            ):
+                runner._run_action(action, symtab, default_timeout=default_timeout)
+
+        # THEN
+        assert len(captured) == 1, "the action was not launched exactly once"
+        expected = timedelta(seconds=expected_seconds) if expected_seconds is not None else None
+        assert captured[0] == expected
+
+    @serial_process
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    def test_run_action_timeout_terminates_the_action(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+    ) -> None:
+        """A declared timeout really does terminate the action.
+
+        The end-to-end half of the coverage above, kept deliberately loose: the
+        terminal state, and that the child did not reach its last line. It says
+        nothing about *when* the timeout landed, because which second the child
+        reaches depends on how promptly the host scheduled it -- that assumption is
+        what made the previous version of this test flaky.
+        """
+        # GIVEN: a child that prints one line a second for 20 seconds, and a
+        # timeout that will cut it short
+        action = Action_2023_09(
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[ArgString_2023_09("{{Task.ScriptFile}}")],
+            timeout=2,
         )
         python_app_loc = (Path(__file__).parent / "support_files" / "app_20s_run.py").resolve()
         symtab = SymbolTable(
@@ -696,25 +750,131 @@ class TestScriptRunnerBase:
         logger = build_logger(queue_handler)
         with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
             # WHEN
-            runner._run_action(action, symtab, default_timeout=default_timeout)
-            # wait for the process to exit
+            runner._run_action(action, symtab)
             while runner.state == ScriptRunnerState.RUNNING:
                 time.sleep(0.2)
 
         # THEN
-        if expected_effective_timeout_seconds is not None:
-            assert runner.state == ScriptRunnerState.TIMEOUT
-        else:
+        assert runner.state == ScriptRunnerState.TIMEOUT
+        assert "Log from test 19" not in collect_queue_messages(message_queue)
+
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    def test_run_action_without_timeout_runs_to_completion(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+    ) -> None:
+        """No timeout means no time limit is imposed: the action finishes on its
+        own terms.
+
+        Uses a child that exits after a fraction of a second rather than the
+        20-second one. Running a 20-second child to completion made this the single
+        slowest test in the suite by a factor of three, and it was the whole
+        critical path under `-n auto` -- while proving nothing that a short child
+        does not. What is being asserted is that no timer cut the action short, and
+        a child that exits on its own shows that either way.
+        """
+        # GIVEN: a short-lived child, and no timeout on the action or the caller
+        action = Action_2023_09(
+            command=CommandString_2023_09("{{Task.PythonInterpreter}}"),
+            args=[
+                ArgString_2023_09("-c"),
+                ArgString_2023_09("import time; time.sleep(0.5); print('finished')"),
+            ],
+            timeout=None,
+        )
+        symtab = SymbolTable(source={"Task.PythonInterpreter": python_exe})
+        logger = build_logger(queue_handler)
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            # WHEN
+            runner._run_action(action, symtab, default_timeout=None)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.05)
+
+        # THEN: it ran to its own end, and its last output arrived.
+        assert runner.state == ScriptRunnerState.SUCCESS
+        assert runner.exit_code == 0
+        assert "finished" in collect_queue_messages(message_queue)
+
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    @pytest.mark.parametrize(
+        argnames="timeout_seconds",
+        argvalues=(
+            # Larger than datetime.timedelta can represent.
+            pytest.param(86_400_000_000_000, id="over-timedelta-max"),
+            # Representable by timedelta, but threading.Timer's deadline
+            # arithmetic overflows CPython's 64-bit nanosecond time
+            # representation.
+            pytest.param(86_399_999_913_600, id="over-schedulable-but-in-timedelta"),
+            pytest.param(9_223_372_036_854_775_807, id="i64-max"),
+        ),
+    )
+    def test_run_action_unenforceable_timeout_runs_unbounded(
+        self,
+        tmp_path: Path,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        timeout_seconds: int,
+    ) -> None:
+        """A timeout too large to schedule must not raise; the action runs.
+
+        The 2023-09 <Action> schema puts no upper bound on `timeout`, so these
+        values are template-legal. openjd-rs resolves them with
+        `Duration::from_secs` and runs the action, so we do the same rather than
+        raising OverflowError out of the public Session API (which used to leave
+        the Session stuck in RUNNING with no terminal ActionStatus).
+        """
+        # GIVEN
+        action = Action_2023_09(
+            command=CommandString_2023_09("{{Task.Command}}"),
+            args=[ArgString_2023_09("ok")],
+            timeout=timeout_seconds,
+        )
+        symtab = SymbolTable(source={"Task.Command": "echo" if is_posix() else "cmd.exe"})
+        logger = build_logger(queue_handler)
+
+        # WHEN
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            runner._run_action(action, symtab)
+            while runner.state == ScriptRunnerState.RUNNING:
+                time.sleep(0.2)
+
+            # THEN: it ran, with no time limit scheduled
             assert runner.state == ScriptRunnerState.SUCCESS
+            assert runner._runtime_limit is None
         messages = collect_queue_messages(message_queue)
-        # The application prints out 0, ..., 19 once a second for 20s .
-        # If it ended early, then we printed the first but not the last.
-        print(messages)
-        if expected_effective_timeout_seconds is not None:
-            assert f"Log from test {expected_effective_timeout_seconds - 1}" in messages
-            assert f"Log from test {expected_effective_timeout_seconds + 1}" not in messages
-        else:
-            assert "Log from test 19" in messages
+        assert any("larger than this runtime can enforce" in m for m in messages)
+
+    @pytest.mark.usefixtures("queue_handler")
+    def test_run_action_over_range_timeout_fails_action(
+        self,
+        tmp_path: Path,
+        queue_handler: QueueHandler,
+    ) -> None:
+        """An over-range timeout fails the action, matching openjd-rs.
+
+        openjd-rs rejects a literal above i64::MAX at parse time and its runtime
+        parses a resolved one with str::parse, which fails rather than
+        saturating -- so the action must fail through the normal failure path
+        instead of running. See MAX_INT_FIELD_VALUE.
+        """
+        # GIVEN
+        action = Action_2023_09(
+            command=CommandString_2023_09("echo"),
+            args=[ArgString_2023_09("ok")],
+            timeout=MAX_INT_FIELD_VALUE + 1,
+        )
+        logger = build_logger(queue_handler)
+
+        # WHEN
+        with TerminatingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            runner._run_action(action, SymbolTable())
+
+            # THEN
+            assert runner.state == ScriptRunnerState.FAILED
+            assert runner._runtime_limit is None
 
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_run_action_bad_formatstring(
@@ -744,6 +904,7 @@ class TestScriptRunnerBase:
         messages = collect_queue_messages(message_queue)
         assert any(m.startswith("openjd_fail") for m in messages)
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_terminate(
         self,
@@ -779,6 +940,7 @@ class TestScriptRunnerBase:
         # Didn't get to the end of the application run
         assert "Log from test 9" not in messages
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     @pytest.mark.xfail(not is_posix(), reason="Signals not yet implemented for non-posix")
     def test_run_with_time_limit(
@@ -811,6 +973,7 @@ class TestScriptRunnerBase:
         # Didn't get to the end of the application run
         assert "Log from test 9" not in messages
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_notify(
         self,
@@ -974,6 +1137,7 @@ class TestScriptRunnerBase:
             cap_kill_was_effective == cap_kill_effective_after_cancel
         ), "CAP_KILL added/removed from effetive set and persisted after cancelation"
 
+    @serial_process
     @pytest.mark.usefixtures("message_queue", "queue_handler")
     def test_cancel_double_cancel_notify(
         self,

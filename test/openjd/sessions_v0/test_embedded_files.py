@@ -1,5 +1,6 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
+import errno
 import os
 import stat
 import uuid
@@ -26,6 +27,7 @@ from openjd.sessions._embedded_files import (
     EmbeddedFiles,
     EmbeddedFilesScope,
     _validate_embedded_filename,
+    chown_group,
     write_file_for_user,
 )
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
@@ -33,6 +35,8 @@ from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from .conftest import (
     has_posix_target_user,
     has_windows_user,
+    nonexistent_group_name,
+    resolvable_member_groups,
     WIN_SET_TEST_ENV_VARS_MESSAGE,
     POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE,
 )
@@ -892,6 +896,48 @@ class TestEmbeddedFiles:
                     result_contents = file.read()
                 assert result_contents == expected_file_data, "File contents are as expected"
 
+        @pytest.mark.skipif(not is_posix(), reason="group ownership is posix-specific")
+        def test_unresolvable_group_fails_as_runtimeerror(self, tmp_path: Path) -> None:
+            """Pins: a group name that does not resolve must fail materialize()
+            through its existing handler, as RuntimeError.
+
+            shutil.chown raises LookupError for an unknown group, and LookupError
+            is neither OSError nor ValueError -- the two classes
+            write_file_contents() catches -- so before chown_group() it escaped
+            this handler (and every other one in the chain) and surfaced as a
+            bare LookupError out of the public Session API. PosixSessionUser
+            does not validate its group, so a caller only has to pass a group
+            that does not exist.
+
+            pytest.raises(RuntimeError) does not catch LookupError, so if the
+            translation is removed this test errors out with the escaping
+            LookupError -- which is exactly the defect.
+            """
+
+            # GIVEN
+            # Only `group` matters on this path; the user is never resolved by it.
+            user = PosixSessionUser(user="nobody", group=nonexistent_group_name())
+            test_obj = EmbeddedFiles(
+                logger=MagicMock(),
+                scope=EmbeddedFilesScope.ENV,
+                session_files_directory=tmp_path,
+                user=user,
+            )
+            given_file = EmbeddedFileText_2023_09(
+                name="Foo",
+                type=EmbeddedFileTypes_2023_09.TEXT,
+                data=DataString_2023_09("some data"),
+            )
+
+            # WHEN
+            with pytest.raises(RuntimeError) as excinfo:
+                test_obj.materialize([given_file], SymbolTable())
+
+            # THEN
+            # The failure is the group ownership change, not something incidental:
+            # the offending group name is carried through to the message.
+            assert user.group in str(excinfo.value)
+
 
 class TestValidateEmbeddedFilename:
     """Unit tests for the _validate_embedded_filename() basename guard.
@@ -947,3 +993,95 @@ class TestValidateEmbeddedFilename:
         # WHEN / THEN
         with pytest.raises(ValueError):
             _validate_embedded_filename(filename)
+
+
+@pytest.mark.skipif(not is_posix(), reason="shutil.chown's group handling is posix-only")
+class TestChownGroup:
+    """Unit tests for chown_group(), the shutil.chown wrapper.
+
+    Defect pinned: shutil.chown raises LookupError when the group name does not
+    resolve. LookupError is neither OSError nor ValueError, and every handler
+    around file materialization or session-directory setup in this package
+    catches some combination of OSError/ValueError/RuntimeError -- so an
+    unresolvable group escaped all of them and reached the caller of the public
+    Session API as a bare LookupError. chown_group() translates it at the call
+    site instead, because a group that cannot be resolved *is* a failure to
+    change ownership and callers already treat that as OSError.
+    """
+
+    def test_unresolvable_group_raises_oserror(self, tmp_path: Path) -> None:
+        """The translation itself: OSError out, not LookupError.
+
+        pytest.raises(OSError) cannot catch a LookupError, so removing the
+        translation makes this test error out with the escaping LookupError. It
+        also fails if the wrapper raises some other class (e.g. ValueError) or
+        swallows the failure entirely.
+        """
+        # GIVEN
+        filename = tmp_path / "file.txt"
+        filename.write_text("some data")
+        group = nonexistent_group_name()
+
+        # WHEN
+        with pytest.raises(OSError) as excinfo:
+            chown_group(filename, group)
+
+        # THEN
+        # Both the path and the group are named, so an operator can tell which
+        # file and which group configuration failed.
+        assert str(filename) in str(excinfo.value)
+        assert group in str(excinfo.value)
+        # AND the original LookupError is preserved as the cause, which proves
+        # this OSError is the translated group lookup and not an unrelated
+        # filesystem error.
+        assert isinstance(excinfo.value.__cause__, LookupError)
+
+    def test_resolvable_group_succeeds(self, tmp_path: Path) -> None:
+        """The wrapper must not break the success path.
+
+        The gid assertion is what makes this non-vacuous: it only holds if the
+        chown actually happened. A group other than the file's current group is
+        preferred so that the assertion cannot pass by accident.
+        """
+        # GIVEN
+        candidates = resolvable_member_groups()
+        if not candidates:
+            pytest.skip("this process is not a member of any group that has a name")
+        filename = tmp_path / "file.txt"
+        filename.write_text("some data")
+        current_gid = filename.stat().st_gid
+        gid, group = next(
+            ((gid, name) for gid, name in candidates if gid != current_gid), candidates[0]
+        )
+
+        # WHEN
+        chown_group(filename, group)
+
+        # THEN
+        assert filename.stat().st_gid == gid
+
+    def test_real_oserror_is_passed_through_unchanged(self, tmp_path: Path) -> None:
+        """A genuine failure from shutil.chown must reach the caller as-is.
+
+        The wrapper only exists to reclassify LookupError; if it broadened to
+        catch more than that, a real errno would be flattened into a generic
+        error and the handlers upstream would report the wrong cause. Using a
+        resolvable group with a missing path gets shutil.chown past its group
+        lookup and into os.chown, so the ENOENT here comes from the real syscall
+        rather than from a mock.
+        """
+        # GIVEN
+        candidates = resolvable_member_groups()
+        if not candidates:
+            pytest.skip("this process is not a member of any group that has a name")
+        _gid, group = candidates[0]
+        missing = tmp_path / "no-such-file.txt"
+
+        # WHEN
+        with pytest.raises(FileNotFoundError) as excinfo:
+            chown_group(missing, group)
+
+        # THEN
+        # Same class, same errno, and no re-raise chain: it is the original error.
+        assert excinfo.value.errno == errno.ENOENT
+        assert excinfo.value.__cause__ is None
