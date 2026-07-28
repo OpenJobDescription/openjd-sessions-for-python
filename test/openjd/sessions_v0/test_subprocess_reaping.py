@@ -118,12 +118,14 @@ class _FilterRaisingOnAny(logging.Filter):
         super().__init__()
         self._markers = markers
         self.fired = False
+        self.fired_markers: list[str] = []
 
     def filter(self, record: logging.LogRecord) -> bool:
         message = str(record.msg)
         for marker in self._markers:
             if marker in message:
                 self.fired = True
+                self.fired_markers.append(marker)
                 raise RuntimeError(f"filter blew up on: {marker}")
         return True
 
@@ -748,3 +750,64 @@ class TestStartFailureAlwaysReleasesWaiters:
         assert proc.failed_to_start is True
         assert proc._has_started.is_set() is True
         assert proc.is_running is False
+
+
+@serial_process
+@pytest.mark.skipif(not is_posix(), reason="POSIX process-group signalling")
+class TestTheKillIsNotGatedBehindItsOwnLog:
+    """`_posix_signal_subprocess` must send the signal before announcing it.
+
+    The announcement came first, inside a `try` that catches only `OSError`, so a
+    raising `logging.Filter` skipped `os.killpg` and left the method without ever
+    signalling. That is reachable from `run()`'s reap -- which exists precisely so
+    a live child is not abandoned -- so the reap could be entered, attempt the
+    kill, and still leave the child running.
+    """
+
+    def test_the_child_dies_even_when_the_interrupt_log_raises(self, python_exe: str) -> None:
+        # GIVEN a live child, and a filter that raises both on the startup line
+        # (to reach the reap with the child alive) and on the signal announcement
+        exploder = _FilterRaisingOnAny("Command started as pid", 'INTERRUPT: Sending signal "kill"')
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+
+            # WHEN
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        # THEN: the announcement really did raise -- without this the test could
+        # pass on a tree where the signal path was never reached at all...
+        assert 'INTERRUPT: Sending signal "kill"' in exploder.fired_markers
+        pid = proc.pid
+        assert pid is not None
+        # ...and the child was killed regardless
+        assert _wait_gone(pid), f"child {pid} was left running"
+
+    def test_the_signal_is_still_announced_on_a_healthy_cancel(
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
+    ) -> None:
+        """Negative control: deleting the announcement would satisfy the test
+        above, so pin that a working logger still gets it -- and that the child
+        still dies."""
+        # GIVEN a running child
+        logger = build_logger(queue_handler)
+        proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+        runner = threading.Thread(target=proc.run, daemon=True)
+        runner.start()
+        proc.wait_until_started()
+        deadline = time.time() + 10.0
+        while proc._sudo_child_process_group_id is None and time.time() < deadline:
+            time.sleep(0.02)
+
+        # WHEN
+        proc.terminate()
+        runner.join(timeout=15.0)
+
+        # THEN
+        lines = []
+        while not message_queue.empty():
+            lines.append(message_queue.get().getMessage())
+        assert any(
+            'INTERRUPT: Sending signal "kill" to process group' in line for line in lines
+        ), lines
+        assert proc.exit_code == -signal.SIGKILL  # type: ignore
