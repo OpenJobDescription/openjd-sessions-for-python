@@ -730,11 +730,21 @@ class LoggingSubprocess(object):
         with ctx_mgr as has_cap_kill:
             if has_cap_kill or not self._user or self._user.is_process_user():
                 try:
+                    # Signal first, announce second. The announcement used to come
+                    # first, which put the kill behind a log call: a raising
+                    # `logging.Filter` skipped `killpg` entirely and the exception
+                    # left this method without a signal ever being sent. That is
+                    # reachable from LoggingSubprocess.run()'s reap, whose whole
+                    # purpose is to not abandon a live child.
+                    #
+                    # Only OSError is caught here, so a raising filter propagates
+                    # either way; the difference is whether the child was killed
+                    # before it did.
+                    os.killpg(self._sudo_child_process_group_id, numeric_signal)
                     self._logger.info(
                         f'INTERRUPT: Sending signal "{signal_name}" to process group {self._sudo_child_process_group_id}',
                         extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                     )
-                    os.killpg(self._sudo_child_process_group_id, numeric_signal)
                 except OSError:
                     self._logger.info(
                         "Could not directly send signal {signal_name} to {self._posix_signal_target.pid}, trying sudo.",
