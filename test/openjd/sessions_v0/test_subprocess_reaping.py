@@ -26,8 +26,10 @@ from __future__ import annotations
 import logging
 import os
 import signal
+import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from logging.handlers import QueueHandler
 from queue import SimpleQueue
 from typing import Any, Generator, Optional
@@ -664,3 +666,85 @@ class TestStartupLoggingDoesNotAbandonTheChild:
         assert any(line == "Output:" for line in lines), lines
         assert proc.exit_code == 7
         assert proc.failed_to_start is False
+
+
+class TestStartFailureAlwaysReleasesWaiters:
+    """`_has_started` must be set however `_start_subprocess` returns.
+
+    `_start_subprocess` catches every `Exception` from the launch and logs
+    "Process failed to start" -- but that log can itself raise, and then the
+    exception propagates out of `run()` before `_has_started.set()` was reached.
+    `ScriptRunnerBase._run` waits on `wait_until_started()` with **no timeout**,
+    so the thread that called the public `Session` API blocked forever on a
+    launch that had already definitively failed.
+
+    Platform-agnostic: no child is ever created (the failing log precedes
+    `Popen`), so there is nothing to signal or reap and no POSIX guard is needed.
+    """
+
+    def test_a_raising_log_in_the_failure_handler_still_releases_waiters(
+        self, python_exe: str
+    ) -> None:
+        # GIVEN a filter that raises on the pre-launch "Running command" line.
+        # The failure handler then logs "Process failed to start: <that error>",
+        # whose text contains the marker too, so the handler's own log raises as
+        # well -- which is the case that used to escape.
+        exploder = _FilterRaisingOnAny("Running command")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", "pass"])
+
+            # WHEN
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        # THEN: waiters are released rather than blocked forever
+        assert proc._has_started.is_set() is True
+        # No child was created, so nothing leaked.
+        assert proc.pid is None
+
+    def test_wait_until_started_returns_after_a_raising_failure_handler(
+        self, python_exe: str
+    ) -> None:
+        """The observable form of the above, through the public API that hung.
+
+        Uses a bounded wait on a daemon thread deliberately: if this regresses,
+        the test fails on the flag rather than hanging the suite.
+        """
+        # GIVEN
+        exploder = _FilterRaisingOnAny("Running command")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", "pass"])
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        returned = threading.Event()
+
+        def waiter() -> None:
+            proc.wait_until_started()  # as ScriptRunnerBase._run calls it: no timeout
+            returned.set()
+
+        # WHEN
+        threading.Thread(target=waiter, daemon=True).start()
+
+        # THEN
+        assert returned.wait(timeout=10.0) is True, "wait_until_started() did not return"
+
+    def test_a_normal_start_failure_is_still_reported(
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler
+    ) -> None:
+        """Negative control: the ordinary failure-to-start path is unchanged --
+        `_start_subprocess` returns None, `run()` does not raise, and the object
+        reports `failed_to_start`."""
+        # GIVEN a command that cannot be launched, and a working logger
+        logger = build_logger(queue_handler)
+        proc = LoggingSubprocess(
+            logger=logger, args=[str(Path("this-command-does-not-exist-openjd-test"))]
+        )
+
+        # WHEN
+        proc.run()
+
+        # THEN
+        assert proc.failed_to_start is True
+        assert proc._has_started.is_set() is True
+        assert proc.is_running is False
