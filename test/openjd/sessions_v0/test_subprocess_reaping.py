@@ -27,9 +27,10 @@ import logging
 import os
 import signal
 import time
+from contextlib import contextmanager
 from logging.handlers import QueueHandler
 from queue import SimpleQueue
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -37,7 +38,7 @@ import pytest
 from openjd.sessions._os_checker import is_posix
 from openjd.sessions._subprocess import LoggingSubprocess
 
-from .conftest import build_logger
+from .conftest import build_logger, create_unique_logger_name, serial_process
 
 # A child that emits one line (to drive the pump), then outlives the pump.
 _LONG_CHILD = "import time\nprint('MARKER', flush=True)\ntime.sleep(60)\n"
@@ -97,6 +98,57 @@ def exploding_logger() -> Any:
         yield logger, exploder
     finally:
         logger.removeFilter(exploder)
+
+
+class _FilterRaisingOnAny(logging.Filter):
+    """Raises on any record whose message contains one of ``markers``.
+
+    Separate from :class:`_ExplodingFilter` so the tests using that keep their
+    exact single-marker behaviour.
+
+    The raised message names the marker that triggered it, so a test can tell
+    *which* log call failed -- which is what distinguishes "the startup line
+    raised and was contained" from "something inside the reap raised and replaced
+    it". Both are ``RuntimeError`` from the same filter, so nothing else does.
+    """
+
+    def __init__(self, *markers: str) -> None:
+        super().__init__()
+        self._markers = markers
+        self.fired = False
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = str(record.msg)
+        for marker in self._markers:
+            if marker in message:
+                self.fired = True
+                raise RuntimeError(f"filter blew up on: {marker}")
+        return True
+
+
+@contextmanager
+def logger_carrying(filt: logging.Filter) -> Generator[Any, None, None]:
+    """A uniquely-named logger carrying `filt`, removed again on exit.
+
+    The removal is not tidiness: ``logging.getLogger`` interns loggers in a
+    process-global registry, so a *raising* filter left installed would outlive
+    its test and fire inside an unrelated one.
+
+    Yields ``Any`` rather than ``logging.Logger`` because ``LoggingSubprocess``
+    declares its ``logger`` parameter as a ``LoggerAdapter``, while these tests
+    pass a plain ``Logger`` -- as the ``exploding_logger`` fixture above already
+    does, for the same reason.
+    """
+    logger = logging.getLogger(create_unique_logger_name(prefix="openjd.test.reaping.startup"))
+    logger.setLevel(logging.INFO)
+    handler = logging.NullHandler()
+    logger.addHandler(handler)
+    logger.addFilter(filt)
+    try:
+        yield logger
+    finally:
+        logger.removeFilter(filt)
+        logger.removeHandler(handler)
 
 
 @pytest.mark.skipif(not is_posix(), reason="pid liveness/reap checks are POSIX-only here")
@@ -314,6 +366,44 @@ class TestReapUnitBehaviour:
             popen.kill()
             popen.wait()
 
+    def test_a_logging_failure_during_the_reap_does_not_escape(self, python_exe: str) -> None:
+        """`_reap`'s own logging must not raise either.
+
+        The containment here already covered the terminate and the wait, but not
+        the three `logger.error` calls between them -- and a raising
+        `logging.Filter` is exactly what routes execution into `_reap`, which
+        makes those calls the *likeliest* thing to fail, not the least. Anything
+        escaping replaces the exception already propagating out of `run()`.
+
+        This drives all three call sites at once: the abandoning notice, the
+        terminate-failure notice, and the unreaped-after-timeout notice.
+        """
+        # GIVEN a live child, a termination that fails, a 0s wait budget so the
+        # timeout branch is reached too, and a logger that raises on every error
+        logger = MagicMock()
+        logger.error.side_effect = RuntimeError("the logging stack blew up")
+        proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+        popen = proc._start_subprocess()
+        assert popen is not None
+        try:
+            with (
+                patch.object(
+                    LoggingSubprocess,
+                    "_terminate_process",
+                    side_effect=OSError("cannot signal"),
+                ),
+                patch("openjd.sessions._subprocess.ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS", 0),
+            ):
+                # WHEN / THEN: nothing escapes, despite every log call failing
+                proc._reap(popen)
+
+            # All three messages were attempted, so this really did exercise
+            # every call site rather than returning early.
+            assert logger.error.call_count == 3
+        finally:
+            popen.kill()
+            popen.wait()
+
     def test_a_child_that_survives_termination_is_reported_not_hung(self, python_exe: str) -> None:
         """The wait is bounded: a child that somehow outlives SIGKILL must not
         hang the pool worker."""
@@ -383,3 +473,194 @@ class TestTerminateDoesNotDependOnLeaderLiveness:
 
         # THEN
         terminate_process.assert_not_called()
+
+
+@serial_process
+class TestStartupLoggingDoesNotAbandonTheChild:
+    """The ownership `try/finally` must begin at process creation, not after the
+    startup logging.
+
+    `run()` logged "Command started as pid" and "Output:" *before* entering the
+    `try` whose `finally` reaps, and did the POSIX process-group lookup there
+    too. Anything raising in that window escaped `run()` having never waited on
+    the child, leaving a live process with no exit code recorded while the runner
+    published a terminal state for it.
+
+    A `logging.Filter` is the reachable trigger because filters propagate out of
+    `Logger.handle`, unlike handlers, whose exceptions go to `handleError` --
+    and `Session` installs a filter of its own. The process-group lookup is
+    covered by its own test below, which is why the boundary moved to
+    immediately after creation rather than merely above the two log calls.
+    """
+
+    @pytest.mark.skipif(not is_posix(), reason="pid liveness/reap checks are POSIX-only here")
+    def test_a_filter_raising_on_the_pid_line_does_not_leak_the_child(
+        self, python_exe: str
+    ) -> None:
+        # GIVEN: a long-lived child, and a filter that raises on the first
+        # startup log line -- while the child is still alive
+        exploder = _FilterRaisingOnAny("Command started as pid")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+
+            # WHEN
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        # THEN: the filter really did fire on that line...
+        assert exploder.fired is True
+        pid = proc.pid
+        assert pid is not None
+        # ...the child is gone, not merely signalled...
+        assert _wait_gone(pid), f"child {pid} was left running"
+        # ...and its status was recorded rather than lost.
+        assert proc.exit_code == -signal.SIGKILL  # type: ignore
+        assert proc._process is None
+
+    @pytest.mark.skipif(not is_posix(), reason="pid liveness/reap checks are POSIX-only here")
+    def test_a_filter_raising_on_the_output_banner_does_not_leak_the_child(
+        self, python_exe: str
+    ) -> None:
+        """A second, separate unprotected line -- not the same one as above."""
+        # GIVEN
+        exploder = _FilterRaisingOnAny("Output:")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+
+            # WHEN
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        # THEN
+        assert exploder.fired is True
+        pid = proc.pid
+        # Not decoration: `_wait_gone(None)` returns True, so without this the
+        # liveness assertion below degrades to a tautology.
+        assert pid is not None
+        assert _wait_gone(pid), f"child {pid} was left running"
+        assert proc.exit_code == -signal.SIGKILL  # type: ignore
+        assert proc._process is None
+
+    @pytest.mark.skipif(not is_posix(), reason="the process-group lookup is POSIX-only")
+    def test_a_failing_process_group_lookup_does_not_leak_the_child(
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
+    ) -> None:
+        """The POSIX process-group lookup was in the unguarded window too.
+
+        `ProcessLookupError` from it is caught deliberately (a trivial command
+        can exit first), but nothing else was, and it sits between the two log
+        lines -- so covering only the logging would leave the middle of the same
+        window unprotected. No filter here: the failure is injected into the
+        lookup itself, so this is independent of the logging stack.
+
+        What is asserted is only that the reap is *reached*, and deliberately
+        NOT that the child dies. When the group lookup is itself what failed,
+        `_sudo_child_process_group_id` stays unset, and
+        `_posix_signal_subprocess` then declines to signal at all rather than
+        target a possibly-recycled pid (the R5-9 "no process group known"
+        convention). So on this one path the boundary buys the attempt and the
+        handle release, not the kill.
+
+        That is a real, pre-existing limitation of the signalling path -- not
+        something this change introduces or claims to fix -- and it is recorded
+        as a follow-up. Asserting a dead child here would require standing in for
+        the signal, which would make this test assert a kill the shipped code
+        does not perform.
+        """
+        # GIVEN a live child and a process-group lookup that fails in a way the
+        # production code does not catch
+        logger = build_logger(queue_handler)
+        proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+
+        # WHEN
+        with (
+            patch(
+                "openjd.sessions._subprocess.os.getpgid",
+                side_effect=RuntimeError("getpgid blew up"),
+            ),
+            # Stubbed rather than stood-in-for: the real call would spend a second
+            # scanning for a sudo child it will not find, and this test is about
+            # whether the reap is reached at all.
+            patch.object(
+                LoggingSubprocess, "_terminate_process", autospec=True
+            ) as terminate_process,
+            # No wait budget: the child cannot have been killed by the stub, so
+            # the bounded wait would otherwise be spent in full.
+            patch("openjd.sessions._subprocess.ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS", 0),
+        ):
+            with pytest.raises(RuntimeError, match="getpgid blew up"):
+                proc.run()
+
+        pid = proc.pid
+        try:
+            # THEN: ownership was discharged -- the reap ran, instead of the
+            # failure escaping in front of it
+            terminate_process.assert_called_once()
+            assert proc._process is None
+        finally:
+            # The stubbed terminate killed nothing, so this test owns the child.
+            if pid is not None and _pid_alive(pid):
+                os.kill(pid, signal.SIGKILL)  # type: ignore[attr-defined]
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
+
+    @pytest.mark.skipif(not is_posix(), reason="pid liveness/reap checks are POSIX-only here")
+    def test_the_reap_kills_the_child_even_when_its_own_logging_raises(
+        self, python_exe: str
+    ) -> None:
+        """`_reap` must terminate before it logs.
+
+        With the boundary moved, a raising filter now routes *into* `_reap` -- so
+        if that same filter also matches `_reap`'s own "Abandoning the subprocess"
+        message, a log-then-terminate order meant the `logger.error` raised and the
+        kill never ran. The leak would have survived the boundary fix.
+
+        Two properties, both load-bearing and each failing for a different
+        mutation: the child dies (log-then-terminate breaks this), and the caller
+        still sees the *startup* failure rather than one raised from inside the
+        `finally` (a reap log that propagates breaks this).
+        """
+        # GIVEN: a filter that raises on the startup line AND on the message
+        # `_reap` emits while cleaning up. "Running command" is deliberately not
+        # matched, so the child is really created.
+        exploder = _FilterRaisingOnAny("Command started as pid", "Abandoning the subprocess")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+
+            # WHEN
+            with pytest.raises(RuntimeError) as excinfo:
+                proc.run()
+
+        # THEN: the child is reaped despite the logging stack being broken...
+        pid = proc.pid
+        assert pid is not None
+        assert _wait_gone(pid), f"child {pid} was left running"
+        assert proc.exit_code == -signal.SIGKILL  # type: ignore
+        assert proc._process is None
+        # ...and the exception is the startup failure. Naming the marker matters:
+        # both failures are RuntimeError from the same filter, so only the marker
+        # distinguishes "contained" from "replaced the propagating exception".
+        assert "filter blew up on: Command started as pid" in str(excinfo.value)
+        assert "Abandoning the subprocess" not in str(excinfo.value)
+
+    def test_the_startup_lines_are_still_logged_on_a_healthy_run(
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
+    ) -> None:
+        """Negative control. Deleting the startup logging would satisfy every
+        assertion above, so pin that it still happens -- and that a healthy run
+        keeps its own exit code."""
+        # GIVEN / WHEN
+        logger = build_logger(queue_handler)
+        proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _SHORT_CHILD])
+        proc.run()
+
+        # THEN
+        lines = []
+        while not message_queue.empty():
+            lines.append(message_queue.get().getMessage())
+        assert any(f"Command started as pid: {proc.pid}" in line for line in lines), lines
+        assert any(line == "Output:" for line in lines), lines
+        assert proc.exit_code == 7
+        assert proc.failed_to_start is False
