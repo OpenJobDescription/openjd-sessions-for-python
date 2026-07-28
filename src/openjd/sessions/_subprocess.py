@@ -175,11 +175,21 @@ class LoggingSubprocess(object):
         if self._has_started.is_set():
             raise RuntimeError("The process has already been run")
 
-        self._process = self._start_subprocess()
-        # Set _has_started regardless of whether we started the process successfully or
-        # not. That will wake up anyone waiting on wait_until_started() to know whether
-        # we've gotten this far.
-        self._has_started.set()
+        try:
+            self._process = self._start_subprocess()
+        finally:
+            # Set _has_started regardless of whether we started the process successfully or
+            # not. That will wake up anyone waiting on wait_until_started() to know whether
+            # we've gotten this far.
+            #
+            # In a `finally` because `_start_subprocess` can also *raise*: its
+            # `except Exception` handler logs "Process failed to start", and that
+            # log can itself fail (a raising `logging.Filter`), which propagates
+            # out past this point. `ScriptRunnerBase._run` waits on
+            # `wait_until_started()` with no timeout, so leaving the event unset
+            # hangs the thread that called the public `Session` API -- forever,
+            # on a launch that has already definitively failed.
+            self._has_started.set()
         if self._process is None:
             # We failed to start the subprocess
             self._start_failed = True
