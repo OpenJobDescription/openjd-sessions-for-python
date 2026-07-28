@@ -187,56 +187,71 @@ class LoggingSubprocess(object):
                 self._callback()
             return
 
-        self._pid = self._process.pid
-
-        # Would use is_posix(), but it doesn't short-circuit mypy which then complains
-        # about os.getpgid not being a valid attribute.
-        if not sys.platform == "win32":
-            # A trivial command can exit before we get here. Looking up the
-            # process group of an already-reaped child raises ProcessLookupError
-            # (ESRCH), which must not fail the action: the child ran, and its
-            # exit code is still collected below.
-            try:
-                if not self._user or self._user.is_process_user():
-                    self._sudo_child_process_group_id = os.getpgid(self._process.pid)
-                else:
-                    self._sudo_child_process_group_id = find_sudo_child_process_group_id(
-                        logger=self._logger,
-                        sudo_process=self._process,
-                    )
-            except ProcessLookupError:
-                # R5-9 fix: leave this as None -- "no process group known" --
-                # rather than substituting the pid. The lookup failed *because*
-                # the process is gone, so its pid is dead: signalling it is at
-                # best a no-op, and after pid recycling on a busy host `killpg`
-                # would target an unrelated group. In the sudo branch the pid is
-                # not even the right identifier, since it belongs to `sudo` and
-                # not to the workload's process group.
-                #
-                # None is the established "unknown" value on this field --
-                # find_sudo_child_process_group_id returns it for the same reason
-                # (_linux/_sudo.py), and _posix_signal_subprocess already retries
-                # the lookup and then declines to signal when it is still unset.
-                self._sudo_child_process_group_id = None
-                self._logger.debug(
-                    f"Process {self._process.pid} exited before its process group could be "
-                    "determined; no process group will be signalled for it.",
-                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-                )
-
-        self._logger.info(
-            f"Command started as pid: {self._process.pid}",
-            extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-        )
-        self._logger.info(
-            "Output:",
-            extra=LogExtraInfo(openjd_log_content=LogContent.BANNER | LogContent.COMMAND_OUTPUT),
-        )
-
+        # Bind the Popen once, and enter the ownership `try` immediately: from here
+        # on this method owns a live child, so every exit path -- including an
+        # exceptional one -- has to go through the `finally` that reaps it.
+        #
+        # The process-group lookup and the two startup log lines used to sit
+        # *before* the `try`, outside that guarantee. A `logging.Filter` that
+        # raises (filters propagate out of `Logger.handle`, unlike handlers) then
+        # escaped `run()` having never waited on the child: a live process with no
+        # exit code recorded, while the runner published a terminal state for it.
+        # Installing such a filter is a supported use of this library -- `Session`
+        # installs its own. Reproduced before this change; see
+        # TestStartupLoggingDoesNotAbandonTheChild.
+        proc = self._process
         try:
+            self._pid = proc.pid
+
+            # Would use is_posix(), but it doesn't short-circuit mypy which then complains
+            # about os.getpgid not being a valid attribute.
+            if not sys.platform == "win32":
+                # A trivial command can exit before we get here. Looking up the
+                # process group of an already-reaped child raises ProcessLookupError
+                # (ESRCH), which must not fail the action: the child ran, and its
+                # exit code is still collected below.
+                try:
+                    if not self._user or self._user.is_process_user():
+                        self._sudo_child_process_group_id = os.getpgid(proc.pid)
+                    else:
+                        self._sudo_child_process_group_id = find_sudo_child_process_group_id(
+                            logger=self._logger,
+                            sudo_process=proc,
+                        )
+                except ProcessLookupError:
+                    # R5-9 fix: leave this as None -- "no process group known" --
+                    # rather than substituting the pid. The lookup failed *because*
+                    # the process is gone, so its pid is dead: signalling it is at
+                    # best a no-op, and after pid recycling on a busy host `killpg`
+                    # would target an unrelated group. In the sudo branch the pid is
+                    # not even the right identifier, since it belongs to `sudo` and
+                    # not to the workload's process group.
+                    #
+                    # None is the established "unknown" value on this field --
+                    # find_sudo_child_process_group_id returns it for the same reason
+                    # (_linux/_sudo.py), and _posix_signal_subprocess already retries
+                    # the lookup and then declines to signal when it is still unset.
+                    self._sudo_child_process_group_id = None
+                    self._logger.debug(
+                        f"Process {proc.pid} exited before its process group could be "
+                        "determined; no process group will be signalled for it.",
+                        extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+                    )
+
+            self._logger.info(
+                f"Command started as pid: {proc.pid}",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
+            self._logger.info(
+                "Output:",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.BANNER | LogContent.COMMAND_OUTPUT
+                ),
+            )
+
             self._log_subproc_stdout()  # Blocking
-            self._process.wait()
-            self._returncode = self._process.returncode
+            proc.wait()
+            self._returncode = proc.returncode
             self._log_returncode()
             if self._callback:
                 self._callback()
@@ -245,7 +260,6 @@ class LoggingSubprocess(object):
             # PopenWindowsAsUser and there's stuff to deallocate. `proc` itself is
             # a function local and dies with the frame; a `del proc` here would be
             # a no-op, which is what CodeQL's "unnecessary delete" reports.
-            proc = self._process
             self._process = None
             # This method owns the subprocess for its whole life, and clearing
             # `_process` is the point after which nothing else can reach it:
@@ -276,21 +290,20 @@ class LoggingSubprocess(object):
             # evil -- the alternative is an orphan holding the session directory
             # and, for a cross-user action, running as the job user with no
             # owner.
-            self._logger.error(
+            #
+            # Every log call in this method goes through
+            # `_log_error_best_effort`: the failure that routes us here is a
+            # raising `logging.Filter`, so the log call in front of the kill was
+            # itself the thing that skipped the kill.
+            self._log_error_best_effort(
                 f"Abandoning the subprocess {proc.pid} before it exited; terminating it so it "
-                "is not orphaned.",
-                extra=LogExtraInfo(
-                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
-                ),
+                "is not orphaned."
             )
             try:
                 self._terminate_process(proc)
             except Exception as e:  # noqa: BLE001
-                self._logger.error(
-                    f"Could not terminate the abandoned subprocess {proc.pid}: {e}",
-                    extra=LogExtraInfo(
-                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
-                    ),
+                self._log_error_best_effort(
+                    f"Could not terminate the abandoned subprocess {proc.pid}: {e}"
                 )
             try:
                 # Bounded: a SIGKILLed child is reaped promptly, and this runs on
@@ -298,13 +311,10 @@ class LoggingSubprocess(object):
                 # runner's future rather than surface anything useful.
                 proc.wait(timeout=ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS)
             except TimeoutExpired:
-                self._logger.error(
+                self._log_error_best_effort(
                     f"Subprocess {proc.pid} did not exit within "
                     f"{ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS}s of being terminated; it is left "
-                    "unreaped.",
-                    extra=LogExtraInfo(
-                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
-                    ),
+                    "unreaped."
                 )
         # Record the exit status. Unconditional on purpose: `Popen.returncode` is
         # populated by the poll()/wait() above and is the authority either way --
@@ -316,6 +326,33 @@ class LoggingSubprocess(object):
         # could never change the outcome, and a mutation test proved it: removing
         # it left every test passing. An unfalsifiable check is worse than none.
         self._returncode = proc.returncode
+
+    def _log_error_best_effort(self, message: str) -> None:
+        """Log ``message`` at ERROR, swallowing any failure of the logging stack
+        itself.
+
+        :meth:`_reap` runs inside :meth:`run`'s ``finally``, so anything raised
+        from it replaces the exception already propagating and hides the real
+        cause. That containment was already in place for the terminate and the
+        wait, but not for the log calls between them -- and the failure mode that
+        routes us into ``_reap`` in the first place is a ``logging.Filter`` that
+        raises, which makes those calls the *likeliest* thing to raise here, not
+        the least.
+
+        Silently swallowing is normally the wrong answer. It is right here
+        because the alternative is strictly worse on both counts: the caller
+        loses the genuine exception, and the child is left unreaped.
+        """
+        try:
+            self._logger.error(
+                message,
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                ),
+            )
+        except Exception:  # noqa: BLE001
+            # Nowhere left to report this: the logger is what failed.
+            pass
 
     def notify(self) -> None:
         """The 'Notify' part of Open Job Description's subprocess cancelation method.
