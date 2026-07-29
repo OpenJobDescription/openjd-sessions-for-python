@@ -5,6 +5,7 @@ import os
 import re
 import stat
 import shlex
+import sys
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -20,12 +21,6 @@ from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model import evaluate_let_bindings
 
-# The EXPR engine's typed value. Imported concretely (rather than duck-typed
-# with getattr) so that a model API change fails loudly at import time instead
-# of silently mis-classifying every optional integer field as "omitted".
-# openjd.expr ships in the same distribution as openjd.model, which this module
-# already hard-imports unreleased API from.
-from openjd.expr import ExprValue, TypeCode
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import CancelationMethodDeferred as CancelationMethodDeferred_2023_09
 from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
@@ -130,6 +125,56 @@ def _over_range_message(description: str, value: int) -> str:
     as nonsense for a value that plainly is one -- the problem is magnitude.
     """
     return f"{description} must be at most {MAX_INT_FIELD_VALUE}, got '{value}'"
+
+
+# Why the EXPR engine's types are reached lazily, from here down:
+#
+# ``openjd.expr`` is a thin facade over the native ``openjd._openjd_rs``
+# extension, so a module-level import of it makes ``import openjd.sessions``
+# load the extension unconditionally -- including for a worker that only ever
+# runs non-EXPR templates. openjd.model deliberately avoids that (see
+# ``openjd.model._format_strings._parser``, which duplicates a constant rather
+# than import the Rust surface), and this module matches that discipline.
+#
+# The guard is on ``sys.modules`` rather than on the value's type, because
+# ``FormatString.resolve_value`` is not limited to ``str`` and ``ExprValue``:
+# a legacy (non-EXPR) whole-field interpolation returns the symbol's own value,
+# so an ``int`` reaches here on a purely non-EXPR path. Testing "not a str"
+# would therefore still load the extension for e.g. an integer-valued
+# ``timeout``.
+_EXTENSION_MODULE = "openjd._openjd_rs"
+
+
+def _is_expr_null(value: Any) -> bool:
+    """True if ``value`` is the EXPR engine's typed null.
+
+    ``ExprValue`` instances are created only by the native extension, so if
+    that extension has not been loaded then ``value`` cannot be one and the
+    answer is False without importing anything. Once it *has* been loaded --
+    i.e. an EXPR expression has been evaluated in this process -- the import
+    below is a ``sys.modules`` hit.
+
+    ``ExprValue`` is then imported concretely (rather than duck-typed with
+    ``getattr``) so that a model API change fails loudly here instead of
+    silently mis-classifying every optional integer field as "omitted".
+    """
+    if _EXTENSION_MODULE not in sys.modules:
+        return False
+    from openjd.expr import ExprValue
+
+    return isinstance(value, ExprValue) and value.is_null
+
+
+def _is_expr_list(value: Any) -> bool:
+    """True if ``value`` is an EXPR list value, whose elements flatten into
+    one argument each (RFC 0005 §1.3.2).
+
+    Only reached with an ``ExprValue`` in hand (the caller has already read
+    ``.is_null`` off it), so the extension is loaded by definition here.
+    """
+    from openjd.expr import TypeCode
+
+    return bool(value.type.type_code == TypeCode.LIST)
 
 
 def _timeout_from_seconds(seconds: int, logger: LoggerAdapter) -> Optional[timedelta]:
@@ -240,7 +285,7 @@ def resolve_action_arg_values(args: Optional[Sequence], symtab: SymbolTable) -> 
                 resolved.append(value)
             elif value.is_null:
                 continue
-            elif value.type.type_code == TypeCode.LIST:
+            elif _is_expr_list(value):
                 resolved.extend(str(element) for element in value)
             else:
                 resolved.append(str(value))
@@ -302,7 +347,7 @@ def resolve_optional_int_field(
     # to plain string resolution — correct, since typed nulls only exist
     # under EXPR whole-field semantics (Template Schemas 5.3).
     resolved_value = value.resolve_value(symtab=symtab)
-    if isinstance(resolved_value, ExprValue) and resolved_value.is_null:
+    if _is_expr_null(resolved_value):
         return None
     resolved = str(resolved_value)
     # Strict ASCII integer grammar, matching the Rust runtime's str::parse
@@ -381,7 +426,7 @@ def resolve_effective_cancelation(
         # openjd-rs runtime, which errors on any non-null, non-mode-name
         # result).
         mode_value = cancelation.mode.resolve_value(symtab=symtab)
-        if isinstance(mode_value, ExprValue) and mode_value.is_null:
+        if _is_expr_null(mode_value):
             # Null mode drops the ENTIRE cancelation object: mode is the
             # object's required discriminator, so an "omitted" mode cannot
             # leave a partial object behind. The action behaves exactly as
