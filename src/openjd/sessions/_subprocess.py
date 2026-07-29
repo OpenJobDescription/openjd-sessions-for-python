@@ -10,7 +10,7 @@ from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 from queue import Queue, Empty
-from subprocess import DEVNULL, PIPE, STDOUT, Popen, list2cmdline, run
+from subprocess import DEVNULL, PIPE, STDOUT, Popen, TimeoutExpired, list2cmdline, run
 from threading import Event, Thread
 from typing import Callable, Literal, Optional, Sequence, cast, Any
 
@@ -128,6 +128,15 @@ WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH = (
 LOG_LINE_MAX_LENGTH = 64 * 1000  # Start out with 64 KB, can increase if needed
 STDOUT_END_GRACETIME_SECONDS = 5
 
+ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS = 30
+"""How long to wait for a subprocess we are abandoning to actually exit.
+
+Only used on the path where :meth:`LoggingSubprocess.run` is leaving without
+having waited on the child -- see :meth:`LoggingSubprocess._reap`. Bounded rather
+than infinite because that path runs on the runner's pool worker: a child that
+somehow survives SIGKILL (uninterruptible I/O, say) must not hang the runner's
+future as well as leaking the process."""
+
 
 class LoggingSubprocess(object):
     """A process whose stdout/stderr lines are sent to a given Logger."""
@@ -198,8 +207,14 @@ class LoggingSubprocess(object):
         # has been set once the subprocess has completed running. Don't poll here...
         # we only want to make the returncode available after the run method has
         # completed its work.
-        if self._process is not None:
-            return self._process.returncode
+        #
+        # Bind once (same reason as notify()/terminate()): this property is read
+        # cross-thread via Session.action_status while run()'s `finally` clears
+        # `_process`, so a None check followed by a separate attribute read raised
+        # AttributeError out of a public property.
+        proc = self._process
+        if proc is not None:
+            return proc.returncode
         return self._returncode
 
     @property
@@ -256,12 +271,36 @@ class LoggingSubprocess(object):
         # Would use is_posix(), but it doesn't short-circuit mypy which then complains
         # about os.getpgid not being a valid attribute.
         if not sys.platform == "win32":
-            if not self._user or self._user.is_process_user():
-                self._sudo_child_process_group_id = os.getpgid(self._process.pid)
-            else:
-                self._sudo_child_process_group_id = find_sudo_child_process_group_id(
-                    logger=self._logger,
-                    sudo_process=self._process,
+            # A trivial command can exit before we get here. Looking up the
+            # process group of an already-reaped child raises ProcessLookupError
+            # (ESRCH), which must not fail the action: the child ran, and its
+            # exit code is still collected below.
+            try:
+                if not self._user or self._user.is_process_user():
+                    self._sudo_child_process_group_id = os.getpgid(self._process.pid)
+                else:
+                    self._sudo_child_process_group_id = find_sudo_child_process_group_id(
+                        logger=self._logger,
+                        sudo_process=self._process,
+                    )
+            except ProcessLookupError:
+                # R5-9 fix: leave this as None -- "no process group known" --
+                # rather than substituting the pid. The lookup failed *because*
+                # the process is gone, so its pid is dead: signalling it is at
+                # best a no-op, and after pid recycling on a busy host `killpg`
+                # would target an unrelated group. In the sudo branch the pid is
+                # not even the right identifier, since it belongs to `sudo` and
+                # not to the workload's process group.
+                #
+                # None is the established "unknown" value on this field --
+                # find_sudo_child_process_group_id returns it for the same reason
+                # (_linux/_sudo.py), and _posix_signal_subprocess already retries
+                # the lookup and then declines to signal when it is still unset.
+                self._sudo_child_process_group_id = None
+                self._logger.debug(
+                    f"Process {self._process.pid} exited before its process group could be "
+                    "determined; no process group will be signalled for it.",
+                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
 
         self._logger.info(
@@ -281,11 +320,81 @@ class LoggingSubprocess(object):
             if self._callback:
                 self._callback()
         finally:
-            # Explicitly delete the Popen in case it's a PopenWindowsAsUser and there's stuff to
-            # deallocate
+            # Drop this object's reference to the Popen, in case it's a
+            # PopenWindowsAsUser and there's stuff to deallocate. `proc` itself is
+            # a function local and dies with the frame; a `del proc` here would be
+            # a no-op, which is what CodeQL's "unnecessary delete" reports.
             proc = self._process
             self._process = None
-            del proc
+            # This method owns the subprocess for its whole life, and clearing
+            # `_process` is the point after which nothing else can reach it:
+            # `notify()` and `terminate()` both become permanent no-ops. So
+            # ownership has to be discharged here, on every exit path, not only on
+            # the one that runs `wait()` above.
+            #
+            # An exception out of the stdout pump used to skip both the `wait()`
+            # and the returncode capture while still clearing `_process` --
+            # leaving a live, unreapable child, no exit code, and an object
+            # reporting neither running nor failed-to-start. A raising
+            # `logging.Filter` reaches this path, and installing one is a
+            # supported use of this library.
+            self._reap(proc)
+
+    def _reap(self, proc: Optional[Popen]) -> None:
+        """Make sure ``proc`` is dead and reaped, and that its exit code is
+        recorded, however :meth:`run` is leaving.
+
+        A no-op on the normal path, where ``run`` has already waited and captured
+        the returncode.
+        """
+        if proc is None:
+            return
+        if proc.poll() is None:
+            # Still running, and we are on our way out: nothing will be able to
+            # signal it once `_process` is cleared. Terminating is the lesser
+            # evil -- the alternative is an orphan holding the session directory
+            # and, for a cross-user action, running as the job user with no
+            # owner.
+            self._logger.error(
+                f"Abandoning the subprocess {proc.pid} before it exited; terminating it so it "
+                "is not orphaned.",
+                extra=LogExtraInfo(
+                    openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                ),
+            )
+            try:
+                self._terminate_process(proc)
+            except Exception as e:  # noqa: BLE001
+                self._logger.error(
+                    f"Could not terminate the abandoned subprocess {proc.pid}: {e}",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
+            try:
+                # Bounded: a SIGKILLed child is reaped promptly, and this runs on
+                # the pool worker, so an unbounded wait here would hang the
+                # runner's future rather than surface anything useful.
+                proc.wait(timeout=ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS)
+            except TimeoutExpired:
+                self._logger.error(
+                    f"Subprocess {proc.pid} did not exit within "
+                    f"{ABANDONED_PROCESS_REAP_TIMEOUT_SECONDS}s of being terminated; it is left "
+                    "unreaped.",
+                    extra=LogExtraInfo(
+                        openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
+                    ),
+                )
+        # Record the exit status. Unconditional on purpose: `Popen.returncode` is
+        # populated by the poll()/wait() above and is the authority either way --
+        # on the normal path `run` has already assigned the same value, and on the
+        # abandoned path this is the only assignment. It is None only if the child
+        # outlived the terminate timeout, where "unknown" is the honest answer.
+        #
+        # An `if self._returncode is None:` guard here would read as defensive but
+        # could never change the outcome, and a mutation test proved it: removing
+        # it left every test passing. An unfalsifiable check is worse than none.
+        self._returncode = proc.returncode
 
     def notify(self) -> None:
         """The 'Notify' part of Open Job Description's subprocess cancelation method.
@@ -297,11 +406,17 @@ class LoggingSubprocess(object):
         TODO: Send the signal to every direct and transitive child of the parent
         process.
         """
-        if self._process is not None and self._process.poll() is None:
+        # Review22-F4 fix: Bind _process once. Double-load is a TOCTOU race:
+        # the None check and poll() call read _process separately, allowing
+        # another thread to set it to None between them.
+        proc = self._process
+        if proc is not None and proc.poll() is None:
             if is_posix():
-                self._posix_signal_subprocess(signal_name="term")
+                # R4-G8 fix: Pass the bound proc to helpers to avoid reloading
+                # self._process, which could be None by the time the helper runs.
+                self._posix_signal_subprocess(proc, signal_name="term")
             else:
-                self._windows_notify_subprocess()
+                self._windows_notify_subprocess(proc)
 
     def terminate(self) -> None:
         """The 'Terminate' part of Open Job Description's subprocess cancelation method.
@@ -313,15 +428,26 @@ class LoggingSubprocess(object):
         TODO: Send the signal to every direct and transitive child of the parent
         process.
         """
-        if self._process is not None and self._process.poll() is None:
-            if is_posix():
-                self._posix_signal_subprocess(signal_name="kill")
-            else:
-                self._logger.info(
-                    f"INTERRUPT: Start killing the process tree with the root pid: {self._process.pid}",
-                    extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
-                )
-                kill_windows_process_tree(self._logger, self._process.pid, signal_subprocesses=True)
+        # Review22-F4 fix: Bind _process once. See notify() for rationale.
+        proc = self._process
+        if proc is not None and proc.poll() is None:
+            self._terminate_process(proc)
+
+    def _terminate_process(self, process: Popen) -> None:
+        """Deliver the terminate signal to ``process``.
+
+        Split out of :meth:`terminate` so that :meth:`run`'s ``finally`` can reach
+        it after ``self._process`` has been cleared -- it takes the Popen as an
+        argument for the same reason the platform helpers do (R4-G8).
+        """
+        if is_posix():
+            self._posix_signal_subprocess(process, signal_name="kill")
+        else:
+            self._logger.info(
+                f"INTERRUPT: Start killing the process tree with the root pid: {process.pid}",
+                extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
+            )
+            kill_windows_process_tree(self._logger, process.pid, signal_subprocesses=True)
 
     def _start_subprocess(self) -> Optional[Popen]:
         """Helper invoked by self.run() to start up the subprocess."""
@@ -448,10 +574,19 @@ class LoggingSubprocess(object):
 
         Then the thread exits and is cleaned up automatically by the python garbage collector.
         """
-        assert self._process
-        stream = self._process.stdout
-        # Convince type checker that stdout is not None
-        assert stream is not None
+        # R5-6: explicit raises rather than `assert`. This method owns the
+        # subprocess's output stream for the whole life of the child, and it runs
+        # on the pool worker; stripping these under `python -O` would turn a
+        # legible "called with no process" into an AttributeError on None from
+        # inside the pump loop.
+        process = self._process
+        if process is None:  # pragma: no cover - defensive
+            raise RuntimeError(
+                "Internal error: cannot forward stdout before the subprocess has been created."
+            )
+        stream = process.stdout
+        if stream is None:  # pragma: no cover - defensive
+            raise RuntimeError("Internal error: the subprocess was created without a stdout pipe.")
 
         exit_event = Event()
 
@@ -505,7 +640,7 @@ class LoggingSubprocess(object):
             except Empty:
                 pass  # queue.get timed out. This means the subprocess does not print much to STDOUT. Just continue.
 
-            if self._process.poll() is not None:  # The main command exited.
+            if process.poll() is not None:  # The main command exited.
                 if process_exit_time is None:
                     process_exit_time = time.monotonic()
                 elif (time.monotonic() - process_exit_time) < 1:
@@ -556,20 +691,20 @@ class LoggingSubprocess(object):
 
     def _posix_signal_subprocess(
         self,
+        process: Popen,
         signal_name: Literal["term", "kill"],
     ) -> None:
-        """Send a given named signal to the subprocess."""
+        """Send a given named signal to the subprocess.
+
+        Args:
+            process: The Popen object to signal. Passed from caller to avoid
+                reloading self._process, which could be None by now (R4-G8 fix).
+            signal_name: Either "term" for SIGTERM or "kill" for SIGKILL.
+        """
 
         # Hint to mypy to not raise module attribute errors (e.g. missing os.getpgid)
         if sys.platform == "win32":
             raise NotImplementedError("This method is for POSIX hosts only")
-
-        # We can run into a race condition where the process exits (and another thread sets self._process to None)
-        # before the cancellation happens, so we swap to a local variable to ensure a cancellation that is not needed,
-        # does not raise an exception here.
-        process = self._process
-        # Convince the type checker that accessing process is okay
-        assert process is not None
 
         # Note: A limitation of this implementation is that it will only sigkill
         # processes that are in the same process-group as the command that we ran.
@@ -700,11 +835,13 @@ class LoggingSubprocess(object):
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
 
-    def _windows_notify_subprocess(self) -> None:
-        """Sends a CTRL_BREAK_EVENT signal to the subprocess"""
-        # Convince the type checker that accessing _process is okay
-        assert self._process is not None
+    def _windows_notify_subprocess(self, process: Popen) -> None:
+        """Sends a CTRL_BREAK_EVENT signal to the subprocess.
 
+        Args:
+            process: The Popen object to signal. Passed from caller to avoid
+                reloading self._process, which could be None by now (R4-G8 fix).
+        """
         # CTRL-C handler is disabled by default when CREATE_NEW_PROCESS_GROUP is passed.
         # We send CTRL-BREAK as handler for it cannnot be disabled.
         # https://learn.microsoft.com/en-us/windows/console/ctrl-c-and-ctrl-break-signals
@@ -712,18 +849,18 @@ class LoggingSubprocess(object):
         # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa#remarks
         # https://stackoverflow.com/questions/35772001/how-to-handle-a-signal-sigint-on-a-windows-os-machine/35792192#35792192
         self._logger.info(
-            f"INTERRUPT: Sending CTRL_BREAK_EVENT to {self._process.pid}",
+            f"INTERRUPT: Sending CTRL_BREAK_EVENT to {process.pid}",
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
 
-        # _process will be running in new console, we run another process to attach to it and send signal
+        # process will be running in new console, we run another process to attach to it and send signal
         cmd = [
             # When running in a service context, we want to call the non-service Python binary
             sys.executable.lower().replace("pythonservice.exe", "python.exe"),
             str(WINDOWS_SIGNAL_SUBPROC_SCRIPT_PATH),
-            str(self._process.pid),
+            str(process.pid),
         ]
-        process = LoggingSubprocess(
+        signal_subprocess = LoggingSubprocess(
             logger=self._logger,
             args=cmd,
             encoding=self._encoding,
@@ -734,11 +871,11 @@ class LoggingSubprocess(object):
         )
 
         # Blocking call
-        process.run()
+        signal_subprocess.run()
 
-        if process.exit_code != 0:
+        if signal_subprocess.exit_code != 0:
             self._logger.warning(
-                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {self._process.pid}",
+                f"Failed to send signal 'CTRL_BREAK_EVENT' to subprocess {process.pid}",
                 extra=LogExtraInfo(
                     openjd_log_content=LogContent.PROCESS_CONTROL | LogContent.EXCEPTION_INFO
                 ),

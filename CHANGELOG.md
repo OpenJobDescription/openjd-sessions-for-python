@@ -1,3 +1,32 @@
+## 0.10.11 (2026-07-28)
+
+
+### Features
+* RFC 0008 environment wrap actions (#333) ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* RFC 0008 environment wrap actions with EXPR runtime parity Implement the WRAP_ACTIONS extension (RFC 0008) in the v0 session, with EXPR (RFC 0007) runtime parity with openjd-rs: - Wrap-hook dispatch: an environment's onWrapEnvEnter / onWrapTaskRun / onWrapEnvExit runs in place of an inner environment's onEnter/onExit or a step's onRun, with WrappedAction.Command/Args/Environment/ Timeout/Cancelation.* and WrappedEnv.Name/WrappedStep.Name injected. At most one wrap-defining environment may be active (enforced at enter time). - Two strictly separated scopes (openjd-rs #277 parity): the wrapped action's values resolve against the INNER entity's own scope (its script-level let bindings and embedded files, materialized in runner order: paths, lets, contents); the hook script resolves against the wrap environment's own scope (its lets, evaluated by the runner) plus the WrappedAction.* overlay. Same-named lets on the two sides each resolve to their own value. - WrappedAction.Environment carries every session-defined variable: openjd_env definitions and entered environments' declarative variables: maps; host-inherited variables are excluded. - EXPR runtime: runner-evaluated script-level let bindings ordered around embedded-file materialization (paths before lets, contents after), typed symbol tables, enter_environment(extra_let_bindings=...) so a step's environments see the step-level lets. - Cancelation: WrappedAction.Cancelation.Mode/NotifyPeriodInSeconds resolved through the enforcement path, with Template Schemas 5.3.2 defaults (120s task onRun / 30s otherwise). ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+
+### Bug Fixes
+* Address review findings — let-binding crash paths, Step.Name, perf ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* RFC 0005/0008 typed-arg and null-vs-empty parity with openjd-rs ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Close review findings on failure paths, timeout bounds and typing ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Narrow Optional script before setattr in wrap cancelation test ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Close wrap-hook scope gap, cancel races, and path-mapping parity ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Make wrap and URI tests host-independent on Windows ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Do not fail an action whose subprocess exits immediately ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Serialize the pending-cancel handoff against action launch ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* **concurrency**: Close race windows in cancel and completion paths ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* **concurrency**: Close round-4 review findings (R4-1, R4-5, R4-6, R4-G7, R4-G8) ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Close round-5 review findings R5-1 through R5-9 ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Close defects introduced by the round-5 fix commit ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* **wrap-actions**: Isolate a wrap hook's scope from the wrapped entity's ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* **subprocess**: Own the child on every exit path from run() ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Report chown and pgrep failures through the paths that handle them ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Silence Windows mypy on POSIX-only os and signal attributes ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Do not open a directory descriptor on Windows ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* Address the live CodeQL alerts on this PR ([`df96902`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/df96902d1721637c99aab6ec460100e11ed0ddb9))
+* poll through CANCELING state to deliver terminal callback (#331) ([`d57e477`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/d57e4775518c0659a0749de50f995ef383c8a718))
+
+
 ## 0.10.10 (2026-07-03)
 
 

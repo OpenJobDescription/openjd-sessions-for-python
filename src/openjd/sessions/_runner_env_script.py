@@ -6,25 +6,28 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from openjd.model import SymbolTable
-from openjd.model.v2023_09 import Action as Action_2023_09
-from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
-from openjd.model.v2023_09 import (
-    CancelationMethodNotifyThenTerminate as CancelationMethodNotifyThenTerminate_2023_09,
-)
 from openjd.model.v2023_09 import EnvironmentScript as EnvironmentScript_2023_09
-from ._embedded_files import EmbeddedFilesScope
+from ._embedded_files import EmbeddedFilesScope, _FileRecord
 from ._logging import log_subsection_banner
 from ._runner_base import (
-    CancelMethod,
-    NotifyCancelMethod,
     ScriptRunnerBase,
     ScriptRunnerState,
-    TerminateCancelMethod,
 )
 from ._session_user import SessionUser
-from ._types import ActionModel, ActionState, EnvironmentScriptModel
+from ._types import (
+    ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS,
+    ActionModel,
+    ActionState,
+    EnvironmentScriptModel,
+)
 
-__all__ = ("EnvironmentScriptRunner",)
+__all__ = ("EnvironmentScriptRunner", "WRAP_HOOK_ACTION_NAMES")
+
+
+WRAP_HOOK_ACTION_NAMES = ("onWrapEnvEnter", "onWrapTaskRun", "onWrapEnvExit")
+"""The three RFC 0008 wrap-hook action names an Environment's script may
+define. Single-sourced here for the runner's hook dispatch and the Session's
+wrap-environment lookup/validation."""
 
 
 _ENV_EXIT_DEFAULT_TIMEOUT = timedelta(minutes=5)
@@ -55,6 +58,13 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
     """If defined, then this is the action that is currently running, or was last run.
     """
 
+    _preallocated_file_records: Optional[list[_FileRecord]]
+    """RFC 0008: the script's embedded-file records with on-disk paths already
+    allocated by the Session (a wrap environment's files are allocated once
+    and reused across wrap-hook invocations). When set, the runner skips path
+    allocation and only re-resolves/rewrites the file contents.
+    """
+
     def __init__(
         self,
         *,
@@ -72,6 +82,9 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         symtab: SymbolTable,
         # Directory within which files/attachments should be materialized
         session_files_directory: Path,
+        # RFC 0008: pre-allocated embedded-file records to reuse (see
+        # _preallocated_file_records)
+        preallocated_file_records: Optional[list[_FileRecord]] = None,
     ):
         """
         Arguments (from base class):
@@ -91,6 +104,11 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 Script's scope (exluding any symbols defined within the Step Script itself).
             session_files_directory (Path): The location in the filesystem where embedded files will
                 be materialized.
+            preallocated_file_records (Optional[list[_FileRecord]]): RFC 0008: the script's
+                embedded-file records with on-disk paths already allocated by the Session
+                (a wrap environment's files are allocated once and reused across wrap-hook
+                invocations). When given, the runner skips path allocation and only
+                re-resolves/rewrites the file contents.
         """
         super().__init__(
             logger=logger,
@@ -104,6 +122,7 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
         self._symtab = symtab
         self._session_files_directory = session_files_directory
         self._action = None
+        self._preallocated_file_records = preallocated_file_records
 
         if self._environment_script and not isinstance(
             self._environment_script, EnvironmentScript_2023_09
@@ -120,7 +139,13 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
 
         log_subsection_banner(self._logger, "Phase: Setup")
 
-        # Write any embedded files to disk
+        let_bindings = (
+            self._environment_script.let if self._environment_script is not None else None
+        )
+        # Write any embedded files to disk. File paths are allocated before
+        # the script's EXPR `let` bindings evaluate (so bindings can reference
+        # Env.File.*), and contents are written after (so `data` can reference
+        # let-bound values) — mirroring the openjd-rs runner.
         if (
             self._environment_script is not None
             and self._environment_script.embeddedFiles is not None
@@ -132,15 +157,26 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
                 self._environment_script.embeddedFiles,
                 self._session_files_directory,
                 symtab,
+                let_bindings=let_bindings,
+                preallocated_records=self._preallocated_file_records,
             )
             if self.state == ScriptRunnerState.FAILED:
+                return
+        elif let_bindings:
+            symtab = SymbolTable(source=self._symtab)
+            if not self._apply_let_bindings_or_fail(symtab, let_bindings):
                 return
         else:
             symtab = self._symtab
 
         # Construct the command by evalutating the format strings in the command
         self._action = action
-        self._run_action(self._action, symtab, default_timeout=default_timeout)
+        self._run_action(
+            self._action,
+            symtab,
+            default_timeout=default_timeout,
+            default_notify_period_seconds=ENV_ACTION_DEFAULT_NOTIFY_PERIOD_SECONDS,
+        )
 
     def enter(self) -> None:
         """Run the Environment's onEnter action."""
@@ -181,34 +217,69 @@ class EnvironmentScriptRunner(ScriptRunnerBase):
             default_timeout=_ENV_EXIT_DEFAULT_TIMEOUT,
         )
 
+    def wrap_task_run(self) -> None:
+        """Run the Environment's onWrapTaskRun action, wrapping a task's onRun."""
+        self._run_wrap_hook("onWrapTaskRun")
+
+    def wrap_env_enter(self) -> None:
+        """RFC 0008: run this Environment's ``onWrapEnvEnter`` action,
+        substituting it for an inner environment's ``onEnter``."""
+        self._run_wrap_hook("onWrapEnvEnter")
+
+    def wrap_env_exit(self) -> None:
+        """RFC 0008: run this Environment's ``onWrapEnvExit`` action,
+        substituting it for an inner environment's ``onExit``."""
+        self._run_wrap_hook("onWrapEnvExit", default_timeout=_ENV_EXIT_DEFAULT_TIMEOUT)
+
+    def _run_wrap_hook(self, hook: str, *, default_timeout: Optional[timedelta] = None) -> None:
+        """Common dispatch for the three RFC 0008 wrap hooks. ``hook`` is
+        one of ``onWrapEnvEnter``, ``onWrapTaskRun``, or ``onWrapEnvExit``."""
+        if hook not in WRAP_HOOK_ACTION_NAMES:
+            # Distinguish a caller typo from model skew: the hasattr check
+            # below would otherwise report a mistyped hook name as an
+            # incompatible openjd-model.
+            raise ValueError(f"Unknown wrap hook name: {hook}")
+        if self.state != ScriptRunnerState.READY:
+            raise RuntimeError("This cannot be used to run a second subprocess.")
+
+        # For the type checker
+        if self._environment_script is not None:
+            assert isinstance(self._environment_script, EnvironmentScript_2023_09)
+
+        action = None
+        if self._environment_script is not None:
+            actions = self._environment_script.actions
+            # Distinguish "the model has no such field" from "the hook is not
+            # declared". Only the latter is a legitimate no-op; the former means
+            # the model's field was renamed, and a getattr default would silently
+            # report SUCCESS *without running the hook*.
+            if not hasattr(actions, hook):
+                raise RuntimeError(
+                    f"This Environment's actions do not support the wrap hook '{hook}'. "
+                    "The installed openjd-model may be incompatible with this runtime."
+                )
+            action = getattr(actions, hook)
+        if action is None:
+            self._state_override = ScriptRunnerState.SUCCESS
+            # Nothing to do, no wrap action defined. Call the callback
+            # to inform the caller that the run is complete, and then exit.
+            if self._callback is not None:
+                self._callback(ActionState.SUCCESS)
+            return
+
+        self._run_env_action(action, default_timeout=default_timeout)
+
     def cancel(
         self, *, time_limit: Optional[timedelta] = None, mark_action_failed: bool = False
     ) -> None:
-        if self._action is None:
-            # Nothing to do.
-            return
-
-        # For the type checker
-        assert isinstance(self._action, Action_2023_09)
-
-        method: CancelMethod
-        if (
-            self._action.cancelation is None
-            or self._action.cancelation.mode == CancelationMode_2023_09.TERMINATE
-        ):
-            # Note: Default cancelation for a 2023-09 Step Script is Terminate
-            method = TerminateCancelMethod()
-        else:
-            model_cancel_method = self._action.cancelation
-            # For the type checker
-            assert isinstance(model_cancel_method, CancelationMethodNotifyThenTerminate_2023_09)
-            if model_cancel_method.notifyPeriodInSeconds is None:
-                # Default grace period is 30s for a 2023-09 Environment Script's notify cancel
-                method = NotifyCancelMethod(terminate_delay=timedelta(seconds=30))
-            else:
-                method = NotifyCancelMethod(
-                    terminate_delay=timedelta(seconds=model_cancel_method.notifyPeriodInSeconds)  # type: ignore[arg-type]
-                )
-
-        # Note: If the given time_limit is less than that in the method, then the time_limit will be what's used.
-        self._cancel(method, time_limit, mark_action_failed)
+        # Always route through the base class handoff, even before _action is
+        # assigned. A cancel landing during environment-action setup (embedded-
+        # file writes, let evaluation) must be recorded in _pending_cancel and
+        # applied when the subprocess launches — F1 fix: the old `_action is
+        # None` guard returned early without entering the pending-cancel path,
+        # losing the cancel entirely during the setup window.
+        #
+        # _cancel_with_resolved_method handles the pre-launch case: it records
+        # the request in _pending_cancel when the subprocess hasn't started,
+        # and _run applies it once the child exists.
+        self._cancel_with_resolved_method(time_limit, mark_action_failed)

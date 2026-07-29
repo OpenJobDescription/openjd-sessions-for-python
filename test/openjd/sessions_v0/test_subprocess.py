@@ -18,8 +18,10 @@ import openjd
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._subprocess import LoggingSubprocess
+from openjd.sessions import _subprocess as subprocess_impl_mod
 
 from .conftest import (
+    serial_process,
     build_logger,
     collect_queue_messages,
     has_posix_target_user,
@@ -229,6 +231,7 @@ class TestLoggingSubprocessSameUser:
         # THEN
         callback_mock.assert_called_once()
 
+    @serial_process
     def test_notify_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
     ) -> None:
@@ -270,6 +273,7 @@ class TestLoggingSubprocessSameUser:
         assert "Log from test 9" not in all_messages
         assert subproc.exit_code != 0
 
+    @serial_process
     def test_terminate_ends_process(
         self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
     ) -> None:
@@ -316,6 +320,7 @@ class TestLoggingSubprocessSameUser:
         os.environ.get("CODEBUILD_BUILD_ID", None) is not None,
         reason="This test is failing exclusively in codebuild; unblocking, and will root cause later.",
     )
+    @serial_process
     def test_terminate_ends_process_tree(
         self,
         message_queue: SimpleQueue,
@@ -1277,3 +1282,61 @@ class TestMacOSShimInterpreter:
 
         # THEN
         assert not subprocess_mod._other_users_can_execute(str(tmp_path / "no-such-python"))
+
+
+class TestFastExitingChild:
+    """A trivial command can exit before the runner finishes recording it.
+
+    Looking up an already-reaped child's process group raises ProcessLookupError
+    on posix, and psutil raises NoSuchProcess when walking it on Windows. Neither
+    may fail the action: the child ran, and its exit code is still collected.
+    """
+
+    @pytest.mark.skipif(not is_posix(), reason="posix-only: process groups")
+    @pytest.mark.usefixtures("message_queue", "queue_handler")
+    def test_getpgid_lookup_failure_does_not_fail_the_action(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+    ) -> None:
+        # GIVEN: the child is gone by the time its process group is looked up
+        logger = build_logger(queue_handler)
+        callback = MagicMock()
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[sys.executable, "-c", "print('DONE')"],
+            callback=callback,
+        )
+
+        with patch.object(
+            subprocess_impl_mod.os, "getpgid", side_effect=ProcessLookupError(3, "No such process")
+        ):
+            # WHEN
+            subproc.run()
+
+        # THEN: the action completed normally
+        assert subproc.exit_code == 0
+        assert subproc.failed_to_start is False
+        messages = collect_queue_messages(message_queue)
+        assert "DONE" in messages
+
+    @pytest.mark.skipif(not is_windows(), reason="Windows-only: psutil process walk")
+    def test_process_tree_walk_tolerates_exited_process(self) -> None:
+        # GIVEN: a process that disappears between discovery and the walk
+        from psutil import NoSuchProcess
+
+        from openjd.sessions._windows_process_killer import _suspend_process_tree
+
+        logger = MagicMock()
+        process = MagicMock()
+        process.pid = 4321
+        process.suspend.side_effect = NoSuchProcess(4321)
+        process.children.side_effect = NoSuchProcess(4321)
+        cannot_suspend: list = []
+        all_processes: list = []
+
+        # WHEN / THEN: no exception escapes
+        _suspend_process_tree(
+            logger, process, all_processes, cannot_suspend, suspend_subprocesses=True
+        )
+        assert process in all_processes

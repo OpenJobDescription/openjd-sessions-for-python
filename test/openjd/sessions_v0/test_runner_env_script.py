@@ -35,13 +35,13 @@ from openjd.model.v2023_09 import (
     DataString as DataString_2023_09,
 )
 from openjd.sessions import ActionState
-from openjd.sessions._runner_base import ScriptRunnerState
-from openjd.sessions._runner_env_script import (
+from openjd.sessions._runner_base import (
     CancelMethod,
-    EnvironmentScriptRunner,
     NotifyCancelMethod,
+    ScriptRunnerState,
     TerminateCancelMethod,
 )
+from openjd.sessions._runner_env_script import EnvironmentScriptRunner
 
 from .conftest import build_logger, collect_queue_messages
 
@@ -387,7 +387,9 @@ class TestEnvironmentScriptRunner:
         # The lower-level process runners have been thoroughly tested for cancel's
         # functionality, so this seems fine.
 
-        with patch.object(EnvironmentScriptRunner, "_run_action"):
+        # Patch _run (not _run_action): the effective cancel method is now
+        # resolved by _run_action at launch time and consumed by cancel().
+        with patch.object(EnvironmentScriptRunner, "_run"):
             with patch.object(EnvironmentScriptRunner, "_cancel") as mock_cancel:
                 # GIVEN
                 script = EnvironmentScript_2023_09(
@@ -409,6 +411,10 @@ class TestEnvironmentScriptRunner:
                     session_files_directory=tmp_path,
                 )
                 runner.enter()
+                # _run is patched out, so stand in for the subprocess it would have
+                # created: a cancel that arrives before one exists is deferred
+                # rather than applied (see ScriptRunnerBase._pending_cancel).
+                runner._process = MagicMock()
                 time_limit = timedelta(30)
 
                 # WHEN
@@ -468,6 +474,7 @@ class TestEnvironmentScriptRunner:
             action,
             symtab,
             default_timeout=default_timeout,
+            default_notify_period_seconds=30,
         )
 
     def test_exit_uses_default_timeout(
