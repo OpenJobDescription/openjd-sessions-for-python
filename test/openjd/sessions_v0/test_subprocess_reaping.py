@@ -811,3 +811,86 @@ class TestTheKillIsNotGatedBehindItsOwnLog:
             'INTERRUPT: Sending signal "kill" to process group' in line for line in lines
         ), lines
         assert proc.exit_code == -signal.SIGKILL  # type: ignore
+
+
+@serial_process
+@pytest.mark.skipif(not is_posix(), reason="pid liveness/reap checks are POSIX-only here")
+class TestObservableStateOnTheAbandonedPath:
+    """Two things the ownership fix changed, or deliberately left alone, that no
+    test asserted either way.
+
+    Neither is a defect. They are pinned because they are *observable* -- one is a
+    public property, the other a consumer callback -- and an unasserted observable
+    is one a later change can flip without anyone noticing.
+    """
+
+    def test_is_running_reports_false_once_the_child_is_abandoned(self, python_exe: str) -> None:
+        """`is_running` is `_has_started and _process is not None`.
+
+        Before the ownership fix, an abort in the startup window left `_process`
+        set forever, so this property reported **True** for a subprocess nobody
+        would ever wait on -- indefinitely, since only `run()` clears it. Now the
+        `finally` clears it, so the answer is False and it is accurate.
+        """
+        # GIVEN a child abandoned by a raising filter in the startup window
+        exploder = _FilterRaisingOnAny("Command started as pid")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(logger=logger, args=[python_exe, "-c", _LONG_CHILD])
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        # THEN: it does not claim to be running
+        assert proc.is_running is False
+        # ...and the two inputs to that answer are what we think they are, so a
+        # future change to either is visible here.
+        assert proc.has_started is True
+        assert proc._process is None
+        # Not a failure to *start*: the child did start, and then was abandoned.
+        assert proc.failed_to_start is False
+        assert _wait_gone(proc.pid), f"child {proc.pid} was left running"
+
+    def test_the_subprocess_callback_is_not_invoked_on_the_abandoned_path(
+        self, python_exe: str
+    ) -> None:
+        """Deliberate, and pinned so it stays deliberate.
+
+        `run()` invokes its callback on the two paths that end normally: a failure
+        to start, and a completed `wait()`. The abandoned path does neither, even
+        though `_reap` now records a real exit code. That is correct rather than an
+        omission: `ScriptRunnerBase` registers `_on_process_exit` as the future's
+        done-callback, so the Session is notified through the future's exception
+        regardless, and invoking this callback too would notify twice for one
+        action.
+        """
+        # GIVEN a child abandoned by a raising filter, and a callback
+        callback = MagicMock()
+        exploder = _FilterRaisingOnAny("Command started as pid")
+        with logger_carrying(exploder) as logger:
+            proc = LoggingSubprocess(
+                logger=logger, args=[python_exe, "-c", _LONG_CHILD], callback=callback
+            )
+            with pytest.raises(RuntimeError, match="blew up"):
+                proc.run()
+
+        # THEN: not invoked from this path...
+        callback.assert_not_called()
+        # ...even though a terminal exit code was recorded.
+        assert proc.exit_code == -signal.SIGKILL  # type: ignore
+        assert _wait_gone(proc.pid), f"child {proc.pid} was left running"
+
+    def test_the_subprocess_callback_is_still_invoked_on_a_healthy_run(
+        self, message_queue: SimpleQueue, queue_handler: QueueHandler, python_exe: str
+    ) -> None:
+        """Negative control: the assertion above must not be satisfiable by a
+        callback that is simply never invoked at all."""
+        # GIVEN / WHEN
+        callback = MagicMock()
+        logger = build_logger(queue_handler)
+        proc = LoggingSubprocess(
+            logger=logger, args=[python_exe, "-c", _SHORT_CHILD], callback=callback
+        )
+        proc.run()
+
+        # THEN
+        callback.assert_called_once_with()
+        assert proc.exit_code == 7
