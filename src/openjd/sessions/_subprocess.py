@@ -262,7 +262,7 @@ class LoggingSubprocess(object):
             self._log_subproc_stdout()  # Blocking
             proc.wait()
             self._returncode = proc.returncode
-            self._log_returncode()
+            self._log_returncode(proc)
             if self._callback:
                 self._callback()
         finally:
@@ -352,6 +352,14 @@ class LoggingSubprocess(object):
         Silently swallowing is normally the wrong answer. It is right here
         because the alternative is strictly worse on both counts: the caller
         loses the genuine exception, and the child is left unreaped.
+
+        Catches ``Exception``, deliberately not ``BaseException``. A
+        ``KeyboardInterrupt`` or ``SystemExit`` must still propagate, and neither
+        is reachable here anyway: ``run()`` executes on a ``ThreadPoolExecutor``
+        worker, and CPython delivers those to the main thread. The kill is
+        therefore not ordered around this call -- an ordering that would only
+        matter for a ``BaseException`` was tried, proved inert by mutation
+        testing, and dropped rather than shipped unfalsifiable.
         """
         try:
             self._logger.error(
@@ -626,13 +634,20 @@ class LoggingSubprocess(object):
                 line, extra=LogExtraInfo(openjd_log_content=LogContent.COMMAND_OUTPUT)
             )
 
-    def _log_returncode(self):
-        """Logs the return code of the exited subprocess"""
+    def _log_returncode(self, proc: Popen) -> None:
+        """Logs the return code of the exited subprocess.
+
+        Takes the ``Popen`` rather than reading ``self._process``, for the same
+        reason ``notify()``/``terminate()``/``exit_code`` bind it once: this runs
+        on the pool worker while ``run()``'s ``finally`` is the thing that clears
+        the attribute, and an ``AttributeError`` on ``None`` here would unwind
+        ``run()`` before the child was waited on.
+        """
         if self._returncode is not None:
             # Print out the signed representation of returncodes that would be negative as a 32-bit signed integer
             if self._returncode < 0x7FFFFFFF:
                 self._logger.info(
-                    f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex)",
+                    f"Process pid {proc.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex)",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
             else:
@@ -642,7 +657,7 @@ class LoggingSubprocess(object):
                     return int.from_bytes(b, "big", signed=True)
 
                 self._logger.info(
-                    f"Process pid {self._process.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex) / {_tosigned(self._returncode)} (signed)",
+                    f"Process pid {proc.pid} exited with code: {self._returncode} (unsigned) / {hex(self._returncode)} (hex) / {_tosigned(self._returncode)} (signed)",
                     extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
                 )
 
