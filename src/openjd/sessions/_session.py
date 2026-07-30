@@ -1653,6 +1653,23 @@ class Session(object):
         evaluation. Returns an empty list when the session has no rules (the
         session is still host scope), or ``None`` when the engine bindings
         are unavailable (pre-EXPR openjd-model)."""
+        if not self._path_mapping_rules:
+            # Nothing to convert, so no engine objects are needed and the import
+            # below is pure cost. Returning the empty list here is exactly what
+            # the loop produced anyway, and it keeps a session that never
+            # evaluates an EXPR expression from loading the native extension at
+            # all -- ``import openjd.expr`` is a facade over
+            # ``openjd._openjd_rs``, and ``__init__`` calls this
+            # unconditionally, so without this the deferral won by the
+            # module-level import removal was only from import time to
+            # first-session time.
+            #
+            # ``[]`` and not ``None``: the session is still host scope, so
+            # ``apply_path_mapping()`` must remain available with an empty rule
+            # set. ``SymbolTable.expr_host_rules`` stores this untouched
+            # (``Optional[list[Any]]``) and only crosses into Rust at evaluation
+            # time, so seeding ``[]`` costs nothing here.
+            return []
         try:
             from openjd.expr import PathFormat as ExprPathFormat
             from openjd.expr import PathMappingRule as ExprPathMappingRule
