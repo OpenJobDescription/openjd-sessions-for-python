@@ -283,6 +283,40 @@ class TestLetBoundListInArgs:
         # whitespace preserved — not rendered as a single stringified list.
         assert resolved == ["front", "alpha beta", "gamma", "back"]
 
+    def test_let_bound_scalar_becomes_exactly_one_argument(self) -> None:
+        """The counterpart to list flattening: a non-null, non-list typed value
+        is ONE argument and must not be flattened.
+
+        Pins the scalar arm of the typed-argument dispatch, which list and null
+        coverage alone leaves open. A scalar ``ExprValue`` is not iterable, so
+        misclassifying one as a list raises TypeError out of the runner -- and
+        with only list/null cases covered, nothing noticed.
+        """
+        # GIVEN: a step script binding an int and a string with embedded
+        # whitespace, both consumed as whole-field argument expressions.
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        script = StepScript_2023_09.model_validate(
+            {
+                "let": ["count = 7", "label = 'solo value'"],
+                "actions": {
+                    "onRun": {
+                        "command": "echo",
+                        "args": ["front", "{{ count }}", "{{ label }}", "back"],
+                    }
+                },
+            },
+            context=context,
+        )
+
+        # WHEN
+        symtab = SymbolTable()
+        apply_let_bindings(symtab=symtab, let_bindings=script.let or [])
+        resolved = resolve_action_arg_values(script.actions.onRun.args, symtab)
+
+        # THEN: one argument each -- the int rendered, and the string kept whole
+        # rather than split on its space or flattened character-wise.
+        assert resolved == ["front", "7", "solo value", "back"]
+
 
 # ---------------------------------------------------------------------------
 # The mirror of the case above (RFC 0005 §1.3.2, the LEGACY path): a legacy
