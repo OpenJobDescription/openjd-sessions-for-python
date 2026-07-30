@@ -608,6 +608,8 @@ class TestStartupLoggingDoesNotAbandonTheChild:
                 try:
                     os.waitpid(pid, 0)
                 except ChildProcessError:
+                    # Already reaped between the liveness check and here -- the
+                    # desired end state, so there is nothing left to wait for.
                     pass
 
     @pytest.mark.skipif(not is_posix(), reason="pid liveness/reap checks are POSIX-only here")
