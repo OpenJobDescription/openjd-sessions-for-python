@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
 from threading import Lock, Timer
 from typing import Any, Callable, Literal, Optional, Sequence, Type, cast
@@ -145,47 +145,59 @@ def _over_range_message(description: str, value: int) -> str:
 _EXTENSION_MODULE = "openjd._openjd_rs"
 
 
-def _as_expr_value(value: Any) -> Optional[Any]:
-    """``value`` if it is the EXPR engine's typed value, else ``None``.
+class _ExprKind(Enum):
+    """How a resolved format-string value relates to the EXPR type system."""
+
+    NOT_EXPR = auto()
+    """Not an ``ExprValue``: a plain string, or a legacy interpolation's own
+    value. Resolves to its string form; typed semantics do not apply."""
+
+    NULL = auto()
+    """The engine's typed null -- "field omitted" / "argument skipped"."""
+
+    LIST = auto()
+    """A list, whose elements flatten to one argument each (RFC 0005 §1.3.2)."""
+
+    SCALAR = auto()
+    """Any other typed value; resolves to its string form."""
+
+
+def _classify_expr_value(value: Any) -> _ExprKind:
+    """Classify ``value`` against the EXPR type system.
+
+    This is the *only* place in this module that imports ``openjd.expr``, so
+    that every crossing into the native extension sits behind the one
+    ``sys.modules`` guard below. Doing the whole classification here rather
+    than exposing a separate "is it a list" predicate keeps that property
+    structural instead of merely documented: there is no second, unguarded
+    entry point for a future caller to reach with an arbitrary value.
 
     ``ExprValue`` instances are created only by the native extension, so if
     that extension has not been loaded then ``value`` cannot be one and the
-    answer is ``None`` without importing anything. Once it *has* been loaded --
-    i.e. an EXPR expression has been evaluated in this process -- the import
-    below is a ``sys.modules`` hit.
+    answer is ``NOT_EXPR`` without importing anything. Once it *has* been
+    loaded -- i.e. an EXPR expression has been evaluated in this process --
+    the import is a ``sys.modules`` hit.
 
-    ``ExprValue`` is then imported concretely (rather than duck-typed with
+    ``ExprValue`` is imported concretely (rather than duck-typed with
     ``getattr``) so that a model API change fails loudly here instead of
     silently mis-classifying every optional integer field as "omitted".
-
-    Returning the value rather than a bool matters at the call sites: typed
-    null/list handling applies *only* to an ``ExprValue``, and anything else
-    must fall through to plain string resolution rather than have ``.is_null``
-    read off it.
     """
     if _EXTENSION_MODULE not in sys.modules:
-        return None
-    from openjd.expr import ExprValue
+        return _ExprKind.NOT_EXPR
+    from openjd.expr import ExprValue, TypeCode
 
-    return value if isinstance(value, ExprValue) else None
+    if not isinstance(value, ExprValue):
+        return _ExprKind.NOT_EXPR
+    if value.is_null:
+        return _ExprKind.NULL
+    if value.type.type_code == TypeCode.LIST:
+        return _ExprKind.LIST
+    return _ExprKind.SCALAR
 
 
 def _is_expr_null(value: Any) -> bool:
     """True if ``value`` is the EXPR engine's typed null."""
-    expr_value = _as_expr_value(value)
-    return expr_value is not None and bool(expr_value.is_null)
-
-
-def _is_expr_list(expr_value: Any) -> bool:
-    """True if ``expr_value`` is an EXPR list value, whose elements flatten
-    into one argument each (RFC 0005 §1.3.2).
-
-    Takes an already-identified ``ExprValue``, so the extension is loaded by
-    definition here.
-    """
-    from openjd.expr import TypeCode
-
-    return bool(expr_value.type.type_code == TypeCode.LIST)
+    return _classify_expr_value(value) is _ExprKind.NULL
 
 
 def _timeout_from_seconds(seconds: int, logger: LoggerAdapter) -> Optional[timedelta]:
@@ -292,22 +304,21 @@ def resolve_action_arg_values(args: Optional[Sequence], symtab: SymbolTable) -> 
                 # argument is genuinely unresolvable.
                 resolved.append(arg.resolve(symtab=symtab))
                 continue
-            expr_value = _as_expr_value(value)
-            if expr_value is None:
-                # Not a typed EXPR result: a plain string, or -- for a legacy
-                # (non-EXPR) whole-field interpolation -- the symbol's own
-                # value, which may be any Python type a caller put in the
-                # symbol table (an ``int`` for an INT job parameter, a ``bool``
-                # for a BOOL one). Typed null/list semantics exist only under
-                # EXPR whole-field resolution, so everything here resolves to
-                # its string form.
+            kind = _classify_expr_value(value)
+            if kind is _ExprKind.NOT_EXPR:
+                # A plain string, or -- for a legacy (non-EXPR) whole-field
+                # interpolation -- the symbol's own value, which may be any
+                # Python type a caller put in the symbol table (an ``int`` for
+                # an INT job parameter, a ``bool`` for a BOOL one). Typed
+                # null/list semantics exist only under EXPR whole-field
+                # resolution, so everything here resolves to its string form.
                 resolved.append(value if isinstance(value, str) else str(value))
-            elif expr_value.is_null:
+            elif kind is _ExprKind.NULL:
                 continue
-            elif _is_expr_list(expr_value):
-                resolved.extend(str(element) for element in expr_value)
-            else:
-                resolved.append(str(expr_value))
+            elif kind is _ExprKind.LIST:
+                resolved.extend(str(element) for element in value)
+            else:  # _ExprKind.SCALAR
+                resolved.append(str(value))
     return resolved
 
 
