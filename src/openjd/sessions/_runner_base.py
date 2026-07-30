@@ -145,36 +145,47 @@ def _over_range_message(description: str, value: int) -> str:
 _EXTENSION_MODULE = "openjd._openjd_rs"
 
 
-def _is_expr_null(value: Any) -> bool:
-    """True if ``value`` is the EXPR engine's typed null.
+def _as_expr_value(value: Any) -> Optional[Any]:
+    """``value`` if it is the EXPR engine's typed value, else ``None``.
 
     ``ExprValue`` instances are created only by the native extension, so if
     that extension has not been loaded then ``value`` cannot be one and the
-    answer is False without importing anything. Once it *has* been loaded --
+    answer is ``None`` without importing anything. Once it *has* been loaded --
     i.e. an EXPR expression has been evaluated in this process -- the import
     below is a ``sys.modules`` hit.
 
     ``ExprValue`` is then imported concretely (rather than duck-typed with
     ``getattr``) so that a model API change fails loudly here instead of
     silently mis-classifying every optional integer field as "omitted".
+
+    Returning the value rather than a bool matters at the call sites: typed
+    null/list handling applies *only* to an ``ExprValue``, and anything else
+    must fall through to plain string resolution rather than have ``.is_null``
+    read off it.
     """
     if _EXTENSION_MODULE not in sys.modules:
-        return False
+        return None
     from openjd.expr import ExprValue
 
-    return isinstance(value, ExprValue) and value.is_null
+    return value if isinstance(value, ExprValue) else None
 
 
-def _is_expr_list(value: Any) -> bool:
-    """True if ``value`` is an EXPR list value, whose elements flatten into
-    one argument each (RFC 0005 §1.3.2).
+def _is_expr_null(value: Any) -> bool:
+    """True if ``value`` is the EXPR engine's typed null."""
+    expr_value = _as_expr_value(value)
+    return expr_value is not None and bool(expr_value.is_null)
 
-    Only reached with an ``ExprValue`` in hand (the caller has already read
-    ``.is_null`` off it), so the extension is loaded by definition here.
+
+def _is_expr_list(expr_value: Any) -> bool:
+    """True if ``expr_value`` is an EXPR list value, whose elements flatten
+    into one argument each (RFC 0005 §1.3.2).
+
+    Takes an already-identified ``ExprValue``, so the extension is loaded by
+    definition here.
     """
     from openjd.expr import TypeCode
 
-    return bool(value.type.type_code == TypeCode.LIST)
+    return bool(expr_value.type.type_code == TypeCode.LIST)
 
 
 def _timeout_from_seconds(seconds: int, logger: LoggerAdapter) -> Optional[timedelta]:
@@ -281,14 +292,22 @@ def resolve_action_arg_values(args: Optional[Sequence], symtab: SymbolTable) -> 
                 # argument is genuinely unresolvable.
                 resolved.append(arg.resolve(symtab=symtab))
                 continue
-            if isinstance(value, str):
-                resolved.append(value)
-            elif value.is_null:
+            expr_value = _as_expr_value(value)
+            if expr_value is None:
+                # Not a typed EXPR result: a plain string, or -- for a legacy
+                # (non-EXPR) whole-field interpolation -- the symbol's own
+                # value, which may be any Python type a caller put in the
+                # symbol table (an ``int`` for an INT job parameter, a ``bool``
+                # for a BOOL one). Typed null/list semantics exist only under
+                # EXPR whole-field resolution, so everything here resolves to
+                # its string form.
+                resolved.append(value if isinstance(value, str) else str(value))
+            elif expr_value.is_null:
                 continue
-            elif _is_expr_list(value):
-                resolved.extend(str(element) for element in value)
+            elif _is_expr_list(expr_value):
+                resolved.extend(str(element) for element in expr_value)
             else:
-                resolved.append(str(value))
+                resolved.append(str(expr_value))
     return resolved
 
 

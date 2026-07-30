@@ -11,7 +11,10 @@ bindings (RFC 0005):
   enter and exit sides);
 - binding-RHS parsing is memoized across applications;
 - the unified optional int-or-format-string field resolver
-  (``resolve_optional_int_field``) enforces consistent bounds.
+  (``resolve_optional_int_field``) enforces consistent bounds;
+- and, as the mirror of the EXPR cases above, a LEGACY (non-EXPR)
+  whole-field interpolation of a non-string symbol value resolves to its
+  string form instead of raising ``AttributeError``.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from typing import Any
 
 import pytest
 
-from openjd.model import SymbolTable
+from openjd.model import ParameterValue, ParameterValueType, SymbolTable
 from openjd.model.v2023_09 import (
     Action as Action_2023_09,
     ArgString as ArgString_2023_09,
@@ -76,6 +79,37 @@ def _format_string_field(raw: str) -> Any:
     context = ModelParsingContext_2023_09(supported_extensions=["FEATURE_BUNDLE_1", "EXPR"])
     action = Action_2023_09.model_validate({"command": "echo", "timeout": raw}, context=context)
     return action.timeout
+
+
+def _legacy_args_action(*args: str) -> Action_2023_09:
+    """An action with FormatString-typed ``args`` and EXPR *not* enabled.
+
+    Parsed through ``model_validate`` with an explicit context rather than
+    built like :func:`_action`, because only the FEATURE_BUNDLE_1 parse gives
+    the args the FormatString behaviour whose whole-field resolution is under
+    test here.
+    """
+    context = ModelParsingContext_2023_09(supported_extensions=["FEATURE_BUNDLE_1"])
+    return Action_2023_09.model_validate({"command": "echo", "args": list(args)}, context=context)
+
+
+class _StrDiffersFromRepr(int):
+    """An int-valued symbol whose ``str`` and ``repr`` differ.
+
+    Needed to pin *which* coercion the string-form branch applies: for a plain
+    int, bool or float ``str(v) == repr(v)``, so none of those can tell ``str``
+    from ``repr``.
+
+    Overrides ``__str__`` rather than ``__repr__`` on purpose. ``int`` has no
+    separate ``__str__`` slot, so overriding ``__repr__`` would change ``str()``
+    too and discriminate nothing. An ``IntEnum`` would not work either:
+    ``str(SomeIntEnum.MEMBER)`` is ``'E.MEMBER'`` on Python 3.9-3.10 and
+    ``'3'`` from 3.11 on, which would fail on 6 of the 18 CI jobs. This class
+    behaves identically on 3.9 through 3.14 (verified).
+    """
+
+    def __str__(self) -> str:
+        return "str-form"
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +282,126 @@ class TestLetBoundListInArgs:
         # typed list — flattened inline, one argument per element, embedded
         # whitespace preserved — not rendered as a single stringified list.
         assert resolved == ["front", "alpha beta", "gamma", "back"]
+
+
+# ---------------------------------------------------------------------------
+# The mirror of the case above (RFC 0005 §1.3.2, the LEGACY path): a legacy
+# (non-EXPR) whole-field interpolation returns the symbol's OWN value, not an
+# ExprValue. Typed null/list handling must therefore be reached only for a real
+# ExprValue -- reading `.is_null` off an int or a bool raised AttributeError
+# straight out of the public Session API. `ParameterValue` documents
+# INT/FLOAT/PATH values as strings but does not enforce it, and it carries BOOL
+# values natively *by design* (RFC 0007), so both types genuinely arrive here.
+#
+# Which values reach the branch is decided by openjd-model, not by the symbol
+# table (`SymbolTable` validates nothing -- `symtab["X"] = object()` succeeds):
+# `FullNameNode.allows_nonscalar` is False, so a legacy whole-field result that
+# is not a `numbers.Real` or a `str` raises FormatStringError and takes the
+# pre-existing plain-resolution fallback instead. That is why a `list` never
+# reaches the branch, and why None does not either.
+# ---------------------------------------------------------------------------
+
+
+class TestLegacyNonStringSymbolValuesInArgs:
+    @pytest.mark.parametrize(
+        "value, expected",
+        [
+            pytest.param(30, "30", id="int-INT-parameter"),
+            pytest.param(True, "True", id="bool-BOOL-parameter"),
+            pytest.param(1.5, "1.5", id="float-FLOAT-parameter"),
+            # str() and repr() differ only here, so this is the one case that
+            # pins which coercion the branch applies.
+            pytest.param(_StrDiffersFromRepr(3), "str-form", id="str-not-repr"),
+            pytest.param("30", "30", id="str-control"),
+            # None does NOT reach the branch: the whole-field arg raises
+            # FormatStringError and takes the pre-existing fallback (the
+            # multi-segment arg still enters the branch, as an ordinary str).
+            # Kept as a control that the fallback agrees, not as cover for the
+            # branch.
+            pytest.param(None, "", id="none-via-fallback"),
+        ],
+    )
+    def test_legacy_whole_field_value_resolves_to_its_string_form(
+        self, value: Any, expected: str
+    ) -> None:
+        """A non-string symbol value resolves to its string form, and agrees
+        with what a multi-segment arg over the same symbol produces.
+
+        The agreement is the invariant that makes string-form resolution the
+        right answer: ``pre-{{ Param.V }}`` has always gone through plain
+        string resolution, so a whole-field ``{{ Param.V }}`` must render the
+        same way or the two disagree within one legacy template.
+
+        Both are asserted against a literal rather than against each other --
+        ``multi_segment == f"pre-{whole_field}"`` would hold if both were wrong
+        in the same way, or if both were empty.
+
+        Holds for the scalar types that reach the branch. A ``str`` *subclass*
+        is the known exception: the branch passes it through untouched while
+        the multi-segment path applies ``str()`` to it. That divergence
+        predates this fix and is not addressed here.
+        """
+        # GIVEN: a non-EXPR action with a whole-field arg and a multi-segment
+        # arg over the same symbol, whose value is not a string.
+        action = _legacy_args_action("{{ Param.V }}", "pre-{{ Param.V }}")
+        symtab = SymbolTable()
+        symtab["Param.V"] = value
+
+        # WHEN
+        whole_field, multi_segment = resolve_action_arg_values(action.args, symtab)
+
+        # THEN: the string form. Before the fix an int/bool/float raised
+        # AttributeError ('is_null') here.
+        assert whole_field == expected
+        assert multi_segment == f"pre-{expected}"
+
+    def test_int_job_parameter_value_reaches_the_subprocess_as_a_string(
+        self, caplog: pytest.LogCaptureFixture, python_exe: str
+    ) -> None:
+        """End-to-end through the public API, asserting the argv the process
+        actually received -- not merely that nothing crashed.
+
+        ``ParameterValue`` documents INT values as strings but types the field
+        ``Any`` and does not validate it, so a caller passing the int itself
+        reached ``resolve_action_arg_values``. The failure was an
+        ``AttributeError`` escaping ``run_task`` -- not a failed action, an
+        unhandled crash in the caller's thread.
+        """
+        # GIVEN: an INT job parameter carrying an int, consumed as a
+        # whole-field argument by a non-EXPR step script.
+        context = ModelParsingContext_2023_09(supported_extensions=["FEATURE_BUNDLE_1"])
+        step = StepScript_2023_09.model_validate(
+            {
+                "actions": {
+                    "onRun": {
+                        "command": python_exe,
+                        "args": [
+                            "-c",
+                            "import sys; print('ARGV=' + repr(sys.argv[1:]))",
+                            "{{ Param.N }}",
+                        ],
+                    }
+                }
+            },
+            context=context,
+        )
+        job_parameters = {"N": ParameterValue(type=ParameterValueType.INT, value=30)}
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=job_parameters) as session:
+            # WHEN: this raised AttributeError before the fix.
+            session.run_task(step_script=step, task_parameter_values={})
+            _run_until_ready(session)
+
+        # THEN: the action succeeded AND passed the single argument "30". An
+        # empty or dropped argument would also avoid the crash, so the content
+        # is what pins the behaviour.
+        status = session.action_status
+        assert status is not None
+        assert status.state == ActionState.SUCCESS
+        expected = "ARGV=" + repr(["30"])
+        assert any(expected in m for m in caplog.messages), [
+            m for m in caplog.messages if "ARGV=" in m
+        ]
 
 
 # ---------------------------------------------------------------------------
