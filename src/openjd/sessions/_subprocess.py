@@ -462,6 +462,15 @@ class LoggingSubprocess(object):
                 stdout=PIPE,
                 stderr=STDOUT,
                 encoding=self._encoding,
+                # A subprocess (e.g. a Windows DCC application writing cp1252) can emit
+                # bytes that are not valid in the configured encoding. With the default
+                # strict error handling a single undecodable byte raises
+                # UnicodeDecodeError in the stdout reader thread, killing it; all
+                # subsequent output from the subprocess is then silently lost. Escaping
+                # undecodable bytes (e.g. b"\x97" -> "\\x97") keeps the reader alive
+                # while preserving the original byte values in the logs, which helps
+                # identify the codepage the subprocess is emitting.
+                errors="backslashreplace",
                 start_new_session=True,
                 cwd=self._working_dir,
             )
