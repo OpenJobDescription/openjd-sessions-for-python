@@ -5,11 +5,12 @@ import os
 import re
 import stat
 import shlex
+import sys
 from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from enum import Enum
+from enum import Enum, auto
 from pathlib import Path
 from threading import Lock, Timer
 from typing import Any, Callable, Literal, Optional, Sequence, Type, cast
@@ -20,12 +21,6 @@ from openjd.model import SymbolTable
 from openjd.model import FormatStringError
 from openjd.model import evaluate_let_bindings
 
-# The EXPR engine's typed value. Imported concretely (rather than duck-typed
-# with getattr) so that a model API change fails loudly at import time instead
-# of silently mis-classifying every optional integer field as "omitted".
-# openjd.expr ships in the same distribution as openjd.model, which this module
-# already hard-imports unreleased API from.
-from openjd.expr import ExprValue, TypeCode
 from openjd.model.v2023_09 import Action as Action_2023_09
 from openjd.model.v2023_09 import CancelationMethodDeferred as CancelationMethodDeferred_2023_09
 from openjd.model.v2023_09 import CancelationMode as CancelationMode_2023_09
@@ -132,6 +127,79 @@ def _over_range_message(description: str, value: int) -> str:
     return f"{description} must be at most {MAX_INT_FIELD_VALUE}, got '{value}'"
 
 
+# Why the EXPR engine's types are reached lazily, from here down:
+#
+# ``openjd.expr`` is a thin facade over the native ``openjd._openjd_rs``
+# extension, so a module-level import of it makes ``import openjd.sessions``
+# load the extension unconditionally -- including for a worker that only ever
+# runs non-EXPR templates. openjd.model deliberately avoids that (see
+# ``openjd.model._format_strings._parser``, which duplicates a constant rather
+# than import the Rust surface), and this module matches that discipline.
+#
+# The guard is on ``sys.modules`` rather than on the value's type, because
+# ``FormatString.resolve_value`` is not limited to ``str`` and ``ExprValue``:
+# a legacy (non-EXPR) whole-field interpolation returns the symbol's own value,
+# so an ``int`` reaches here on a purely non-EXPR path. Testing "not a str"
+# would therefore still load the extension for e.g. an integer-valued
+# ``timeout``.
+_EXTENSION_MODULE = "openjd._openjd_rs"
+
+
+class _ExprKind(Enum):
+    """How a resolved format-string value relates to the EXPR type system."""
+
+    NOT_EXPR = auto()
+    """Not an ``ExprValue``: a plain string, or a legacy interpolation's own
+    value. Resolves to its string form; typed semantics do not apply."""
+
+    NULL = auto()
+    """The engine's typed null -- "field omitted" / "argument skipped"."""
+
+    LIST = auto()
+    """A list, whose elements flatten to one argument each (RFC 0005 §1.3.2)."""
+
+    SCALAR = auto()
+    """Any other typed value; resolves to its string form."""
+
+
+def _classify_expr_value(value: Any) -> _ExprKind:
+    """Classify ``value`` against the EXPR type system.
+
+    This is the *only* place in this module that imports ``openjd.expr``, so
+    that every crossing into the native extension sits behind the one
+    ``sys.modules`` guard below. Doing the whole classification here rather
+    than exposing a separate "is it a list" predicate keeps that property
+    structural instead of merely documented: there is no second, unguarded
+    entry point for a future caller to reach with an arbitrary value.
+
+    ``ExprValue`` instances are created only by the native extension, so if
+    that extension has not been loaded then ``value`` cannot be one and the
+    answer is ``NOT_EXPR`` without importing anything. Once it *has* been
+    loaded -- i.e. an EXPR expression has been evaluated in this process --
+    the import is a ``sys.modules`` hit.
+
+    ``ExprValue`` is imported concretely (rather than duck-typed with
+    ``getattr``) so that a model API change fails loudly here instead of
+    silently mis-classifying every optional integer field as "omitted".
+    """
+    if _EXTENSION_MODULE not in sys.modules:
+        return _ExprKind.NOT_EXPR
+    from openjd.expr import ExprValue, TypeCode
+
+    if not isinstance(value, ExprValue):
+        return _ExprKind.NOT_EXPR
+    if value.is_null:
+        return _ExprKind.NULL
+    if value.type.type_code == TypeCode.LIST:
+        return _ExprKind.LIST
+    return _ExprKind.SCALAR
+
+
+def _is_expr_null(value: Any) -> bool:
+    """True if ``value`` is the EXPR engine's typed null."""
+    return _classify_expr_value(value) is _ExprKind.NULL
+
+
 def _timeout_from_seconds(seconds: int, logger: LoggerAdapter) -> Optional[timedelta]:
     """Convert a resolved timeout in seconds into an enforceable time limit.
 
@@ -236,13 +304,20 @@ def resolve_action_arg_values(args: Optional[Sequence], symtab: SymbolTable) -> 
                 # argument is genuinely unresolvable.
                 resolved.append(arg.resolve(symtab=symtab))
                 continue
-            if isinstance(value, str):
-                resolved.append(value)
-            elif value.is_null:
+            kind = _classify_expr_value(value)
+            if kind is _ExprKind.NOT_EXPR:
+                # A plain string, or -- for a legacy (non-EXPR) whole-field
+                # interpolation -- the symbol's own value, which may be any
+                # Python type a caller put in the symbol table (an ``int`` for
+                # an INT job parameter, a ``bool`` for a BOOL one). Typed
+                # null/list semantics exist only under EXPR whole-field
+                # resolution, so everything here resolves to its string form.
+                resolved.append(value if isinstance(value, str) else str(value))
+            elif kind is _ExprKind.NULL:
                 continue
-            elif value.type.type_code == TypeCode.LIST:
+            elif kind is _ExprKind.LIST:
                 resolved.extend(str(element) for element in value)
-            else:
+            else:  # _ExprKind.SCALAR
                 resolved.append(str(value))
     return resolved
 
@@ -302,7 +377,7 @@ def resolve_optional_int_field(
     # to plain string resolution — correct, since typed nulls only exist
     # under EXPR whole-field semantics (Template Schemas 5.3).
     resolved_value = value.resolve_value(symtab=symtab)
-    if isinstance(resolved_value, ExprValue) and resolved_value.is_null:
+    if _is_expr_null(resolved_value):
         return None
     resolved = str(resolved_value)
     # Strict ASCII integer grammar, matching the Rust runtime's str::parse
@@ -381,7 +456,7 @@ def resolve_effective_cancelation(
         # openjd-rs runtime, which errors on any non-null, non-mode-name
         # result).
         mode_value = cancelation.mode.resolve_value(symtab=symtab)
-        if isinstance(mode_value, ExprValue) and mode_value.is_null:
+        if _is_expr_null(mode_value):
             # Null mode drops the ENTIRE cancelation object: mode is the
             # object's required discriminator, so an "omitted" mode cannot
             # leave a partial object behind. The action behaves exactly as
@@ -1251,7 +1326,14 @@ class ScriptRunnerBase(ABC):
                     write_file_for_user(
                         self._session_working_directory / "cancel_info.json", notify_end, self._user
                     )
-                except OSError as err:
+                except Exception as err:
+                    # `Exception`, not `OSError`: write_file_for_user reaches
+                    # WindowsPermissionHelper, which raises RuntimeError (not an
+                    # OSError) when it cannot set an ACL for an impersonated user.
+                    # With the narrower handler that escaped here and unwound the
+                    # runtime-limit Timer thread -- no notify, no grace timer, a
+                    # live child, and the timeout silently unenforced.
+                    #
                     # F6 fix: If we cannot write the cancel_info.json (disk full, permission
                     # denied, etc.), log and fall back to immediate termination. A script
                     # waiting on that file would hang forever otherwise.

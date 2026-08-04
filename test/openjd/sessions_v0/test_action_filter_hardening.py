@@ -363,3 +363,62 @@ class TestContainmentDoesNotReRaise:
 
         # THEN
         assert "a perfectly ordinary boom" in record.getMessage()
+
+
+class TestNearMissEnvMacroIsAnchored:
+    """The near-miss detector must not fire on a *longer* token.
+
+    Its regex had no trailing boundary, so any line merely starting with
+    `openjd_env`, `openjd_redacted_env` or `openjd_unset_env` was reported as a
+    malformed macro -- and that path fails the running action. A script logging
+    `openjd_environment: ready` therefore killed its own task, with no adversary
+    involved.
+
+    openjd-rs anchors the same three tokens on ':', a space, or end-of-string
+    (`action_filter.rs` `is_malformed_env_command`), and its comment names this
+    exact false positive.
+    """
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "openjd_environment: ready",
+            "openjd_env_setup: done",
+            "openjd_envvar=1",
+            "openjd_unset_environment_now",
+            "openjd_redacted_envelope: opened",
+        ],
+    )
+    def test_a_longer_token_is_ordinary_output(self, line: str) -> None:
+        # GIVEN a line whose prefix only *looks* like a macro
+        callback = MagicMock()
+        f = ActionMonitoringFilter(session_id="foo", callback=callback)
+
+        # WHEN
+        f.filter(_make_record(line))
+
+        # THEN: nothing is reported -- it is just a log line
+        assert callback.call_count == 0
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "openjd_env FOO=bar",
+            "openjd_env:FOO=bar",
+            "OpenJD_Env: FOO=bar",
+            "openjd_unset_env",
+            "  openjd_env: FOO",
+        ],
+    )
+    def test_a_genuine_near_miss_still_fails_the_action(self, line: str) -> None:
+        """Negative control: anchoring must not disarm the detector."""
+        # GIVEN a genuinely malformed macro
+        callback = MagicMock()
+        f = ActionMonitoringFilter(session_id="foo", callback=callback)
+
+        # WHEN
+        f.filter(_make_record(line))
+
+        # THEN: it is still reported as a failure
+        fails = [c for c in callback.call_args_list if c[0][0] == ActionMessageKind.FAIL]
+        assert len(fails) == 1, callback.call_args_list
