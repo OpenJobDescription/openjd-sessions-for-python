@@ -7,6 +7,7 @@ import tempfile
 import time
 import os
 import getpass
+from base64 import b64encode
 from concurrent.futures import ThreadPoolExecutor, wait
 from logging.handlers import QueueHandler
 from pathlib import Path
@@ -124,6 +125,203 @@ class TestLoggingSubprocessSameUser:
         assert message_queue.qsize() > 0
         messages = collect_queue_messages(message_queue)
         assert message in messages
+
+    def test_non_utf8_output_does_not_kill_reader(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+    ) -> None:
+        # A child process that emits bytes that are not valid UTF-8 (e.g. a Windows
+        # DCC application writing cp1252 to stdout) must not crash the stdout reader
+        # thread. If the reader dies, all subsequent output is silently lost.
+        # Regression test for the customer-reported UnicodeDecodeError on byte 0x97
+        # (cp1252 em dash from Unreal Engine).
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        script = (
+            "import sys; "
+            "sys.stdout.buffer.write(b'before\\n'); "
+            "sys.stdout.buffer.flush(); "
+            "sys.stdout.buffer.write(b'bad \\x97 byte\\n'); "
+            "sys.stdout.buffer.flush(); "
+            "sys.stdout.buffer.write(b'after\\n'); "
+            "sys.stdout.buffer.flush()"
+        )
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[python_exe, "-c", script],
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert subproc.exit_code == 0
+        messages = collect_queue_messages(message_queue)
+        assert "before" in messages
+        # "after" is only logged if the reader thread survived the undecodable byte.
+        assert "after" in messages
+
+    @pytest.mark.parametrize(
+        argnames=("raw_bytes", "expected_escaped"),
+        argvalues=[
+            # 0x97 is the em dash in cp1252 — the exact byte from the customer report
+            # (Unreal Engine on Windows writing cp1252 to stdout).
+            (b"bad \x97 byte", "bad \\x97 byte"),
+            # 0xff is never valid anywhere in UTF-8.
+            (b"bad \xff byte", "bad \\xff byte"),
+            # Consecutive invalid bytes must each be escaped separately.
+            (b"bad \xc7\xff bytes", "bad \\xc7\\xff bytes"),
+            # cp1252-encoded text run — an invalid two-byte sequence in UTF-8.
+            (b"bad \xc7\xe9 text", "bad \\xc7\\xe9 text"),
+            # A truncated UTF-8 multi-byte sequence (0xe4 0xbd is an incomplete
+            # 3-byte sequence) followed by valid ASCII.
+            (b"truncated \xe4\xbd then ok", "truncated \\xe4\\xbd then ok"),
+        ],
+        ids=[
+            "cp1252-em-dash",
+            "invalid-byte",
+            "consecutive-invalid",
+            "cp1252-text",
+            "truncated-utf8",
+        ],
+    )
+    def test_non_utf8_output_is_escaped(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+        raw_bytes: bytes,
+        expected_escaped: str,
+    ) -> None:
+        # Undecodable bytes in subprocess output must be escaped with backslashreplace
+        # (e.g. b"\x97" -> "\\x97") so the original byte values are preserved in the
+        # logs. Preserving the byte values (rather than collapsing to U+FFFD) helps
+        # identify the codepage the subprocess is emitting.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        # The trailing "!" proves the full line was logged, not truncated at the bad
+        # byte; the newline terminates the line for the reader's readline().
+        payload = raw_bytes + b"!\n"
+        script = (
+            "import sys; " f"sys.stdout.buffer.write({payload!r}); " "sys.stdout.buffer.flush()"
+        )
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[python_exe, "-c", script],
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert subproc.exit_code == 0
+        messages = collect_queue_messages(message_queue)
+        # The trailing "!" proves the full line was logged, not truncated at the bad byte.
+        assert expected_escaped + "!" in messages
+        # The replacement character must not appear; the byte value must be preserved.
+        replaced = [m for m in messages if "\ufffd" in m]
+        assert not replaced
+
+    def test_valid_utf8_is_not_escaped(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+    ) -> None:
+        # Valid multi-byte UTF-8 sequences must pass through unmodified — escaping
+        # applies only to genuinely invalid sequences.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        message = "héllo wörld Ç 星期五"
+        # Pass the payload base64-encoded so the "Running command" log line does not
+        # itself contain backslash-x escape sequences (from the bytes repr), which
+        # would defeat the "no escapes appeared" assertion below.
+        payload_b64 = b64encode(message.encode("utf-8")).decode("ascii")
+        script = (
+            "import sys, base64; "
+            f"sys.stdout.buffer.write(base64.b64decode('{payload_b64}') + b'\\n'); "
+            "sys.stdout.buffer.flush()"
+        )
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[python_exe, "-c", script],
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert subproc.exit_code == 0
+        messages = collect_queue_messages(message_queue)
+        assert message in messages
+        # Scope the escape sweep to subprocess output lines. The "Running command"
+        # log line contains the interpreter path, which on Windows contains
+        # backslashes that could false-positive this assertion.
+        output_messages = [m for m in messages if not m.startswith("Running command")]
+        escaped = [m for m in output_messages if "\\x" in m]
+        assert not escaped
+        replaced = [m for m in output_messages if "\ufffd" in m]
+        assert not replaced
+
+    def test_non_utf8_output_is_escaped_with_non_default_encoding(
+        self,
+        message_queue: SimpleQueue,
+        queue_handler: QueueHandler,
+        python_exe: str,
+    ) -> None:
+        # The escape behavior must hold for any configured encoding, not only the
+        # utf-8 default: bytes that are invalid in that encoding are escaped, and
+        # bytes that are valid in it decode normally.
+
+        # GIVEN
+        logger = build_logger(queue_handler)
+        # 0x81 is undefined in cp1252 and must be escaped; 0x97 is the em dash in
+        # cp1252 and must decode to U+2014.
+        payload = b"undef \x81 byte, dash \x97 ok!\n"
+        script = (
+            "import sys; " f"sys.stdout.buffer.write({payload!r}); " "sys.stdout.buffer.flush()"
+        )
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[python_exe, "-c", script],
+            encoding="cp1252",
+        )
+
+        # WHEN
+        subproc.run()
+
+        # THEN
+        assert subproc.exit_code == 0
+        messages = collect_queue_messages(message_queue)
+        assert "undef \\x81 byte, dash \u2014 ok!" in messages
+
+    def test_popen_uses_backslashreplace_error_handler(self) -> None:
+        # Pin the errors= kwarg on the Popen construction itself. This protects all
+        # construction paths that reuse the shared popen_args dict (same-user Popen,
+        # the posix sudo path, and PopenWindowsAsUser, which CI integration tests
+        # cannot all reach) against a refactor that moves or drops the kwarg.
+
+        # GIVEN
+        logger = MagicMock()
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=[sys.executable, "-c", "pass"],
+        )
+
+        # WHEN
+        with patch.object(subprocess_impl_mod, "Popen") as mock_popen:
+            subproc._start_subprocess()
+
+        # THEN
+        mock_popen.assert_called_once()
+        kwargs = mock_popen.call_args.kwargs
+        assert kwargs["errors"] == "backslashreplace"
+        assert kwargs["encoding"] == "utf-8"
 
     def test_cannot_run(self, message_queue: SimpleQueue, queue_handler: QueueHandler) -> None:
         # Make sure that we log a message, and don't blow up when we cannot
