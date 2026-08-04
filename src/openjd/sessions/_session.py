@@ -279,6 +279,23 @@ class Session(object):
     """OS environment variables defined by Open Job Description Environments
     """
 
+    _session_env_vars: dict[str, str]
+    """Session-defined environment variables, for the lifetime of the Session.
+
+    Deliberately separate from :attr:`_created_env_vars`, which is keyed by
+    environment and read through ``_environments_entered`` to build the child
+    *process* environment -- that view must shrink when an environment exits.
+    This one must not: RFC 0008 (``rfcs/0008-environment-wrap-actions.md``,
+    "MUST include in ``WrappedAction.Environment`` every ``openjd_env``-defined
+    variable emitted by any earlier action in the same session") makes
+    session-lifetime inclusion a requirement, so a wrap script can forward a
+    variable exported by an environment that has since exited.
+
+    The only remover is an explicit ``openjd_unset_env``. openjd-rs holds the
+    same split -- its session-lifetime ``env_vars`` beside its per-environment
+    ``created_env_vars`` -- and this mirrors it.
+    """
+
     _wrap_env_file_records: dict[EnvironmentIdentifier, list["_FileRecord"]]
     """RFC 0008: per wrap environment, the embedded-file records whose on-disk
     paths were allocated on the environment's first wrap-hook invocation and
@@ -437,6 +454,7 @@ class Session(object):
         self._running_environment_identifier = None
         self._process_env = dict(os_env_vars) if os_env_vars else dict()
         self._created_env_vars = dict()
+        self._session_env_vars = dict()
         self._wrap_env_file_records = dict()
         self._retain_working_dir = retain_working_dir
         self._user = user
@@ -872,6 +890,10 @@ class Session(object):
                 )
             env_var_changes = SimplifiedEnvironmentVariableChanges(resolved_variables)
             self._created_env_vars[identifier] = env_var_changes
+            # Session-lifetime copy for WrappedAction.Environment. openjd-rs
+            # writes declarative `variables:` into its session-lifetime
+            # `env_vars` alongside `created_env_vars` at the same point.
+            self._session_env_vars.update(resolved_variables)
         else:
             # Running the environment may define environment variable
             # mutations via its stdout. We create an empty env changes
@@ -883,7 +905,14 @@ class Session(object):
         # Must be called _after_ we append to _environments_entered
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
 
-        self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            # The identifier is still returned on a pre-start failure: the
+            # environment is on the entered stack, so the caller must be able to
+            # exit it. Same contract as the resolve-variables failure above.
+            return identifier
 
         # Note: RUNNING is set below, immediately before the runner is asked to
         # start, and never before `self._runner` exists. `cancel_action()` is a
@@ -1045,7 +1074,11 @@ class Session(object):
         self._running_environment_identifier = identifier
 
         symtab = self._symbol_table(environment.revision)
-        self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(environment.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            return
 
         # Re-seed the owning step's name (Step.Name, RFC 0005 EXPR) and
         # re-apply the extra `let` bindings this environment was entered with
@@ -1222,7 +1255,11 @@ class Session(object):
         if step_name is not None:
             symtab["Step.Name"] = step_name
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
-        self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            return
 
         # Note: the step script's EXPR `let` bindings (RFC 0005) are evaluated
         # by the script runner, after embedded-file paths are allocated (so
@@ -1356,7 +1393,11 @@ class Session(object):
         if os_env_vars:
             action_env_vars.update(**os_env_vars)
 
-        self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        try:
+            self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
+        except RuntimeError as e:
+            self._fail_action_before_start(str(e))
+            return
 
         # Note: the step script's EXPR `let` bindings (RFC 0005) are evaluated
         # by the script runner, after embedded-file paths are allocated.
@@ -1883,31 +1924,26 @@ class Session(object):
         return True
 
     def _collect_session_env_list(self) -> list[str]:
-        """Collect all session-defined variables across the active
-        environment stack as ``["KEY=value", ...]`` for
+        """The session-defined variables as ``["KEY=value", ...]`` for
         ``WrappedAction.Environment``.
 
-        Session-defined variables are ``openjd_env`` stdout definitions
-        *and* entered environments' declarative ``variables:`` maps
-        (openjd-rs #277); host-inherited variables remain intentionally
-        excluded per RFC 0008.
+        Session-defined variables are ``openjd_env`` stdout definitions *and*
+        entered environments' declarative ``variables:`` maps (openjd-rs #277);
+        host-inherited variables remain intentionally excluded per RFC 0008.
 
-        The per-environment changes are flattened cumulatively, in
-        environment-entry order, so the list reflects the *effective*
-        state exactly like the real subprocess environment does: a later
-        set overrides an earlier value for the same name (one entry, not
-        two), and a later unset removes the name entirely. This mirrors
-        the Rust runtime's single cumulative ``env_vars`` map."""
-        effective: dict[str, Optional[str]] = {}
-        for env_id in self._environments_entered:
-            if env_id in self._created_env_vars:
-                changes = self._created_env_vars[env_id]
-                # effective_items() is insertion-ordered, holding both the
-                # environment's declarative `variables:` seed and any
-                # openjd_env sets/unsets, so the list order is deterministic.
-                for key, value in changes.effective_items().items():
-                    effective[key] = value
-        return [f"{key}={value}" for key, value in effective.items() if value is not None]
+        Read from :attr:`_session_env_vars`, which is **session-lifetime**, not
+        from ``_environments_entered``. This used to walk the entered stack and
+        flatten each environment's changes, which meant an export vanished from
+        this symbol the moment its environment exited -- a violation of RFC
+        0008's MUST that every ``openjd_env`` variable from any earlier action
+        in the session be included. The child *process* environment is the view
+        that correctly shrinks on exit; see ``_evaluate_current_session_env_vars``.
+
+        ``_session_env_vars`` is insertion-ordered and already holds the
+        effective value per name -- a later set overwrites in place, and an
+        explicit ``openjd_unset_env`` removes the name -- so this is a
+        formatting step only."""
+        return [f"{name}={value}" for name, value in self._session_env_vars.items()]
 
     def _resolve_action_timeout(self, action: Any, symtab: SymbolTable) -> Optional[int]:
         """Return the wrapped action's timeout as an int (seconds), or
@@ -2135,9 +2171,20 @@ class Session(object):
             ParameterValueType.BOOL.value
         )
         rules_json = json.dumps(rules_dict)
-        file_handle, filename = mkstemp(dir=self.working_directory, suffix=".json", text=True)
-        os.close(file_handle)
-        write_file_for_user(Path(filename), rules_json, self._user)
+        # An OSError here used to escape run_task/enter_environment/exit_environment
+        # with no callback and no ActionStatus, because all three call this before
+        # their runner exists. openjd-rs propagates the same failure as
+        # SessionError::WorkingDirectory and every call site maps it to
+        # fail_action_setup(), which publishes FAILED and notifies -- so translate
+        # to a RuntimeError the callers already turn into that terminal status.
+        try:
+            file_handle, filename = mkstemp(dir=self.working_directory, suffix=".json", text=True)
+            os.close(file_handle)
+            write_file_for_user(Path(filename), rules_json, self._user)
+        except Exception as err:
+            raise RuntimeError(
+                f"Could not write the path mapping rules file in {self.working_directory}: {err}"
+            ) from err
         symtab[ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value] = str(filename)
         symtab.expr_types[ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value] = (
             ParameterValueType.PATH.value
@@ -2220,6 +2267,10 @@ class Session(object):
             env_vars.simplify_ordered_changes(
                 changes=[EnvironmentVariableSetChange(name=value["name"], value=value["value"])]
             )
+            # Session-lifetime copy for WrappedAction.Environment; see
+            # _session_env_vars. Runs on the LoggingSubprocess IO thread, like
+            # the line above -- a plain dict assignment, so no new hazard.
+            self._session_env_vars[value["name"]] = value["value"]
             return
         elif kind == ActionMessageKind.UNSET_ENV:
             if self._running_environment_identifier is None:
@@ -2242,6 +2293,9 @@ class Session(object):
             assert isinstance(value, str)
             env_vars = self._created_env_vars[self._running_environment_identifier]
             env_vars.simplify_ordered_changes(changes=[EnvironmentVariableUnsetChange(name=value)])
+            # An explicit unset is the one remover from the session-lifetime
+            # map, matching openjd-rs. Environment exit is not.
+            self._session_env_vars.pop(value, None)
             return
         else:  # ActionMessageKind.SESSION_RUNTIME_LOGLEVEL
             assert isinstance(value, int)

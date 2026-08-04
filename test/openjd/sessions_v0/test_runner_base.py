@@ -1233,3 +1233,42 @@ class TestScriptRunnerBase:
         assert not os.path.exists(dest_dir / "test_materialize_files.txt")
         messages = collect_queue_messages(message_queue)
         assert any(m.startswith("openjd_fail") for m in messages)
+
+
+class TestCancelInfoWriteFailureIsContained:
+    """A failed `cancel_info.json` write must not unwind the cancel.
+
+    The guard named `OSError`, but `write_file_for_user` reaches
+    `WindowsPermissionHelper`, which raises `RuntimeError` when it cannot set an
+    ACL for an impersonated user -- and `RuntimeError` is not an `OSError`. The
+    exception therefore escaped and unwound the runtime-limit `Timer` thread: no
+    notify, no grace timer, a live child, and the timeout silently unenforced.
+
+    openjd-rs cannot hit this: `write_cancel_info` discards the write result and
+    schedules notify plus the delayed terminate regardless.
+    """
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            OSError(28, "No space left on device"),
+            RuntimeError("Could not set the ACL for the session user"),
+        ],
+        ids=["oserror", "runtimeerror"],
+    )
+    def test_the_action_still_gets_a_terminate(self, error: Exception, tmp_path: Path) -> None:
+        # GIVEN a notify-then-terminate cancel whose cancel_info write fails
+        logger = build_logger(QueueHandler(SimpleQueue()))
+        with NotifyingRunner(logger=logger, session_working_directory=tmp_path) as runner:
+            live_child = MagicMock()
+            live_child.is_running = True
+            runner._process = live_child
+
+            # WHEN
+            with patch("openjd.sessions._runner_base.write_file_for_user", side_effect=error):
+                runner.cancel()
+
+            # THEN: no exception escaped, and we fell back to terminating rather
+            # than leaving the child running with no scheduled kill.
+            assert live_child.terminate.called
+            assert not live_child.notify.called

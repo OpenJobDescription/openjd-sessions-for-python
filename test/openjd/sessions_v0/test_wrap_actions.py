@@ -600,43 +600,31 @@ class TestWrappedActionEnvironmentContents:
             assert any(entry == "DECLARED_VAR=from-variables-map" for entry in env_list), env_list
 
     def test_later_set_overrides_earlier_value_without_duplicate(self) -> None:
-        # Cumulative flattening: when a later environment's openjd_env sets
-        # a name an earlier environment already set, the list carries only
-        # the effective (later) value — matching the real subprocess env
-        # and the Rust runtime's single cumulative map.
-        from openjd.sessions._session import (
-            EnvironmentVariableSetChange,
-            EnvironmentVariableUnsetChange,
-            SimplifiedEnvironmentVariableChanges,
-        )
+        """A later set of the same name yields one entry, the effective value.
 
+        Rewritten to drive real environments. The previous version appended
+        fabricated identifiers to ``_environments_entered`` and assigned
+        ``_created_env_vars`` directly, which bypassed the production write path
+        entirely -- so it kept passing while ``WrappedAction.Environment``
+        violated RFC 0008's session-lifetime MUST. A test that never exercises
+        the writers cannot notice the writers being wrong.
+        """
+        # GIVEN: two environments, the second overriding the first's export
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
-            scenarios: list[
-                tuple[str, list[EnvironmentVariableSetChange | EnvironmentVariableUnsetChange]]
-            ] = [
-                ("env-a", [EnvironmentVariableSetChange(name="FOO", value="1")]),
-                ("env-b", [EnvironmentVariableSetChange(name="FOO", value="2")]),
+            for value in ("1", "2"):
+                session.enter_environment(
+                    environment=_env(
+                        f"Setter{value}",
+                        onEnter=_action("sh", "-c", f"echo 'openjd_env: FOO={value}'"),
+                        onExit=_NOOP,
+                    )
+                )
+                _run_until_ready(session)
+
+            # THEN: one entry, carrying the later value
+            assert [e for e in session._collect_session_env_list() if e.startswith("FOO=")] == [
+                "FOO=2"
             ]
-            for env_id, changes in scenarios:
-                session._environments_entered.append(env_id)
-                tracked = SimplifiedEnvironmentVariableChanges({})
-                tracked.simplify_ordered_changes(changes)
-                session._created_env_vars[env_id] = tracked
-
-            assert session._collect_session_env_list() == ["FOO=2"]
-
-            # And a later unset removes the name entirely.
-            session._environments_entered.append("env-c")
-            tracked = SimplifiedEnvironmentVariableChanges({})
-            tracked.simplify_ordered_changes([EnvironmentVariableUnsetChange(name="FOO")])
-            session._created_env_vars["env-c"] = tracked
-
-            assert session._collect_session_env_list() == []
-
-            # Clear the fake stack so Session.cleanup() doesn't try to
-            # unwind environments that were never really entered.
-            session._environments_entered.clear()
-            session._created_env_vars.clear()
 
     def test_exit_path_includes_exiting_envs_openjd_env_vars(self) -> None:
         # On the onWrapEnvExit path, WrappedAction.Environment must include
@@ -688,6 +676,75 @@ class TestWrappedActionEnvironmentContents:
 
             env_list = session._collect_session_env_list()
             assert "EMITTED_VAR=from-openjd-env" in env_list
+
+    def test_an_exited_environments_export_is_still_listed(self) -> None:
+        """RFC 0008 makes session-lifetime inclusion a MUST.
+
+        `rfcs/0008-environment-wrap-actions.md:404-412`: runtimes "MUST include
+        in `WrappedAction.Environment` every `openjd_env`-defined variable
+        emitted by any earlier action in the same session -- regardless of
+        whether that action ran normally or via a wrap hook".
+
+        `_collect_session_env_list()` used to iterate `_environments_entered`,
+        which `exit_environment` pops, so an earlier environment's export
+        disappeared the moment that environment exited. openjd-rs keeps a
+        session-lifetime `env_vars` map for exactly this symbol, held separate
+        from the per-entered view that feeds the child process environment.
+        """
+        # GIVEN: an environment that exports a variable and is then exited
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            early = _env(
+                "Early",
+                onEnter=_action("sh", "-c", "echo 'openjd_env: EARLY_VAR=early-value'"),
+                onExit=_NOOP,
+            )
+            early_id = session.enter_environment(environment=early)
+            _run_until_ready(session)
+            assert "EARLY_VAR=early-value" in session._collect_session_env_list()
+
+            # WHEN
+            session.exit_environment(identifier=early_id, keep_session_running=True)
+            _run_until_ready(session)
+
+            # THEN: the export outlives the environment that emitted it
+            assert "EARLY_VAR=early-value" in session._collect_session_env_list()
+
+    def test_an_explicit_unset_still_removes_the_name(self) -> None:
+        """Negative control for the test above.
+
+        Session-lifetime retention must not become "nothing is ever removed".
+        An explicit `openjd_unset_env` is the one remover -- the same contract
+        openjd-rs has, where `env_vars` is only ever erased by an unset.
+        """
+        # GIVEN: a variable exported and then explicitly unset by a later env
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            setter = _env(
+                "Setter",
+                onEnter=_action("sh", "-c", "echo 'openjd_env: DOOMED=value'"),
+                onExit=_NOOP,
+            )
+            setter_id = session.enter_environment(environment=setter)
+            _run_until_ready(session)
+            assert "DOOMED=value" in session._collect_session_env_list()
+
+            unsetter = _env(
+                "Unsetter",
+                onEnter=_action("sh", "-c", "echo 'openjd_unset_env: DOOMED'"),
+                onExit=_NOOP,
+            )
+            unsetter_id = session.enter_environment(environment=unsetter)
+            _run_until_ready(session)
+
+            # WHEN: both environments exit
+            session.exit_environment(identifier=unsetter_id, keep_session_running=True)
+            _run_until_ready(session)
+            session.exit_environment(identifier=setter_id, keep_session_running=True)
+            _run_until_ready(session)
+
+            # THEN: the unset wins, and it too outlives its environment
+            assert not any(
+                entry.startswith("DOOMED=") for entry in session._collect_session_env_list()
+            )
 
 
 class TestRunWrapHookGuard:
