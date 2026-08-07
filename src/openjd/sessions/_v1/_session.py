@@ -299,6 +299,7 @@ class Session:
         os_env_vars: Optional[dict[str, str]] = None,
         log_task_banner: bool = True,
         resolved_symtab: Optional[SerializedSymbolTable] = None,
+        step_name: Optional[str] = None,
     ) -> None:
         # ``resolved_symtab`` is the step-scope symbol table generated
         # by ``create_job`` (available as ``Step.resolved_symtab``).
@@ -310,6 +311,9 @@ class Session:
         # bindings and no expression interpolation that depends on
         # step-scope state.
         #
+        # ``step_name`` is surfaced as ``WrappedStep.Name`` to a wrapping
+        # environment's ``onWrapTaskRun`` hook (RFC 0008).
+        #
         # ``log_task_banner`` is accepted for API compatibility but
         # currently has no effect — the Rust runner always emits the
         # task banner. TODO: plumb through if/when the Rust API
@@ -319,6 +323,7 @@ class Session:
             task_parameter_values=task_parameter_values,
             resolved_symtab=resolved_symtab,
             os_env_vars=os_env_vars,
+            step_name=step_name,
         )
         self._fire_initial_running_callback()
         self._poll_for_completion()

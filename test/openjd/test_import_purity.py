@@ -281,3 +281,129 @@ def test_pure_path_module_does_not_load_native_extension(tmp_path: Path, module:
 
     # THEN
     assert loaded == "False", f"importing {module} loaded the native extension"
+
+
+# ---------------------------------------------------------------------------
+# Import-time purity is not enough on its own: `Session.__init__` calls
+# `_build_expr_host_rules()` unconditionally, so before the empty-rules fast
+# path a worker that never evaluates an EXPR expression still loaded the
+# extension on its FIRST SESSION. The deferral won by removing the module-level
+# import was only from import time to first-session time.
+# ---------------------------------------------------------------------------
+
+
+class TestSessionLifecycleStaysExtensionFree:
+    def test_constructing_a_session_without_path_mapping_rules_stays_pure(
+        self, tmp_path: Path
+    ) -> None:
+        """The regression: `Session()` used to load the extension to build an
+        empty engine rules list."""
+        # WHEN
+        loaded = _run_probe(
+            tmp_path,
+            """
+            import uuid
+
+            from openjd.sessions import Session
+
+            session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
+            try:
+                # `[]`, not `None`: the session is still host scope, so
+                # apply_path_mapping() stays available with an empty rule set.
+                assert session._expr_host_rules == [], session._expr_host_rules
+                print(RS in sys.modules)
+            finally:
+                session.cleanup()
+            """,
+        )
+
+        # THEN
+        assert loaded == "False", (
+            "constructing a Session with no path mapping rules loaded the native "
+            "extension; the empty-rules fast path in _build_expr_host_rules is "
+            "what prevents this."
+        )
+
+    def test_running_a_non_expr_task_stays_pure_end_to_end(self, tmp_path: Path) -> None:
+        """The property a non-EXPR worker actually cares about: a whole task
+        runs without the extension ever being loaded."""
+        # WHEN
+        loaded = _run_probe(
+            tmp_path,
+            """
+            import time
+            import uuid
+
+            from openjd.model.v2023_09 import ModelParsingContext, StepScript
+            from openjd.sessions import ActionState, Session, SessionState
+
+            context = ModelParsingContext(supported_extensions=["FEATURE_BUNDLE_1"])
+            script = StepScript.model_validate(
+                {"actions": {"onRun": {"command": "echo", "args": ["hello"]}}},
+                context=context,
+            )
+            session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
+            try:
+                session.run_task(step_script=script, task_parameter_values={})
+                deadline = time.time() + 15
+                while session.state == SessionState.RUNNING and time.time() < deadline:
+                    time.sleep(0.05)
+                status = session.action_status
+                assert status is not None and status.state == ActionState.SUCCESS, status
+                print(RS in sys.modules)
+            finally:
+                session.cleanup()
+            """,
+        )
+
+        # THEN
+        assert loaded == "False", (
+            "running a non-EXPR task loaded the native extension somewhere in the "
+            "session lifecycle"
+        )
+
+    def test_path_mapping_rules_do_load_the_extension(self, tmp_path: Path) -> None:
+        """Negative control, and a documented limitation rather than a goal.
+
+        Real rules must be converted into ``openjd.expr.PathMappingRule`` engine
+        objects to seed the session's host context, so this case genuinely loads
+        the extension. openjd-sessions cannot avoid it alone: closing it needs
+        openjd-model to accept unconverted rules and convert them at the Rust
+        boundary, where ``symtab_to_expr_values`` already crosses.
+
+        Asserted so that the limitation is visible and so a future change that
+        makes this pure is noticed here rather than passing silently.
+        """
+        # WHEN
+        loaded = _run_probe(
+            tmp_path,
+            """
+            import uuid
+            from pathlib import PurePosixPath
+
+            from openjd.sessions import PathFormat, PathMappingRule, Session
+
+            rule = PathMappingRule(
+                source_path_format=PathFormat.POSIX,
+                source_path=PurePosixPath("/mnt/source"),
+                destination_path=PurePosixPath("/mnt/dest"),
+            )
+            session = Session(
+                session_id=uuid.uuid4().hex,
+                job_parameter_values={},
+                path_mapping_rules=[rule],
+            )
+            try:
+                assert len(session._expr_host_rules) == 1, session._expr_host_rules
+                print(RS in sys.modules)
+            finally:
+                session.cleanup()
+            """,
+        )
+
+        # THEN
+        assert loaded == "True", (
+            "a session with real path mapping rules is expected to load the "
+            "extension; if this is now False the limitation has been fixed and "
+            "this control should become a purity assertion"
+        )

@@ -1,3 +1,22 @@
+## 0.10.12 (2026-08-04)
+
+
+
+### Bug Fixes
+* Do not load the native extension to build an empty rules list ([`80b1e70`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/80b1e70bd1b765a74abc7ae8eb37fa24c4056300))
+* decode subprocess output with errors=backslashreplace (#343) ([`e2e60d3`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/e2e60d39a5af6f8c948382b08ac4c175be216752))
+* Resolve a legacy non-string argument instead of crashing ([`748629f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/748629fbaa4dcb0b82b04a46f086831abbd449d5))
+* Do not load the native EXPR extension unless EXPR is used ([`5c546b2`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/5c546b2e22e5cb9fe86eb61f4bbab09fabab6a8f))
+* Send the kill signal before announcing it ([`7bcac6e`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/7bcac6e26047e4c8109611bcf7cc11fe8e26a0ff))
+* A failed launch must release wait_until_started() ([`f160a74`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/f160a74904419e282d73e3dcfd0773e427f8e85a))
+* run() must own its child from creation, not after logging ([`5e73e7f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/5e73e7ff5daa40b1cfc6eb6edc5acb25e0487984))
+* WrappedAction.Environment must be session-lifetime (RFC 0008 MUST) ([`26655b4`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/26655b484768632041b7a712a078e6e5178f4b40))
+* Give _materialize_path_mapping a failure path (openjd-rs parity) ([`7585d4d`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/7585d4d4ae418fc76f203365d6dc1d5d7a349f43))
+* cancel_info.json handler caught the wrong exception type ([`33cb7f0`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/33cb7f03de689962d44e53ad8333d080de19b15f))
+* Do not gate terminate on leader liveness (openjd-rs parity) ([`4ffa320`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/4ffa320686c94e9cf133a3f8fecdd90353d3b681))
+* Anchor the openjd_env near-miss regex (openjd-rs parity) ([`b4ef573`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/b4ef573e89606ab599f477ed3fa131074d0faf45))
+
+
 ## 0.10.11 (2026-07-28)
 
 

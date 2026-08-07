@@ -37,7 +37,7 @@ dependencies = [
   # SymbolTable.expr_host_rules, and `let` on StepTemplate/StepScript. 0.11.0 has
   # only StepTemplate.let, StepScript.let and SymbolTable.expr_types, so this
   # package fails at import against it.
-  "openjd-model >= 0.11.1,< 0.12",
+  "openjd-model >= 0.11.2,< 0.12",
   "pywin32 >= 307; platform_system == 'Windows'",
   "psutil >= 5.9,< 7.3; platform_system == 'Windows'",
 ]
