@@ -4,7 +4,6 @@
 
 ### Bug Fixes
 * forward step_name through the _v1 Session.run_task wrapper (#345) ([`9ca3a4a`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/9ca3a4ab58951c655d63e8db0190fe818e00d621))
-* forward step_name through the _v1 Session.run_task wrapper ([`9ca3a4a`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/9ca3a4ab58951c655d63e8db0190fe818e00d621))
 
 
 ## 0.10.12 (2026-08-04)
