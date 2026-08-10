@@ -7,6 +7,12 @@ pre-install-commands = [
 sync = "pip install -r requirements-testing.txt"
 test = "pytest --cov-config pyproject.toml {args}"
 typing = "mypy {args:src test}"
+# Cross-user (jobRunAsUser impersonation) tests. These need a provisioned
+# user/group/sudoers environment, so they go through the platform's setup script
+# rather than pytest alone: Linux uses a throwaway container, macOS provisions the
+# host and cleans up after itself.
+cross-user-test = "bash scripts/run_sudo_tests.sh {args}"
+cross-user-test-macos = "bash scripts/run_macos_sudo_tests.sh {args}"
 style = [
   "ruff check {args:.}",
   "black --check --diff {args:.}",

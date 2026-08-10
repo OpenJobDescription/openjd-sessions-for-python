@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import openjd
-from openjd.sessions._os_checker import is_posix, is_windows
+from openjd.sessions._os_checker import is_macos, is_posix, is_windows
 from openjd.sessions._session_user import PosixSessionUser, WindowsSessionUser
 from openjd.sessions._subprocess import LoggingSubprocess
 from openjd.sessions import _subprocess as subprocess_impl_mod
@@ -1326,7 +1326,22 @@ class TestLoggingSubprocessMacOSSetsid:
             "/path/to/workload.sh",
         ]
 
-    @pytest.mark.skipif(not is_posix(), reason="posix-specific test")
+
+@pytest.mark.skipif(not is_posix(), reason="process groups and setsid are posix-only")
+class TestSetsidShimBehavior:
+    """Tests the behaviour of the setsid shim string itself, on any POSIX host.
+
+    The shim is portable POSIX (os.getpgrp/os.getpid/os.setsid/os.execvp with no
+    platform branch); macOS is merely the platform where it is *required*, because
+    macOS ships no setsid(1) for the cross-user command to call. Running it
+    everywhere POSIX is deliberate: Linux exercises the same semantics on faster,
+    more reliable runners, so a broken shim string is caught there too rather than
+    only in the macOS job.
+
+    Whether macOS actually *selects* this shim is a separate concern, covered by
+    TestLoggingSubprocessMacOSSetsid::test_builds_setsid_shim_command_on_macos.
+    """
+
     def test_setsid_shim_creates_new_process_group(self) -> None:
         # GIVEN the shim string that macOS uses in place of setsid(1).
         from subprocess import PIPE, run
@@ -1355,10 +1370,15 @@ class TestLoggingSubprocessMacOSSetsid:
         assert workload_pid == workload_pgid
 
 
+@pytest.mark.skipif(not is_macos(), reason="macOS-specific interpreter selection")
 class TestMacOSShimInterpreter:
     """Tests for _macos_shim_interpreter(), which selects the Python interpreter that runs
     the setsid shim as the jobRunAsUser, and for the _other_users_can_execute() permission
-    check that backs it."""
+    check that backs it.
+
+    Unlike the shim string, this selection logic is genuinely macOS-only (it exists to
+    find an interpreter the job user can execute, outside the agent's venv), so these
+    are scoped to macOS hosts."""
 
     def test_prefers_base_executable(self, tmp_path: Path) -> None:
         # GIVEN a reachable interpreter behind sys._base_executable
