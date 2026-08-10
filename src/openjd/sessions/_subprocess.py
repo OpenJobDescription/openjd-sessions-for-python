@@ -44,9 +44,11 @@ __all__ = ("LoggingSubprocess",)
 #   * Single line (no newlines) so it passes cleanly through `sudo -i` argv without any
 #     shell-quoting fragility.
 #   * The interpreter that runs the shim is the base interpreter behind the one running this
-#     process (see _macos_shim_interpreter()), falling back to /usr/bin/python3. sys.executable
-#     itself is not used directly because it may live inside a virtual environment that the
-#     jobRunAsUser has no traverse/read permission on.
+#     process (see _macos_shim_interpreter()), falling back to /usr/bin/python3; if neither is
+#     reachable by the target user, NoReachableInterpreterError is raised rather than deferring
+#     an opaque errno 2 to Popen. sys.executable itself is not used directly because it may
+#     live inside a virtual environment that the jobRunAsUser has no traverse/read permission
+#     on.
 #   * `-I` (isolated mode) drops the current working directory from sys.path and ignores
 #     PYTHON* environment variables, so a file such as os.py in the session working directory
 #     cannot be imported ahead of the standard library before os.execvp() runs.
@@ -86,6 +88,13 @@ def _other_users_can_execute(path: str) -> bool:
         return False
 
 
+class NoReachableInterpreterError(Exception):
+    """Raised on macOS when no Python interpreter can be found that the jobRunAsUser is able
+    to execute, so the setsid shim (and therefore cross-user execution) cannot be run."""
+
+    pass
+
+
 def _macos_shim_interpreter() -> str:
     """Returns the path of the Python interpreter used to run _MACOS_SETSID_SHIM as the
     jobRunAsUser.
@@ -100,11 +109,26 @@ def _macos_shim_interpreter() -> str:
     Falls back to /usr/bin/python3 (the Command Line Tools shim; requires the Command Line
     Tools or Xcode to be installed) when the base interpreter cannot be determined or is not
     reachable and executable by other users.
+
+    Raises:
+        NoReachableInterpreterError: when neither candidate is reachable and executable by
+            other users. The fallback is checked rather than returned on faith, because
+            returning an unusable path defers the failure to Popen, which reports only
+            "[Errno 2] No such file or directory: '/usr/bin/python3'" on a workload that may
+            have nothing to do with Python.
     """
     base = os.path.realpath(getattr(sys, "_base_executable", None) or sys.executable)
     if _other_users_can_execute(base):
         return base
-    return _MACOS_FALLBACK_SHIM_INTERPRETER
+    if _other_users_can_execute(_MACOS_FALLBACK_SHIM_INTERPRETER):
+        return _MACOS_FALLBACK_SHIM_INTERPRETER
+    raise NoReachableInterpreterError(
+        "No Python interpreter is executable by the target user, which macOS requires to run "
+        "an action as another user (it has no setsid(1), so the action is launched via a "
+        f"Python shim). Tried {base} and {_MACOS_FALLBACK_SHIM_INTERPRETER}. Install the Xcode "
+        "Command Line Tools with 'xcode-select --install', or make one of those interpreters "
+        "world-executable with world-traversable parent directories."
+    )
 
 
 # ========================================================================

@@ -55,6 +55,10 @@ export TMPDIR="${TMPDIR_OVERRIDE:-/private/tmp/openjd-tests}"
 TEST_USER="${SUDO_USER:-$(id -un)}"
 SUDOERS_FILE=/etc/sudoers.d/openjd-cross-user-tests
 PYTHON_SHIM=/usr/local/bin/python
+# Whether *this* script created PYTHON_SHIM. On a developer machine that path is
+# often a real symlink managed by pyenv, Homebrew or a python.org installer, so
+# cleanup must only remove it if we were the one who put it there.
+PYTHON_SHIM_CREATED="False"
 
 KEEP="False"
 CLEANUP_ONLY="False"
@@ -81,7 +85,10 @@ cleanup() {
     # Best-effort throughout: a partially-provisioned environment must still be
     # removable, so nothing here may abort the teardown.
     sudo rm -f "${SUDOERS_FILE}" || true
-    sudo rm -f "${PYTHON_SHIM}" || true
+    # Only remove the python alias if provision() created it; see PYTHON_SHIM_CREATED.
+    if [[ "${PYTHON_SHIM_CREATED}" == "True" ]]; then
+        sudo rm -f "${PYTHON_SHIM}" || true
+    fi
     for u in "${OPENJD_TEST_SUDO_TARGET_USER}" "${OPENJD_TEST_SUDO_DISJOINT_USER}"; do
         sudo sysadminctl -deleteUser "${u}" > /dev/null 2>&1 || true
         # -deleteUser leaves the self-named group behind when we created it ourselves.
@@ -96,6 +103,13 @@ cleanup() {
 }
 
 if [[ "${CLEANUP_ONLY}" == "True" ]]; then
+    # --cleanup-only recovers from an interrupted run, where provision() never set
+    # PYTHON_SHIM_CREATED in this process. Only claim the alias if it points at the
+    # target we would have used; a pyenv/Homebrew symlink points somewhere else and
+    # is left alone.
+    if [[ -L "${PYTHON_SHIM}" && "$(readlink "${PYTHON_SHIM}")" == "/usr/bin/python3" ]]; then
+        PYTHON_SHIM_CREATED="True"
+    fi
     cleanup
     exit 0
 fi
@@ -135,9 +149,16 @@ provision() {
     sudo visudo -cf "${SUDOERS_FILE}"
 
     # test_basic_operation runs a bare `python` as the target user via `sudo -i`;
-    # macOS ships python3 only, so provide the alias.
+    # macOS ships python3 only, so provide the alias -- but only if nothing is there
+    # already. pyenv, Homebrew and the python.org installers all manage this path,
+    # and clobbering (or later deleting) a developer's `python` is not ours to do.
     sudo mkdir -p "$(dirname "${PYTHON_SHIM}")"
-    sudo ln -sf /usr/bin/python3 "${PYTHON_SHIM}"
+    if [[ -e "${PYTHON_SHIM}" || -L "${PYTHON_SHIM}" ]]; then
+        echo "${PYTHON_SHIM} already exists; leaving it in place"
+    else
+        sudo ln -s /usr/bin/python3 "${PYTHON_SHIM}"
+        PYTHON_SHIM_CREATED="True"
+    fi
 
     sudo dscacheutil -flushcache
 

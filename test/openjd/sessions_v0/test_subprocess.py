@@ -1435,7 +1435,35 @@ class TestMacOSShimInterpreter:
         assert result == str(interpreter.resolve())
 
     def test_falls_back_when_base_not_executable_by_others(self, tmp_path: Path) -> None:
-        # GIVEN the base interpreter is not reachable/executable by other users
+        # GIVEN the base interpreter is not reachable by other users, but the fallback is
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        interpreter = tmp_path / "python3"
+        interpreter.touch()
+
+        def reachable(path: str) -> bool:
+            return path == subprocess_mod._MACOS_FALLBACK_SHIM_INTERPRETER
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod.sys, "_base_executable", str(interpreter), create=True),
+            patch.object(subprocess_mod, "_other_users_can_execute", side_effect=reachable),
+        ):
+            result = subprocess_mod._macos_shim_interpreter()
+
+        # THEN
+        assert result == subprocess_mod._MACOS_FALLBACK_SHIM_INTERPRETER
+
+    def test_raises_actionable_error_when_no_interpreter_is_reachable(self, tmp_path: Path) -> None:
+        """With neither candidate reachable, fail at selection with an explanation.
+
+        Returning the fallback unchecked would defer the failure to Popen, which reports
+        only "[Errno 2] No such file or directory: '/usr/bin/python3'" on a workload that
+        may have nothing to do with Python. The message is asserted rather than just the
+        exception type, because it is the only thing the operator sees: the caller logs
+        str(e) and returns None rather than propagating.
+        """
+        # GIVEN neither the base interpreter nor the fallback is reachable
         from openjd.sessions import _subprocess as subprocess_mod
 
         interpreter = tmp_path / "python3"
@@ -1446,10 +1474,55 @@ class TestMacOSShimInterpreter:
             patch.object(subprocess_mod.sys, "_base_executable", str(interpreter), create=True),
             patch.object(subprocess_mod, "_other_users_can_execute", return_value=False),
         ):
-            result = subprocess_mod._macos_shim_interpreter()
+            with pytest.raises(subprocess_mod.NoReachableInterpreterError) as excinfo:
+                subprocess_mod._macos_shim_interpreter()
 
-        # THEN
-        assert result == subprocess_mod._MACOS_FALLBACK_SHIM_INTERPRETER
+        # THEN the message names both rejected candidates and the remedy
+        message = str(excinfo.value)
+        assert str(interpreter) in message, "the rejected base interpreter must be named"
+        assert subprocess_mod._MACOS_FALLBACK_SHIM_INTERPRETER in message
+        assert "xcode-select --install" in message, "the remedy must be actionable"
+        # And it explains WHY an interpreter is involved at all, since the workload
+        # being launched may have nothing to do with Python.
+        assert "setsid" in message
+
+    def test_no_reachable_interpreter_reaches_the_operator_as_a_start_failure(
+        self, tmp_path: Path, queue_handler: QueueHandler, message_queue: SimpleQueue
+    ) -> None:
+        """The raised message must survive the path back to the operator.
+
+        _start_subprocess catches Exception, logs "Process failed to start: {e}" and
+        returns None; nothing re-raises. So the message text is the entire diagnostic,
+        and this pins that it is not swallowed or replaced along the way.
+        """
+        # GIVEN a cross-user launch on macOS with no reachable interpreter
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        logger = build_logger(queue_handler)
+        target_user = MagicMock(spec=PosixSessionUser)
+        target_user.user = "job-user"
+        target_user.is_process_user.return_value = False
+        subproc = LoggingSubprocess(
+            logger=logger,
+            args=["/path/to/workload.sh"],
+            user=target_user,
+        )
+
+        # WHEN
+        with (
+            patch.object(subprocess_mod, "is_macos", return_value=True),
+            patch.object(subprocess_mod, "is_posix", return_value=True),
+            patch.object(subprocess_mod, "is_windows", return_value=False),
+            patch.object(subprocess_mod, "_other_users_can_execute", return_value=False),
+        ):
+            result = subproc._start_subprocess()
+
+        # THEN the launch fails and the operator gets the actionable message
+        assert result is None
+        messages = collect_queue_messages(message_queue)
+        assert any(
+            "Process failed to start" in m and "xcode-select --install" in m for m in messages
+        ), f"actionable message did not reach the log; got: {messages}"
 
     @pytest.mark.skipif(not is_posix(), reason="POSIX permission-bit semantics")
     def test_other_users_can_execute_system_binary(self) -> None:
