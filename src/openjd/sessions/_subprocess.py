@@ -52,13 +52,35 @@ __all__ = ("LoggingSubprocess",)
 #   * `-I` (isolated mode) drops the current working directory from sys.path and ignores
 #     PYTHON* environment variables, so a file such as os.py in the session working directory
 #     cannot be imported ahead of the standard library before os.execvp() runs.
+#   * SIGPIPE and SIGXFSZ are restored to SIG_DFL before the exec. CPython ignores both
+#     during interpreter startup, and SIG_IGN (unlike an installed handler) SURVIVES exec, so
+#     without this every impersonated workload on macOS would run with SIGPIPE ignored --
+#     `producer | head` would get EPIPE write errors instead of dying on the signal. Popen's
+#     restore_signals does not help: the process it starts is this shim, which re-ignores
+#     them, and os.execvp has no equivalent. Linux's setsid(1) is a small C binary that never
+#     touches these dispositions, so restoring them here is what keeps the two platforms
+#     behaviourally identical. (The blocked-signal mask is also inherited across exec, but
+#     CPython leaves it empty, so there is nothing to reset.)
 #
 # Signal-target discovery (find_sudo_child_process_group_id) locates the workload by walking
 # sudo's single child and comparing process groups. This relies on `sudo -i` exec'ing the
 # command into a single child rather than leaving extra long-lived processes in between; the
 # same assumption already holds for the Linux `setsid -w` path.
+#
+# TIMING, which this path DOES change: the workload's process group is not distinct from
+# sudo's until the shim interpreter has finished booting and reached setsid(). Linux flips the
+# pgid inside a tiny C binary, so it is near-instant there; here it costs a full CPython
+# startup as the job user. Measured on macOS 26.5 (arm64) with /usr/bin/python3: ~120-180ms
+# idle and ~165-190ms with every core saturated, against the 1s default timeout in
+# find_sudo_child_process_group_id. That is comfortable but not enormous, and if the margin
+# ever proves too thin the fix is to raise that timeout for this path specifically rather
+# than to change the shim: discovery failing means a later cancel has no signal target and
+# silently does not kill the workload.
 _MACOS_SETSID_SHIM = (
-    "import os,sys;os.getpgrp()==os.getpid() or os.setsid();os.execvp(sys.argv[1],sys.argv[1:])"
+    "import os,signal,sys;os.getpgrp()==os.getpid() or os.setsid();"
+    "signal.signal(signal.SIGPIPE,signal.SIG_DFL);"
+    "signal.signal(signal.SIGXFSZ,signal.SIG_DFL);"
+    "os.execvp(sys.argv[1],sys.argv[1:])"
 )
 _MACOS_FALLBACK_SHIM_INTERPRETER = "/usr/bin/python3"
 
@@ -69,8 +91,17 @@ def _other_users_can_execute(path: str) -> bool:
     the path must be o+x (traversable). A world-executable file under e.g. a 0o750 home
     directory is still unreachable, so both checks are required.
 
-    This is a conservative approximation: it ignores group permissions and ACLs that might
-    also grant access, so it can return False for a path some specific user could execute.
+    This is a conservative approximation in one direction and an incomplete one in the other:
+
+    * It ignores group permissions and ACLs that might also grant access, so it can return
+      False for a path some specific user could execute.
+    * It only inspects the interpreter FILE. It says nothing about whether the target user can
+      read that interpreter's standard library or, for a framework build, its Python dylib. An
+      interpreter with o+x on the binary but o-rx on .../lib passes this check and then fails
+      at runtime with "Fatal Python error: init_fs_encoding". Proving otherwise would mean
+      actually running the candidate as the target user (a `sudo -u <user> -i <candidate> -I -c
+      ""` probe) on every launch, which is not worth the cost; callers should treat a True
+      result as "the executable is reachable", not "the interpreter will boot".
     """
     try:
         mode = os.stat(path).st_mode

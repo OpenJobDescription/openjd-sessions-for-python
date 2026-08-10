@@ -1422,6 +1422,53 @@ class TestSetsidShimBehavior:
         workload_pid, workload_pgid = (int(x) for x in result.stdout.split())
         assert workload_pid == workload_pgid
 
+    def test_shim_restores_default_signal_dispositions(self) -> None:
+        """The workload must not inherit CPython's SIGPIPE/SIGXFSZ ignores.
+
+        CPython sets both to SIG_IGN during startup, and SIG_IGN survives exec (installed
+        handlers do not). Without the explicit reset in the shim, every impersonated macOS
+        workload would run with SIGPIPE ignored, so `producer | head` would see EPIPE write
+        errors instead of dying on the signal -- a silent divergence from Linux, where
+        setsid(1) is a C binary that never touches these dispositions.
+
+        Probed with perl rather than python or sh: a Python process reports SIG_IGN for
+        SIGPIPE no matter what it inherited, and /bin/sh's `trap -p` prints nothing for an
+        inherited ignore, so neither can tell the two cases apart. perl reports "IGNORE" vs
+        "DEFAULT" and is present on every macOS host and on the Linux CI images.
+        """
+        from shutil import which
+        from subprocess import PIPE, run
+
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        perl = which("perl")
+        if perl is None:
+            pytest.skip("perl is not installed on this host")
+
+        # GIVEN a probe that reports the dispositions it inherited
+        script = (
+            'print "SIGPIPE=", (defined $SIG{PIPE} ? $SIG{PIPE} : "DEFAULT"),'
+            ' " SIGXFSZ=", (defined $SIG{XFSZ} ? $SIG{XFSZ} : "DEFAULT"), "\n"'
+        )
+
+        # WHEN it is exec'd through the shim
+        result = run(
+            [sys.executable, "-I", "-c", subprocess_mod._MACOS_SETSID_SHIM, perl, "-e", script],
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
+        )
+
+        # THEN both arrive at their defaults, not ignored. (Verified to fail against a shim
+        # without the reset, which reports "SIGPIPE=IGNORE SIGXFSZ=IGNORE".)
+        assert result.returncode == 0, f"probe failed: {result.stderr!r}"
+        assert (
+            "SIGPIPE=DEFAULT" in result.stdout
+        ), f"workload inherited a non-default SIGPIPE: {result.stdout!r}"
+        assert (
+            "SIGXFSZ=DEFAULT" in result.stdout
+        ), f"workload inherited a non-default SIGXFSZ: {result.stdout!r}"
+
 
 @pytest.mark.skipif(not is_macos(), reason="macOS-specific interpreter selection")
 class TestMacOSShimInterpreter:

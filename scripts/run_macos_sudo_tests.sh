@@ -195,12 +195,21 @@ provision() {
 
     sudo dscacheutil -flushcache
 
-    if [[ -d "${TMPDIR}" ]]; then
-        echo "${TMPDIR} already exists; reusing it and leaving it in place"
-    else
-        sudo mkdir -p "${TMPDIR}"
-        TMPDIR_CREATED="True"
+    # TMPDIR is a fixed, predictable path under world-writable, sticky /private/tmp, so
+    # any local user can pre-create it before this runs -- including as a symlink.
+    # `mkdir -p` succeeds silently on an existing symlink-to-directory, and chown/chmod
+    # follow symlinks, so reusing whatever is there would let `ln -s /etc "${TMPDIR}"`
+    # turn the next run into `chown`+`chmod 1777` on /etc. Create it with plain `mkdir`
+    # (no -p) so an existing path is a hard error, and only touch ownership/mode on the
+    # directory we just made.
+    if ! sudo mkdir "${TMPDIR}" 2> /dev/null; then
+        echo "ERROR: ${TMPDIR} already exists."
+        echo "       It is created fresh on each run and removed afterwards, so something"
+        echo "       else put it there -- an interrupted earlier run, or another user."
+        echo "       Inspect it, then re-run with --cleanup-only to remove it."
+        exit 1
     fi
+    TMPDIR_CREATED="True"
     # Owned by the test user, group staff: BSD filesystems give a new file the
     # group of its PARENT directory rather than the creator's gid, and the
     # same-user TempDir test asserts the created directory has the creating
