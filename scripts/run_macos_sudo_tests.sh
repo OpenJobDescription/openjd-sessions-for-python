@@ -136,12 +136,24 @@ cleanup() {
 }
 
 if [[ "${CLEANUP_ONLY}" == "True" ]]; then
-    # --cleanup-only recovers from an interrupted run, where provision() never set
-    # PYTHON_SHIM_CREATED in this process. Only claim the alias if it points at the
-    # target we would have used; a pyenv/Homebrew symlink points somewhere else and
-    # is left alone.
+    # --cleanup-only recovers from an interrupted run, where provision() never set the
+    # *_CREATED flags in this process. Each one has to be re-established from what is on
+    # disk, and only when it is safe to claim.
+    #
+    # The alias: only if it points at the target we would have used. A pyenv/Homebrew
+    # symlink points somewhere else and is left alone.
     if [[ -L "${PYTHON_SHIM}" && "$(readlink "${PYTHON_SHIM}")" == "/usr/bin/python3" ]]; then
         PYTHON_SHIM_CREATED="True"
+    fi
+    # The temp root: claim a real directory, refuse a symlink. provision() only ever
+    # creates this fresh (plain mkdir, no -p), so a directory here is one of ours from an
+    # interrupted run. A symlink is not something this script can have produced, and
+    # claiming one would let `rm -rf` be redirected at its target.
+    if [[ -d "${TMPDIR}" && ! -L "${TMPDIR}" ]]; then
+        TMPDIR_CREATED="True"
+    elif [[ -L "${TMPDIR}" ]]; then
+        echo "WARNING: ${TMPDIR} is a symlink, which this script never creates."
+        echo "         Leaving it alone -- remove it by hand after checking where it points."
     fi
     cleanup
     exit 0
@@ -205,8 +217,13 @@ provision() {
     if ! sudo mkdir "${TMPDIR}" 2> /dev/null; then
         echo "ERROR: ${TMPDIR} already exists."
         echo "       It is created fresh on each run and removed afterwards, so something"
-        echo "       else put it there -- an interrupted earlier run, or another user."
-        echo "       Inspect it, then re-run with --cleanup-only to remove it."
+        echo "       else put it there: an interrupted earlier run, or another user."
+        if [[ -L "${TMPDIR}" ]]; then
+            echo "       It is a SYMLINK, which this script never creates. Check where it"
+            echo "       points before removing it -- --cleanup-only will not touch it."
+        else
+            echo "       Inspect it, then re-run with --cleanup-only to remove it."
+        fi
         exit 1
     fi
     TMPDIR_CREATED="True"
