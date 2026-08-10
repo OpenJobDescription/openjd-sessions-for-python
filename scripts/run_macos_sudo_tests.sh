@@ -197,7 +197,19 @@ verify
 echo "--- Creating the test environment ---"
 sudo mkdir -p "${HATCH_DATA_DIR}"
 sudo chown "${TEST_USER}" "${HATCH_DATA_DIR}"
-hatch env create
+# On Python 3.9, virtualenv 21 removed virtualenv.discovery.builtin.propose_interpreters,
+# which the hatch version resolvable there still calls; `hatch env create` then fails with
+# "Environment `default` is incompatible". Say so rather than letting that message stand on
+# its own, since it names neither virtualenv nor the fix.
+if ! hatch env create; then
+    echo ""
+    echo "ERROR: 'hatch env create' failed."
+    if python3 -c 'import sys; sys.exit(0 if sys.version_info < (3, 10) else 1)'; then
+        echo "On Python 3.9 this is usually virtualenv 21, which dropped an API hatch still"
+        echo "uses. Try:  pip install --upgrade hatch 'virtualenv<21'"
+    fi
+    exit 1
+fi
 # The target user executes the venv python and reads test support files, so the
 # venv and the workspace must be world-readable/traversable.
 chmod -R o+rX "${HATCH_DATA_DIR}" "$(pwd)"
