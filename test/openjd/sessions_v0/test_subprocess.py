@@ -1369,16 +1369,71 @@ class TestSetsidShimBehavior:
         workload_pid, workload_pgid = (int(x) for x in result.stdout.split())
         assert workload_pid == workload_pgid
 
+    @pytest.mark.skipif(not is_macos(), reason="the sudo -i shim path is macOS-only")
+    def test_shim_survives_sudo_login_shell_quoting(self) -> None:
+        """Run the shim the way production does: through `sudo -u <user> -i`.
+
+        `sudo -i` composes a login-shell command line, so the shim string passes through a
+        shell that would act on the ';', '(', ')', '[', ']' and '=' characters it contains if
+        any layer re-split it on whitespace. Every other test here bypasses that: they either
+        invoke sys.executable with an argv list, or assert only the list openjd builds. This
+        is the one check that the real quoting holds.
+
+        Self-sudo (target == current user) so no second account is needed. Skipped unless the
+        impersonation environment is provisioned, which is what grants the NOPASSWD rule.
+        """
+        if not has_posix_target_user():
+            pytest.skip(POSIX_SET_TARGET_USER_ENV_VARS_MESSAGE)
+
+        from subprocess import PIPE, run
+
+        from openjd.sessions import _subprocess as subprocess_mod
+
+        me = getpass.getuser()
+
+        # WHEN the workload is launched through sudo's login shell with the shim
+        result = run(
+            [
+                "sudo",
+                "-n",
+                "-u",
+                me,
+                "-i",
+                subprocess_mod._macos_shim_interpreter(),
+                "-I",
+                "-c",
+                subprocess_mod._MACOS_SETSID_SHIM,
+                "/bin/sh",
+                "-c",
+                "echo $$ $(ps -o pgid= -p $$)",
+            ],
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
+        )
+
+        # THEN the shim arrived intact and the workload leads its own process group. A
+        # mangled shim surfaces as a non-zero exit (SyntaxError, or "command not found")
+        # rather than as a wrong pgid, so the exit status is asserted too.
+        assert result.returncode == 0, (
+            "launch through 'sudo -i' failed, which is what a mis-quoted shim looks like: "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        workload_pid, workload_pgid = (int(x) for x in result.stdout.split())
+        assert workload_pid == workload_pgid
+
 
 @pytest.mark.skipif(not is_macos(), reason="macOS-specific interpreter selection")
 class TestMacOSShimInterpreter:
     """Tests for _macos_shim_interpreter(), which selects the Python interpreter that runs
-    the setsid shim as the jobRunAsUser, and for the _other_users_can_execute() permission
-    check that backs it.
+    the setsid shim as the jobRunAsUser.
 
-    Unlike the shim string, this selection logic is genuinely macOS-only (it exists to
-    find an interpreter the job user can execute, outside the agent's venv), so these
-    are scoped to macOS hosts."""
+    Unlike the shim string, this selection logic is genuinely macOS-only (it exists to find
+    an interpreter the job user can execute, outside the agent's venv), so these are scoped
+    to macOS hosts. The permission check it relies on is covered by
+    TestOtherUsersCanExecute, which runs on every POSIX host; these tests patch
+    _other_users_can_execute to a constant, so the real permission logic is exercised
+    there rather than here."""
 
     def test_prefers_base_executable(self, tmp_path: Path) -> None:
         # GIVEN a reachable interpreter behind sys._base_executable
@@ -1523,6 +1578,19 @@ class TestMacOSShimInterpreter:
         assert any(
             "Process failed to start" in m and "xcode-select --install" in m for m in messages
         ), f"actionable message did not reach the log; got: {messages}"
+
+
+class TestOtherUsersCanExecute:
+    """Tests for _other_users_can_execute(), the permission check behind interpreter
+    selection.
+
+    POSIX-scoped rather than macOS-scoped even though only macOS calls it: the logic is
+    plain permission bits (o+x on the file, o+x on every ancestor, OSError -> False) with
+    nothing platform-specific in it, so running it on the Linux legs too is free signal on
+    the check that decides whether cross-user execution is possible at all. Same reasoning
+    as TestSetsidShimBehavior. The per-test markers below stay meaningful because this
+    class is not itself gated on darwin.
+    """
 
     @pytest.mark.skipif(not is_posix(), reason="POSIX permission-bit semantics")
     def test_other_users_can_execute_system_binary(self) -> None:

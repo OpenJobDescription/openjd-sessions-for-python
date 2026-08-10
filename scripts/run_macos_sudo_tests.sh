@@ -63,7 +63,22 @@ export HATCH_DATA_DIR="${HATCH_DATA_DIR:-/opt/hatch}"
 # nothing to gain by making the choice adjustable.
 export TMPDIR=/private/tmp/openjd-tests
 
+# SUDO_USER is inherited from the environment, and TEST_USER is interpolated into a
+# /etc/sudoers.d file below. Validate it before it is used anywhere: a value containing a
+# newline can append arbitrary rules, and `visudo -cf` does not save us because the file is
+# written before it runs (so a rejected file still lands on disk) and because a payload
+# ending in '#' comments out the remainder and validates cleanly. Also guards the
+# dseditgroup and chown calls that take this value.
 TEST_USER="${SUDO_USER:-$(id -un)}"
+if [[ ! "${TEST_USER}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "ERROR: refusing to run with an unusual user name: ${TEST_USER}"
+    echo "       (TEST_USER comes from SUDO_USER, or from 'id -un' when that is unset)"
+    exit 1
+fi
+if ! id -u "${TEST_USER}" > /dev/null 2>&1; then
+    echo "ERROR: '${TEST_USER}' is not a local user on this host."
+    exit 1
+fi
 SUDOERS_FILE=/etc/sudoers.d/openjd-cross-user-tests
 PYTHON_SHIM=/usr/local/bin/python
 # Whether *this* script created PYTHON_SHIM. On a developer machine that path is
