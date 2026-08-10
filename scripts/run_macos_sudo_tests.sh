@@ -23,6 +23,12 @@
 # Requires sudo. On your own machine prefer the default (cleaning up) run: this
 # creates real local accounts, a real /etc/sudoers.d file and a symlink in
 # /usr/local/bin, none of which you want left behind.
+#
+# NOT undone by the teardown: the impersonated user needs to read the test support
+# files, so this adds o+r to test/openjd/sessions_v0/support_files and o+x (traverse
+# only) to the directories leading there, plus o+rX on HATCH_DATA_DIR. Those bits stay
+# after the run. The rest of the working tree is left alone, so untracked or
+# credential-bearing files elsewhere under the repo are unaffected.
 
 set -euo pipefail
 
@@ -50,7 +56,12 @@ export HATCH_DATA_DIR="${HATCH_DATA_DIR:-/opt/hatch}"
 # by the impersonated user, and /var is a symlink to /private/var (which TempDir
 # resolves but gettempdir() does not). Use a dedicated, already-resolved,
 # world-writable temp root so the tests get the /tmp semantics they have on Linux.
-export TMPDIR="${TMPDIR_OVERRIDE:-/private/tmp/openjd-tests}"
+#
+# Deliberately NOT configurable. cleanup() does `rm -rf` on this path, so a
+# caller-supplied value turns a typo (or TMPDIR=/tmp) into a destructive run. The
+# tests only need *a* world-traversable, already-resolved directory, so there is
+# nothing to gain by making the choice adjustable.
+export TMPDIR=/private/tmp/openjd-tests
 
 TEST_USER="${SUDO_USER:-$(id -un)}"
 SUDOERS_FILE=/etc/sudoers.d/openjd-cross-user-tests
@@ -59,6 +70,9 @@ PYTHON_SHIM=/usr/local/bin/python
 # often a real symlink managed by pyenv, Homebrew or a python.org installer, so
 # cleanup must only remove it if we were the one who put it there.
 PYTHON_SHIM_CREATED="False"
+# Likewise for the temp root: cleanup() does `rm -rf` on it, so only remove it if we
+# were the one who made it.
+TMPDIR_CREATED="False"
 
 KEEP="False"
 CLEANUP_ONLY="False"
@@ -66,7 +80,7 @@ PYTEST_ARGS=()
 while [[ "${1:-}" != "" ]]; do
     case $1 in
         -h|--help)
-            sed -n '4,26p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '4,31p' "$0" | sed 's/^# \{0,1\}//'
             exit 1
             ;;
         --keep)          KEEP="True" ;;
@@ -97,7 +111,11 @@ cleanup() {
     for g in "${OPENJD_TEST_SUDO_SHARED_GROUP}" "${OPENJD_TEST_SUDO_DISJOINT_GROUP}"; do
         sudo dseditgroup -o delete "${g}" > /dev/null 2>&1 || true
     done
-    sudo rm -rf "${TMPDIR}" || true
+    # Only remove the temp root if provision() created it: the path is fixed, but a
+    # developer may already have one there from an earlier interrupted run or their own use.
+    if [[ "${TMPDIR_CREATED}" == "True" ]]; then
+        sudo rm -rf "${TMPDIR}" || true
+    fi
     sudo dscacheutil -flushcache || true
     echo "--- Done ---"
 }
@@ -162,7 +180,12 @@ provision() {
 
     sudo dscacheutil -flushcache
 
-    sudo mkdir -p "${TMPDIR}"
+    if [[ -d "${TMPDIR}" ]]; then
+        echo "${TMPDIR} already exists; reusing it and leaving it in place"
+    else
+        sudo mkdir -p "${TMPDIR}"
+        TMPDIR_CREATED="True"
+    fi
     # Owned by the test user, group staff: BSD filesystems give a new file the
     # group of its PARENT directory rather than the creator's gid, and the
     # same-user TempDir test asserts the created directory has the creating
@@ -210,9 +233,18 @@ if ! hatch env create; then
     fi
     exit 1
 fi
-# The target user executes the venv python and reads test support files, so the
-# venv and the workspace must be world-readable/traversable.
-chmod -R o+rX "${HATCH_DATA_DIR}" "$(pwd)"
+# The target user executes the venv python and reads the test support files, so both
+# must be world-readable/traversable.
+#
+# Scoped to exactly those two, NOT the whole checkout. `chmod -R o+rX .` would make
+# every file in the working tree world-readable, including untracked files, .env-style
+# files and anything else a developer happens to keep under the repo root, and nothing
+# here puts those bits back.
+SUPPORT_FILES="test/openjd/sessions_v0/support_files"
+chmod -R o+rX "${HATCH_DATA_DIR}"
+chmod -R o+rX "${SUPPORT_FILES}"
+# Traversal (o+x) only, no read, on the directories leading to the support files.
+chmod o+x . test test/openjd test/openjd/sessions_v0
 
 echo "--- Which interpreter the setsid shim resolves to ---"
 # NOTE: no braces in this inline script -- hatch run applies its own {...}
