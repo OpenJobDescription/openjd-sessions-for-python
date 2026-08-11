@@ -3029,10 +3029,16 @@ class TestEnvironmentVariablesInTasks_2023_09:
 
             # THEN
             assert session.state == SessionState.READY_ENDING
-            assert (
+            # The error is logged by the subprocess stdout-filter thread, which can
+            # still be draining the pipe when the state transition is observed above.
+            # Wait for the message rather than racing that thread.
+            expected_message = (
                 "openjd_env: FOO -- ERROR: Failed to parse environment variable assignment."
-                in caplog.messages
             )
+            deadline = time.monotonic() + 5
+            while expected_message not in caplog.messages and time.monotonic() < deadline:
+                time.sleep(0.1)
+            assert expected_message in caplog.messages
 
         callback.assert_has_calls(
             [

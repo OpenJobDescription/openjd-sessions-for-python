@@ -1,0 +1,57 @@
+name: macOS Cross-User Tests
+
+# Runs the POSIX user-impersonation tests (which xfail when the OPENJD_TEST_SUDO_*
+# environment variables are unset) on a macOS runner. This exercises the real
+# `sudo -u <user> -i <python> -I -c <setsid shim>` cross-user path end to end:
+# process launch as another user, new-process-group creation, signalling, and
+# process-tree termination.
+#
+# The provisioning, the test run and the teardown all live in
+# scripts/run_macos_sudo_tests.sh, so a developer can reproduce this job on their
+# own Mac with one command (`hatch run cross-user-test-macos`). This job is
+# deliberately a thin wrapper around that script: anything it did that the script
+# does not would be something a developer cannot reproduce.
+#
+# This job covers ONLY the cross-user tests. The rest of the suite already runs on
+# macos-latest across the same Python matrix in code_quality.yml, so re-running it
+# here would duplicate that coverage.
+#
+# Runs on every PR rather than behind a paths filter: the cross-user path can be
+# broken from more places than a file list can enumerate (session setup, tempdir
+# handling, signalling), and a filtered job that misses those reads as a pass.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [ mainline, release ]
+
+jobs:
+  macos-cross-user:
+    name: Python ${{ matrix.python-version }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Matches code_quality.yml: requires-python is >=3.9, and the boundary
+        # versions are where an interpreter-specific difference in the setsid shim
+        # or in sys._base_executable resolution would surface.
+        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install hatch
+        # virtualenv 21 removed virtualenv.discovery.builtin.propose_interpreters, which
+        # the hatch version resolvable on 3.9 still calls, so `hatch env create` fails with
+        # "Environment `default` is incompatible". Pin it for 3.9 only and leave 3.10+ on
+        # current virtualenv. Same constraint the other workflows in this repo use.
+        run: pip install --upgrade hatch 'virtualenv<21; python_version < "3.10"'
+
+      - name: Provision, run cross-user tests, and tear down
+        # --keep skips the teardown: the runner is throwaway, so leaving the
+        # environment in place costs nothing and keeps a failed run inspectable.
+        run: bash scripts/run_macos_sudo_tests.sh --keep
