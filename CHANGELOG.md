@@ -1,3 +1,9 @@
+## 0.10.14 (2026-08-11)
+
+### Features
+* support running Sessions as a jobRunAsUser on macOS (#335) ([`2df2d99`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/2df2d999e359d5a14d333d9948209c3a1634ab44))
+
+
 ## 0.10.13 (2026-08-06)
 
 
