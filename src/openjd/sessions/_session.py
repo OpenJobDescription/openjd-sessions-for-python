@@ -417,6 +417,12 @@ class Session(object):
                 within all actions running within this session. Defaults to None.
             retain_working_dir (bool, optional): If set, then the Session's Working Directory
                 is not deleted when this Session object is deleted. Defaults to False.
+                Note: the working directory's *name* no longer encodes the session id
+                (it is mkdtemp()'s random characters and nothing else), so a retained
+                directory is not attributable to a session by its name alone. The
+                session log records the working directory's full path against the
+                session id; that log is how a retained or orphaned directory is
+                resolved back to its session.
             user (Optional[SessionUser]): The specific OS user to run subprocesses as, and whom
                 will have permissions to the Session's Working Directory.
                 Defaults to the current process user.
@@ -631,6 +637,10 @@ class Session(object):
         """The directory that was created for this Session's working files.
         This is available in a Job Template's format string expressions as
         Session.WorkingDirectory
+
+        The directory's name is generated (mkdtemp()'s random characters) and
+        carries no part of the session id, so do not parse identity out of it;
+        the session id is recorded against this path in the session log instead.
 
         Raises:
             RuntimeError: If this Session has no working directory, which means

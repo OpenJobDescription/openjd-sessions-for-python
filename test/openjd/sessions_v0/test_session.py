@@ -54,6 +54,7 @@ from openjd.sessions import (
     LogContent,
 )
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
+from openjd.sessions import _session as session_module
 from openjd.sessions._action_filter import ActionMessageKind
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._logging import LoggerAdapter, LogExtraInfo
@@ -564,21 +565,11 @@ class TestSessionWorkingDirectoryName:
     DEADLINE_SHAPED_ID = f"session-{uuid.uuid4().hex}"
 
     def test_working_directory_name_length_is_bounded(self) -> None:
-        # GIVEN
-        job_params = dict[str, ParameterValue]()
-
-        # WHEN
-        with Session(
-            session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
-        ) as session:
-            # THEN
-            assert len(session.working_directory.name) == SESSION_DIR_NAME_LENGTH
-            # Guard on the budget itself, independent of the constant: this cost 48.
-            assert len(session.working_directory.name) <= 8
-
-    def test_working_directory_name_carries_no_part_of_the_session_id(self) -> None:
-        # prefix="" rather than None: None would restore mkdtemp()'s "tmp" template,
-        # so guard the distinction and not just the absence of the id.
+        # A ceiling, not an equality: the exact count is mkdtemp()'s to choose
+        # (CPython currently yields 8 characters, hence the constant) and a stdlib
+        # change to a *shorter* name would not be a regression. What must not
+        # regress is the budget -- passing the 40-character session id as a prefix
+        # cost 48.
 
         # GIVEN
         job_params = dict[str, ParameterValue]()
@@ -588,12 +579,29 @@ class TestSessionWorkingDirectoryName:
             session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
         ) as session:
             # THEN
-            name = session.working_directory.name
-            assert not name.startswith("tmp")
-            assert "session" not in name
-            assert not any(
-                self.DEADLINE_SHAPED_ID[-n:] in name for n in range(4, len(self.DEADLINE_SHAPED_ID))
-            )
+            assert len(session.working_directory.name) <= SESSION_DIR_NAME_LENGTH
+
+    def test_working_directory_is_created_with_an_empty_prefix(self) -> None:
+        # prefix="" rather than None is the load-bearing choice: None restores
+        # mkdtemp()'s "tmp" template (3 characters) and the session id (48) is what
+        # we removed. Assert the argument we pass, not a sample of the random name:
+        # inspecting the name for the *absence* of a prefix is probabilistic -- a
+        # random [a-z0-9_] name can happen to begin "tmp" -- while the call is exact.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        with patch.object(session_module, "TempDir", wraps=session_module.TempDir) as mock_tempdir:
+            with Session(
+                session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
+            ) as session:
+                # THEN
+                # The first TempDir call is the working directory; the second is
+                # the nested embedded_files directory.
+                assert mock_tempdir.call_args_list[0].kwargs["prefix"] == ""
+                # ... and nothing of the session id survived into the name.
+                assert self.DEADLINE_SHAPED_ID not in session.working_directory.name
 
     @pytest.mark.usefixtures("caplog")  # built-in fixture
     def test_full_session_id_remains_in_the_log(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -617,9 +625,15 @@ class TestSessionWorkingDirectoryName:
                 m == f"Session Working Directory: {str(session.working_directory)}"
                 for m in caplog.messages
             )
+            # caplog.records collects from every logger propagating to root, so
+            # filter to this library's before asserting the extra is present --
+            # and default to None, not the expected id, so a record that is
+            # *missing* the extra fails rather than passing vacuously (which is
+            # precisely the regression -- a dropped LoggerAdapter -- this guards).
+            session_records = [r for r in caplog.records if r.name.startswith("openjd.sessions")]
+            assert session_records
             assert all(
-                getattr(r, "session_id", self.DEADLINE_SHAPED_ID) == self.DEADLINE_SHAPED_ID
-                for r in caplog.records
+                getattr(r, "session_id", None) == self.DEADLINE_SHAPED_ID for r in session_records
             )
 
     @pytest.mark.usefixtures("tmp_path")  # built-in fixture
@@ -662,7 +676,7 @@ class TestSessionWorkingDirectoryName:
         job_params = dict[str, ParameterValue]()
         sessions: list[Session] = []
         lock = threading.Lock()
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
 
         def make_session() -> None:
             try:
@@ -671,7 +685,7 @@ class TestSessionWorkingDirectoryName:
                     job_parameter_values=job_params,
                     session_root_directory=tmp_path,
                 )
-            except BaseException as err:  # pragma: nocover - only on a failure
+            except Exception as err:  # pragma: nocover - only on a failure
                 with lock:
                     errors.append(err)
                 return

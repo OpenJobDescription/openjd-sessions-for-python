@@ -261,7 +261,9 @@ class TempDir:
             dir (Optional[Path]): The directory in which to create the temp dir.
                 Defaults to tempfile.gettempdir().
             prefix (Optional[str]): A prefix to use in the name of the generated temp dir.
-                Defaults to "".
+                Defaults to None, which mkdtemp() replaces with its "tmp" template
+                (3 characters). Pass "" for no prefix at all -- a shorter name, and
+                not the same as omitting the argument.
             user (Optional[SessionUser]): A group that will own the created directory.
                 The group-write bit will be set on the directory if this option is supplied.
                 Defaults to this process' effective user/group.
