@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 import time
 import uuid
 from datetime import timedelta
@@ -53,10 +54,12 @@ from openjd.sessions import (
     LogContent,
 )
 from openjd.sessions import _path_mapping as path_mapping_impl_mod
+from openjd.sessions import _session as session_module
 from openjd.sessions._action_filter import ActionMessageKind
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._logging import LoggerAdapter, LogExtraInfo
 from openjd.sessions._session import (
+    SESSION_DIR_NAME_LENGTH,
     EnvironmentVariableChange,
     EnvironmentVariableSetChange,
     EnvironmentVariableUnsetChange,
@@ -546,6 +549,193 @@ class TestSessionInitialization:
                         assert not any(
                             msg.startswith(expected_err_prefix) for msg in caplog.messages
                         )
+
+
+class TestSessionWorkingDirectoryName:
+    """The session working directory's name is a Windows MAX_PATH budget decision.
+
+    - Every character is charged against MAX_PATH for the applications a job runs.
+    - Uniqueness is all the name carries; mkdtemp() supplies it. The uniqueness
+      tests are a regression guard on that, not a test of entropy.
+    - Directory -> session is the log's job, not the name's. See
+      test_full_session_id_remains_in_the_log.
+    """
+
+    # session-<32 hex uuid>, as a Deadline Cloud session id is shaped.
+    DEADLINE_SHAPED_ID = f"session-{uuid.uuid4().hex}"
+
+    def test_working_directory_name_length_is_bounded(self) -> None:
+        # A ceiling, not an equality: the exact count is mkdtemp()'s to choose
+        # (CPython currently yields 8 characters, hence the constant) and a stdlib
+        # change to a *shorter* name would not be a regression. What must not
+        # regress is the budget -- passing the 40-character session id as a prefix
+        # cost 48.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        with Session(
+            session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
+        ) as session:
+            # THEN
+            assert len(session.working_directory.name) <= SESSION_DIR_NAME_LENGTH
+
+    def test_working_directory_is_created_with_an_empty_prefix(self) -> None:
+        # prefix="" rather than None is the load-bearing choice: None restores
+        # mkdtemp()'s "tmp" template (3 characters) and the session id (48) is what
+        # we removed. Assert the argument we pass, not a sample of the random name:
+        # inspecting the name for the *absence* of a prefix is probabilistic -- a
+        # random [a-z0-9_] name can happen to begin "tmp" -- while the call is exact.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        with patch.object(session_module, "TempDir", wraps=session_module.TempDir) as mock_tempdir:
+            with Session(
+                session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
+            ) as session:
+                # THEN
+                # The first TempDir call is the working directory; the second is
+                # the nested embedded_files directory.
+                assert mock_tempdir.call_args_list[0].kwargs["prefix"] == ""
+                # ... and nothing of the session id survived into the name.
+                assert self.DEADLINE_SHAPED_ID not in session.working_directory.name
+
+    @pytest.mark.usefixtures("caplog")  # built-in fixture
+    def test_full_session_id_remains_in_the_log(self, caplog: pytest.LogCaptureFixture) -> None:
+        # The only thing that resolves an orphaned directory back to a session now.
+        # Must not be relaxed: announced at init, logged beside the working
+        # directory's path, and on every record as the `session_id` extra.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+
+        # WHEN
+        with Session(
+            session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
+        ) as session:
+            # THEN
+            assert any(
+                m == f"Initializing Open Job Description Session: {self.DEADLINE_SHAPED_ID}"
+                for m in caplog.messages
+            )
+            assert any(
+                m == f"Session Working Directory: {str(session.working_directory)}"
+                for m in caplog.messages
+            )
+            # caplog.records collects from every logger propagating to root, so
+            # filter to this library's before asserting the extra is present --
+            # and default to None, not the expected id, so a record that is
+            # *missing* the extra fails rather than passing vacuously (which is
+            # precisely the regression -- a dropped LoggerAdapter -- this guards).
+            session_records = [r for r in caplog.records if r.name.startswith("openjd.sessions")]
+            assert session_records
+            assert all(
+                getattr(r, "session_id", None) == self.DEADLINE_SHAPED_ID for r in session_records
+            )
+
+    @pytest.mark.usefixtures("tmp_path")  # built-in fixture
+    def test_many_sessions_in_one_root_get_distinct_directories(self, tmp_path: Path) -> None:
+        # Guard on mkdtemp()'s exclusive-create. Sessions sharing one root is the
+        # normal case for a worker host. All held open at once, so no directory is
+        # free by virtue of an earlier one having been cleaned up.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+        sessions: list[Session] = []
+
+        try:
+            # WHEN
+            for _ in range(64):
+                sessions.append(
+                    Session(
+                        session_id=f"session-{uuid.uuid4().hex}",
+                        job_parameter_values=job_params,
+                        session_root_directory=tmp_path,
+                    )
+                )
+
+            # THEN
+            names = [s.working_directory.name for s in sessions]
+            assert len(set(names)) == len(names)
+            assert all(s.working_directory.is_dir() for s in sessions)
+            # ... and the same for the nested embedded files directories.
+            assert all(s.files_directory.is_dir() for s in sessions)
+        finally:
+            for session in sessions:
+                session.cleanup()
+
+    @pytest.mark.usefixtures("tmp_path")  # built-in fixture
+    def test_concurrent_sessions_in_one_root_get_distinct_directories(self, tmp_path: Path) -> None:
+        # The same under real concurrency: mkdtemp() is create-or-fail, not
+        # check-then-create, so there is no window between picking and creating.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+        sessions: list[Session] = []
+        lock = threading.Lock()
+        errors: list[Exception] = []
+
+        def make_session() -> None:
+            try:
+                session = Session(
+                    session_id=f"session-{uuid.uuid4().hex}",
+                    job_parameter_values=job_params,
+                    session_root_directory=tmp_path,
+                )
+            except Exception as err:  # pragma: nocover - only on a failure
+                with lock:
+                    errors.append(err)
+                return
+            with lock:
+                sessions.append(session)
+
+        threads = [threading.Thread(target=make_session) for _ in range(16)]
+
+        try:
+            # WHEN
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            # THEN
+            assert errors == []
+            names = [s.working_directory.name for s in sessions]
+            assert len(names) == len(threads)
+            assert len(set(names)) == len(names)
+        finally:
+            for session in sessions:
+                session.cleanup()
+
+    def test_directory_names_are_portable_across_platforms(self) -> None:
+        # One generator runs on every platform, so the name must be legal on all of
+        # them: no Windows-reserved character or device name.
+        #
+        # Lower case specifically: NTFS folds case, so names differing only in case
+        # would be two directories on Linux and one on Windows. mkdtemp()'s alphabet
+        # is lower case only, so that cannot arise.
+
+        # GIVEN
+        job_params = dict[str, ParameterValue]()
+        windows_reserved_chars = set('<>:"/\\|?*')
+        windows_reserved_names = {"con", "prn", "aux", "nul"} | {
+            f"{stem}{n}" for stem in ("com", "lpt") for n in range(1, 10)
+        }
+
+        # WHEN
+        with Session(
+            session_id=self.DEADLINE_SHAPED_ID, job_parameter_values=job_params
+        ) as session:
+            for name in (session.working_directory.name, session.files_directory.name):
+                # THEN
+                assert not (set(name) & windows_reserved_chars)
+                assert not any(ord(c) < 32 for c in name)
+                assert not name.endswith((".", " "))
+                assert name.split(".")[0] not in windows_reserved_names
+                assert name == name.lower()
 
 
 class TestSessionCallbacks:

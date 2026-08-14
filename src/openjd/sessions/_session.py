@@ -74,6 +74,22 @@ if TYPE_CHECKING:
 __all__ = ("SessionState", "Session", "EnvironmentIdentifier")
 
 
+SESSION_DIR_NAME_LENGTH = 8
+"""Length of a session working directory's name.
+
+- Every character is charged against MAX_PATH (260) for the applications a job
+  runs, which are not long-path aware, so `LongPathsEnabled` and `\\\\?\\` do not
+  help them.
+- The name is mkdtemp()'s 8 random characters and nothing else. Passing the
+  40-character session id as a prefix cost 48.
+- The id was pure label there: mkdtemp() generates the random characters and
+  creates each candidate with an exclusive mkdir(), retrying under a taken name.
+- Directory -> session stays recoverable from the session log, which the Worker
+  Agent writes to `<worker_logs_dir>/<queue_id>/<session_id>.log` and which
+  outlives the directory. See _create_working_directory.
+"""
+
+
 class SessionState(str, Enum):
     READY = "ready"
     """The state of a Session when it is ready to run actions.
@@ -401,6 +417,12 @@ class Session(object):
                 within all actions running within this session. Defaults to None.
             retain_working_dir (bool, optional): If set, then the Session's Working Directory
                 is not deleted when this Session object is deleted. Defaults to False.
+                Note: the working directory's *name* no longer encodes the session id
+                (it is mkdtemp()'s random characters and nothing else), so a retained
+                directory is not attributable to a session by its name alone. The
+                session log records the working directory's full path against the
+                session id; that log is how a retained or orphaned directory is
+                resolved back to its session.
             user (Optional[SessionUser]): The specific OS user to run subprocesses as, and whom
                 will have permissions to the Session's Working Directory.
                 Defaults to the current process user.
@@ -615,6 +637,10 @@ class Session(object):
         """The directory that was created for this Session's working files.
         This is available in a Job Template's format string expressions as
         Session.WorkingDirectory
+
+        The directory's name is generated (mkdtemp()'s random characters) and
+        carries no part of the session id, so do not parse identity out of it;
+        the session id is recorded against this path in the session log instead.
 
         Raises:
             RuntimeError: If this Session has no working directory, which means
@@ -2146,8 +2172,17 @@ class Session(object):
                         ),
                     )
 
+        # prefix="" is deliberate, and is not the same as omitting it: mkdtemp()
+        # substitutes its "tmp" template for a prefix of None, costing 3 characters.
+        # See SESSION_DIR_NAME_LENGTH.
+        #
         # Raises: RuntimeError
-        return TempDir(dir=root_dir, prefix=self._session_id, user=self._user, logger=self._logger)
+        return TempDir(
+            dir=root_dir,
+            prefix="",
+            user=self._user,
+            logger=self._logger,
+        )
 
     def _create_files_directory(self) -> TempDir:
         """Creates the subdirectory of the working directory in which we'll materialize
