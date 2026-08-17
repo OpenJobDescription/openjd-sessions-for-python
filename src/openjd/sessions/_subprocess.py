@@ -594,7 +594,7 @@ class LoggingSubprocess(object):
                             )
                             command.extend(
                                 [
-                                    "sudo",
+                                    "/usr/bin/sudo",
                                     "-u",
                                     user.user,
                                     "-i",
@@ -605,7 +605,9 @@ class LoggingSubprocess(object):
                                 ]
                             )
                         else:
-                            command.extend(["sudo", "-u", user.user, "-i", "setsid", "-w"])
+                            command.extend(
+                                ["/usr/bin/sudo", "-u", user.user, "-i", "/usr/bin/setsid", "-w"]
+                            )
                 elif is_windows():
                     user = cast(WindowsSessionUser, self._user)  # type: ignore
 
@@ -888,7 +890,7 @@ class LoggingSubprocess(object):
             user = cast(PosixSessionUser, self._user)
             # Only sudo if the user to run as is not the same as the current user.
             if not user.is_process_user():
-                kill_cmd = ["sudo", "-u", user.user, "-i"]
+                kill_cmd = ["/usr/bin/sudo", "-u", user.user, "-i"]
 
         # If we were unable to detect sudo's child process PID after launching the
         # subprocess, we try again now
@@ -943,7 +945,7 @@ class LoggingSubprocess(object):
 
         kill_cmd.extend(
             [
-                "kill",
+                "/usr/bin/kill",
                 "-s",
                 signal_name,
                 "--",
@@ -971,12 +973,14 @@ class LoggingSubprocess(object):
 
     def _log_process_tree(self) -> None:
         """A developer method to visualize the process tree including PIDs and PGIDs when debuging tests"""
-        pstree_result = run(["pstree", "-pg"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
+        pstree_result = run(
+            ["/usr/bin/pstree", "-pg"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True
+        )
         self._logger.debug(
             f"pstree -pg output: {pstree_result.stdout}",
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),
         )
-        ps_result = run(["ps", "-ejH"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
+        ps_result = run(["/bin/ps", "-ejH"], stdout=PIPE, stderr=STDOUT, stdin=DEVNULL, text=True)
         self._logger.debug(
             f"ps -ejH output:\n{ps_result.stdout}",
             extra=LogExtraInfo(openjd_log_content=LogContent.PROCESS_CONTROL),

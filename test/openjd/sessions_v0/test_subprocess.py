@@ -1315,7 +1315,7 @@ class TestLoggingSubprocessMacOSSetsid:
         # THEN
         built_command = mock_popen.call_args.kwargs["args"]
         assert built_command == [
-            "sudo",
+            "/usr/bin/sudo",
             "-u",
             "job-user",
             "-i",
