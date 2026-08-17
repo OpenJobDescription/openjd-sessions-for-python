@@ -1308,6 +1308,15 @@ class TestLoggingSubprocessMacOSSetsid:
             patch.object(
                 subprocess_mod, "_macos_shim_interpreter", return_value="/usr/local/bin/python3"
             ),
+            # Stubbed so the assertion below pins the *shape* of the argv rather
+            # than this host's sudo location. It also makes the assertion prove
+            # the command went through the trusted-path resolver: a literal
+            # "sudo" in the source would no longer match.
+            patch.object(
+                subprocess_mod,
+                "system_command_path",
+                side_effect=lambda name: f"/trusted/bin/{name}",
+            ),
             patch.object(subprocess_mod, "Popen") as mock_popen,
         ):
             subproc._start_subprocess()
@@ -1315,7 +1324,7 @@ class TestLoggingSubprocessMacOSSetsid:
         # THEN
         built_command = mock_popen.call_args.kwargs["args"]
         assert built_command == [
-            "/usr/bin/sudo",
+            "/trusted/bin/sudo",
             "-u",
             "job-user",
             "-i",
