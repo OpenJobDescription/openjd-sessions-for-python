@@ -9,6 +9,7 @@ from typing import Optional
 
 from .._logging import LoggerAdapter, LogContent, LogExtraInfo
 from .._os_checker import is_posix, is_linux
+from .._system_commands import system_command_path
 
 PGREP_NO_MATCH = 1
 """``pgrep``'s exit status for "no processes matched".
@@ -174,7 +175,7 @@ def find_child_process_id_pgrep(
     sudo_pid: int,
 ) -> Optional[int]:
     pgrep_result = run(
-        ["pgrep", "-P", str(sudo_pid)],
+        [system_command_path("pgrep"), "-P", str(sudo_pid)],
         stdout=PIPE,
         stderr=STDOUT,
         stdin=DEVNULL,
