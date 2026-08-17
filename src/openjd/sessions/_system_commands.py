@@ -52,23 +52,44 @@ TRUSTED_SYSTEM_DIRECTORIES: Tuple[str, ...] = (
     # setuid, so the wrapper directory has to be consulted first. Everywhere else
     # this directory does not exist and costs one stat().
     "/run/wrappers/bin",
+    # ...and the two NixOS entries are a pair. /run/wrappers/bin holds *only* the
+    # setuid/setcap wrappers, so on NixOS it resolves `sudo` and nothing else:
+    # /usr/bin holds just `env`, /bin just `sh`, and the sbin directories do not
+    # exist. `setsid` and `pgrep` live in this symlink farm, which nixos-rebuild
+    # manages and root owns, making it trust-equivalent to /usr/bin there.
+    #
+    # Without this entry the ordering above buys nothing: a cross-user session
+    # would resolve `sudo` and then fail on `setsid` one line later. The pairing
+    # is asserted in TestTrustedDirectories so it cannot be half-removed.
+    "/run/current-system/sw/bin",
     "/usr/bin",
     "/bin",
-    # sbin entries are last: `shutdown` lives here, and on non-usr-merged
-    # distributions (some Debian releases) it is *only* at /sbin/shutdown.
+    # sbin entries are last: on non-usr-merged distributions (some Debian
+    # releases) some system commands exist only under /sbin.
     "/usr/sbin",
     "/sbin",
 )
 
 
-class SystemCommandNotFoundError(Exception):
+class SystemCommandNotFoundError(FileNotFoundError):
     """A required system command was not present in any trusted directory.
 
-    Deliberately not a subclass of :class:`FileNotFoundError`. Callers around the
-    subprocess machinery already catch ``OSError`` subclasses to mean "the thing
-    I tried to launch is missing, carry on degraded", and this condition must not
-    be absorbed by that handling: it means a privileged helper is unavailable, so
-    the operation cannot proceed safely.
+    A :class:`FileNotFoundError`, and therefore an :class:`OSError`, on purpose.
+
+    An earlier revision of this module deliberately made it a plain ``Exception``,
+    reasoning that "a privileged helper is unavailable" must not be absorbed by
+    handlers that catch ``OSError`` to mean "carry on degraded". That reasoning was
+    wrong here, because it assumed rather than checked what those handlers do.
+    ``_runner_base``'s cancel path catches ``OSError`` around
+    ``notify()``/``terminate()`` precisely so a failure to signal does not unwind an
+    in-progress cancelation -- its own comment says "a cancel path is the wrong
+    place to raise". Escaping that handler would lose the cancel's bookkeeping,
+    which is worse than the warning it logs.
+
+    So the semantics this class wants are exactly ``FileNotFoundError``'s: the thing
+    we tried to launch is not there. Remaining a distinct type still lets a caller
+    that cares tell "not in any trusted directory" apart from "``exec`` failed", and
+    the message says which.
     """
 
 
@@ -88,9 +109,16 @@ def _validate_command_name(name: str) -> None:
     # filename character on POSIX, but no command this module resolves contains
     # one, and treating it as suspect keeps the check identical on both
     # platforms rather than subtly weaker on one.
-    if "/" in name or "\\" in name:
+    #
+    # The colon is rejected for the same reason, and it is not hypothetical:
+    # ntpath.join(r"C:\Windows\System32", "D:evil") == "D:evil". A drive-relative
+    # name discards the trusted prefix entirely while containing no separator at
+    # all, so a separator-only check lets it through. POSIX joins it harmlessly,
+    # but the guard belongs here rather than depending on which os.path is loaded.
+    if "/" in name or "\\" in name or ":" in name:
         raise ValueError(
-            f"A system command name must not contain a path separator, but got {name!r}."
+            f"A system command name must not contain a path separator or drive "
+            f"specifier, but got {name!r}."
         )
 
 
