@@ -235,6 +235,26 @@ class TestTrustedDirectories:
         assert "/usr/sbin" in TRUSTED_SYSTEM_DIRECTORIES
         assert "/sbin" in TRUSTED_SYSTEM_DIRECTORIES
 
+    def test_the_setuid_wrapper_precedes_the_nixos_symlink_farm(self) -> None:
+        """Order between the two NixOS entries decides which `sudo` wins.
+
+        `/run/current-system/sw/bin` also contains a `sudo`, but a non-setuid one:
+        nix store paths cannot carry the setuid bit, which is the whole reason the
+        wrapper directory exists. `_is_executable_file` checks only that the
+        candidate is a file with an execute bit, so it cannot tell the two apart --
+        tuple order is the only thing that does.
+
+        Getting this backwards would resolve a `sudo` that cannot elevate, so
+        cross-user sessions would fail on a host where the correct binary was
+        present all along. The wrapper-before-/usr/bin assertion below does not
+        cover it, because sw/bin sits between them.
+        """
+        directories = TRUSTED_SYSTEM_DIRECTORIES
+
+        assert directories.index("/run/wrappers/bin") < directories.index(
+            "/run/current-system/sw/bin"
+        )
+
     def test_the_two_nixos_entries_are_present_as_a_pair(self) -> None:
         """/run/wrappers/bin alone supports no complete code path.
 
