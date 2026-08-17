@@ -959,8 +959,8 @@ class LoggingSubprocess(object):
         # In the cross-user branch it must stay a bare name. `sudo -i` simulates an
         # initial login: it starts the target user's login shell and hands it the
         # command via -c, so `kill` is a *shell builtin* there. Nothing is looked up
-        # on PATH, and -i has already reset the environment, so CWE-426 does not
-        # reach this position. Resolving it would instead invent a hard dependency
+        # on PATH, and -i has already reset the environment, so a job-controlled
+        # PATH cannot reach this position. Resolving it would invent a hard dependency
         # on kill(1) from procps, which Debian `-slim` images -- a common worker
         # base -- do not install, and would break every cross-user SIGKILL fallback
         # on such a host.
