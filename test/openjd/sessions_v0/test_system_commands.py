@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from openjd.sessions._os_checker import is_posix
 from openjd.sessions._system_commands import (
     SystemCommandNotFoundError,
     TRUSTED_SYSTEM_DIRECTORIES,
@@ -107,6 +108,11 @@ class TestOnlySearchesTrustedDirectories:
         # THEN
         assert result == str(first / "target-cmd")
 
+    @pytest.mark.skipif(
+        not is_posix(),
+        reason="On Windows os.access(X_OK) is true for any existing file, so "
+        "'not executable' is not expressible there",
+    )
     def test_ignores_a_non_executable_file(self, tmp_path: Path) -> None:
         # GIVEN
         (tmp_path / "target-cmd").write_text("not executable")
@@ -128,6 +134,11 @@ class TestRejectsNonBareNames:
             pytest.param("", id="empty"),
             pytest.param(".", id="curdir"),
             pytest.param("..", id="pardir"),
+            # ntpath.join(r"C:\Windows\System32", "D:evil") == "D:evil" -- a
+            # drive-relative name discards the trusted prefix while containing no
+            # separator, so a separator-only guard lets it through.
+            pytest.param("D:evil", id="drive-relative"),
+            pytest.param("a:b", id="colon"),
         ],
     )
     def test_rejects_name_with_a_path_component(self, name: str) -> None:
@@ -179,11 +190,31 @@ class TestMissingCommandRaises:
         assert "openjd-definitely-not-installed" in message
         assert "PATH is deliberately not searched" in message
 
-    def test_is_not_a_filenotfounderror(self) -> None:
-        """The subprocess machinery catches OSError subclasses to mean "the thing I
-        tried to launch is missing, carry on degraded". An unavailable privileged
-        helper must not be absorbed by that handling."""
-        assert not issubclass(SystemCommandNotFoundError, OSError)
+    def test_is_an_oserror_so_the_cancel_path_can_absorb_it(self) -> None:
+        """This assertion is the inverse of what an earlier revision asserted, and
+        the reversal is the point.
+
+        That revision made the error a plain ``Exception`` on the theory that an
+        unavailable privileged helper must not be absorbed by "carry on degraded"
+        handlers. The theory was never checked against the handlers themselves.
+        ``_runner_base``'s cancel path catches ``OSError`` around
+        ``notify()``/``terminate()`` deliberately, so that failing to signal does
+        not unwind an in-progress cancelation -- its comment says "a cancel path is
+        the wrong place to raise". A non-OSError escapes that guard and costs the
+        cancel its bookkeeping.
+
+        Signalling reaches ``system_command_path("sudo")``, so this is a live path,
+        not a hypothetical one.
+        """
+        assert issubclass(SystemCommandNotFoundError, OSError)
+        assert issubclass(SystemCommandNotFoundError, FileNotFoundError)
+
+    def test_is_still_distinguishable_from_a_plain_exec_failure(self) -> None:
+        """Being a FileNotFoundError must not cost a caller the ability to tell
+        "no trusted directory has it" apart from "exec failed"."""
+        assert SystemCommandNotFoundError is not FileNotFoundError
+        with pytest.raises(SystemCommandNotFoundError):
+            system_command_path("openjd-definitely-not-installed")
 
 
 class TestTrustedDirectories:
@@ -204,7 +235,25 @@ class TestTrustedDirectories:
         assert "/usr/sbin" in TRUSTED_SYSTEM_DIRECTORIES
         assert "/sbin" in TRUSTED_SYSTEM_DIRECTORIES
 
+    def test_the_two_nixos_entries_are_present_as_a_pair(self) -> None:
+        """/run/wrappers/bin alone supports no complete code path.
 
+        It holds only the setuid wrappers, so on NixOS it resolves `sudo` and
+        nothing else -- /usr/bin has just `env`, /bin just `sh`, and the sbin
+        directories are absent. `setsid` and `pgrep` are in the sw/bin symlink
+        farm. Keeping the wrapper entry without that one would resolve `sudo` and
+        then fail on `setsid` one line later, so the ordering comment would be
+        describing support that does not exist.
+        """
+        assert "/run/wrappers/bin" in TRUSTED_SYSTEM_DIRECTORIES
+        assert "/run/current-system/sw/bin" in TRUSTED_SYSTEM_DIRECTORIES
+
+
+@pytest.mark.skipif(
+    not is_posix(),
+    reason="TRUSTED_SYSTEM_DIRECTORIES is a POSIX layout; on Windows none of these "
+    "directories exist and every lookup is expected to raise",
+)
 class TestRealCommandsResolve:
     """Positive controls against the real filesystem.
 

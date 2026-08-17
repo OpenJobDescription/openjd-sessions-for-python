@@ -892,13 +892,15 @@ class LoggingSubprocess(object):
         else:
             raise NotImplementedError(f"Unsupported signal: {signal_name}")
 
-        kill_cmd = list[str]()
-
-        if self._user is not None:
-            user = cast(PosixSessionUser, self._user)
-            # Only sudo if the user to run as is not the same as the current user.
-            if not user.is_process_user():
-                kill_cmd = [system_command_path("sudo"), "-u", user.user, "-i"]
+        # Whether this signal has to go through sudo. The argv itself is not built
+        # yet: the direct os.killpg() attempt below returns on success, and on a
+        # host with CAP_KILL that is the only path taken. Resolving sudo here would
+        # make a host without sudo unable to signal *even when it never needs
+        # sudo* -- a regression this method did not have when the name was a bare
+        # string in a list.
+        needs_sudo = (
+            self._user is not None and not cast(PosixSessionUser, self._user).is_process_user()
+        )
 
         # If we were unable to detect sudo's child process PID after launching the
         # subprocess, we try again now
@@ -951,9 +953,25 @@ class LoggingSubprocess(object):
         # Uncomment to visualize process tree when debugging tests
         # self._log_process_tree()
 
+        # `kill` is resolved only for the same-user branch, where `run()` really
+        # does execvp() a bare name against this process's PATH.
+        #
+        # In the cross-user branch it must stay a bare name. `sudo -i` simulates an
+        # initial login: it starts the target user's login shell and hands it the
+        # command via -c, so `kill` is a *shell builtin* there. Nothing is looked up
+        # on PATH, and -i has already reset the environment, so CWE-426 does not
+        # reach this position. Resolving it would instead invent a hard dependency
+        # on kill(1) from procps, which Debian `-slim` images -- a common worker
+        # base -- do not install, and would break every cross-user SIGKILL fallback
+        # on such a host.
+        if needs_sudo:
+            user = cast(PosixSessionUser, self._user)
+            kill_cmd = [system_command_path("sudo"), "-u", user.user, "-i", "kill"]
+        else:
+            kill_cmd = [system_command_path("kill")]
+
         kill_cmd.extend(
             [
-                system_command_path("kill"),
                 "-s",
                 signal_name,
                 "--",
