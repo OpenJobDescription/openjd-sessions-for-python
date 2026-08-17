@@ -14,15 +14,8 @@ The fix is to never let a command name reach ``execvp``-style resolution. Every
 name is resolved here instead, by scanning a fixed list of trusted absolute
 directories.
 
-Three properties are load-bearing:
-
-.. warning::
-   These properties are **not yet pinned by tests.** The regression suite for
-   this module is outstanding work -- see §5.5 of the PATH-injection analysis for
-   the table of properties that need falsifiable coverage. Until those exist,
-   nothing here fails if the trusted-directory scan is replaced with
-   :func:`shutil.which`, so treat the guarantees below as intent rather than as
-   verified behaviour.
+Three properties are load-bearing, and each is pinned by a mutation-checked test
+in ``test/openjd/sessions_v0/test_system_commands.py``:
 
 
 * **``PATH`` is never read.** Not directly, and not indirectly via
