@@ -2,34 +2,32 @@
 
 """Resolution of system command names to absolute paths, without consulting PATH.
 
-This module exists because of CWE-426 (Untrusted Search Path). A session runs
-job-supplied actions, and the job controls the environment those actions run
-with -- including ``PATH``. That same environment is handed to the ``Popen`` call
-that launches our *own* privileged helpers (``sudo``, ``setsid``, ``kill``), so a
-bare command name in that argv is resolved through a search path the job wrote.
-A job that drops an executable named ``sudo`` early on ``PATH`` gets it run at
-the session's privilege level.
+The problem: a session launches its own privileged helpers (``sudo``, ``setsid``,
+``kill``) with the environment it also gives the job, and that environment
+includes the job's ``PATH``. A bare command name in such an argv is resolved
+through that ``PATH``, so a job that puts an executable named ``sudo`` early on it
+has that executable run at the session's privilege level rather than the job
+user's.
 
-The fix is to never let a command name reach ``execvp``-style resolution. Every
-name is resolved here instead, by scanning a fixed list of trusted absolute
-directories.
+The solution: never let a command name reach ``execvp``-style resolution. Callers
+pass a bare name here and get back an absolute path found by scanning a fixed
+list of trusted directories.
 
-Three properties are load-bearing, and each is pinned by a mutation-checked test
-in ``test/openjd/sessions_v0/test_system_commands.py``:
+Three properties make that work, and all three are easy to undo by accident:
 
+* ``PATH`` is never read. Not directly, and not through :func:`shutil.which` or
+  ``command -v``, which resolve via ``PATH`` and so would restore the original
+  behaviour while looking like a fix.
+* Only paths under :data:`TRUSTED_SYSTEM_DIRECTORIES` are returned. A name
+  containing a path separator is rejected, because ``os.path.join`` would
+  otherwise let ``../../tmp/evil`` escape the directory being searched.
+* A command that cannot be found raises. Returning the bare name as a fallback
+  would put resolution back on ``PATH`` while the code still read as though it
+  did not.
 
-* **``PATH`` is never read.** Not directly, and not indirectly via
-  :func:`shutil.which` or ``command -v`` -- both of which resolve through
-  ``PATH`` and so would reintroduce the vulnerability while appearing to fix it.
-* **Only paths under :data:`TRUSTED_SYSTEM_DIRECTORIES` are returned.**
-* **A command that cannot be found raises.** Falling back to the bare name would
-  silently restore the vulnerability, which is the worst available failure mode
-  for this class of fix: the code would look fixed and behave as if it were not.
-
-This module is POSIX-oriented; :data:`TRUSTED_SYSTEM_DIRECTORIES` lists POSIX
-locations. On Windows nothing will be found and the lookups raise, which is
-correct for this library because the cross-user code paths that need these
-commands are POSIX-only.
+This module is POSIX-oriented, and :data:`TRUSTED_SYSTEM_DIRECTORIES` lists POSIX
+locations. On Windows nothing is found and the lookups raise, which suits this
+library because the cross-user paths needing these commands are POSIX-only.
 """
 
 from __future__ import annotations

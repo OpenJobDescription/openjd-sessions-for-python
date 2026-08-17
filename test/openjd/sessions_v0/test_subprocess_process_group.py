@@ -101,8 +101,8 @@ class TestSignalArgvCommandResolution:
     Cross-user goes through `sudo -u <user> -i kill ...`. `sudo -i` simulates an
     initial login: it starts the target user's login shell and passes the command
     to it via -c, so `kill` is a **shell builtin** in that position. Nothing is
-    resolved on PATH and -i has already reset the environment, so CWE-426 does not
-    reach it. Resolving it to an absolute path would instead invent a hard
+    resolved on PATH and -i has already reset the environment, so a job-controlled
+    PATH cannot reach it. Resolving it to an absolute path would instead invent a hard
     dependency on kill(1) from procps, which Debian `-slim` images do not install,
     and would break every cross-user SIGKILL fallback on such a host.
 

@@ -2,14 +2,14 @@
 
 """Tests for the trusted-path command resolver.
 
-These pin the security properties of ``_system_commands``, the fix for the PATH
-injection reported as HackerOne 3942741. Each has been mutation-checked:
-reverting the corresponding production behaviour makes a named test here fail.
+``_system_commands`` fails silently when it fails at all: a resolver that quietly
+falls back to ``PATH`` returns a working path for every command that is installed,
+so it behaves identically to a correct one on any normal host. Only a caller with
+an attacker-controlled ``PATH`` sees the difference.
 
-Why this matters more than usual: the failure mode of this fix is *silence*. A
-resolver that quietly falls back to ``PATH`` looks identical to a working one from
-the outside, and the code reads as fixed. Without a test that fails when the
-trusted-directory scan is removed, the fix is an unverified claim.
+These tests exist so that the difference is observable here instead. Each one
+fails if the behaviour it describes is removed, which is what makes the resolver's
+guarantees checkable rather than asserted.
 """
 
 import os
