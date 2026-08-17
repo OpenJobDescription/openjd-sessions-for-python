@@ -33,11 +33,11 @@ library because the cross-user paths needing these commands are POSIX-only.
 from __future__ import annotations
 
 import os
-from functools import lru_cache
 from typing import Optional, Tuple
 
 __all__ = [
     "SystemCommandNotFoundError",
+    "clear_command_cache",
     "TRUSTED_SYSTEM_DIRECTORIES",
     "find_system_command",
     "system_command_path",
@@ -124,7 +124,27 @@ def _is_executable_file(path: str) -> bool:
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
-@lru_cache(maxsize=None)
+_RESOLVED_COMMANDS: dict[str, str] = {}
+"""Cache of successful lookups only, keyed by bare command name.
+
+Successes are safe to keep for the life of the process: a resolved path stays
+valid, and these lookups sit on process-launch and signal-delivery paths where a
+directory walk per signal is wasteful.
+
+Failures are not cached, and that asymmetry is the point. A package manager
+replacing a binary unlinks and relinks it, so a lookup landing in that window sees
+nothing. Caching that answer would make one unlucky moment permanent for the rest
+of a long-lived agent's life, turning a transient miss into a session that can
+never start a cross-user process again. Re-walking a handful of directories on the
+miss path costs nothing worth having.
+"""
+
+
+def clear_command_cache() -> None:
+    """Discard resolved paths. For tests that patch the trusted directory list."""
+    _RESOLVED_COMMANDS.clear()
+
+
 def find_system_command(name: str) -> Optional[str]:
     """Return the absolute path to ``name``, or ``None`` if it is not installed.
 
@@ -132,19 +152,17 @@ def find_system_command(name: str) -> Optional[str]:
     consulted. Use this for commands whose absence is tolerable; use
     :func:`system_command_path` when the command is required.
 
-    The result is cached: the filesystem layout does not change underneath a
-    running session, and these lookups sit on process-launch and
-    signal-delivery paths. Tests that patch
-    :data:`TRUSTED_SYSTEM_DIRECTORIES` must call
-    ``find_system_command.cache_clear()``.
-
     Raises:
         ValueError: if ``name`` is not a bare command name.
     """
     _validate_command_name(name)
+    cached = _RESOLVED_COMMANDS.get(name)
+    if cached is not None:
+        return cached
     for directory in TRUSTED_SYSTEM_DIRECTORIES:
         candidate = os.path.join(directory, name)
         if _is_executable_file(candidate):
+            _RESOLVED_COMMANDS[name] = candidate
             return candidate
     return None
 

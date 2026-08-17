@@ -22,6 +22,7 @@ import pytest
 from openjd.sessions._os_checker import is_posix
 from openjd.sessions._system_commands import (
     SystemCommandNotFoundError,
+    clear_command_cache,
     TRUSTED_SYSTEM_DIRECTORIES,
     find_system_command,
     system_command_path,
@@ -32,11 +33,11 @@ _MODULE = "openjd.sessions._system_commands"
 
 @pytest.fixture(autouse=True)
 def clear_resolver_cache():
-    """``find_system_command`` is ``lru_cache``d, so a result computed under one
-    patched directory list would otherwise leak into the next test."""
-    find_system_command.cache_clear()
+    """Successful lookups are cached, so a path resolved under one patched
+    directory list would otherwise leak into the next test."""
+    clear_command_cache()
     yield
-    find_system_command.cache_clear()
+    clear_command_cache()
 
 
 @pytest.fixture
@@ -297,3 +298,42 @@ class TestRealCommandsResolve:
             pytest.skip("sudo is not installed on this host")
 
         assert os.path.dirname(system_command_path("sudo")) in TRUSTED_SYSTEM_DIRECTORIES
+
+
+class TestCacheDoesNotRememberAbsence:
+    """Successes are cached; failures are not.
+
+    A package manager replacing a binary unlinks and relinks it, so a lookup
+    landing in that window finds nothing. Caching that answer would make one
+    unlucky moment permanent for the rest of a long-lived agent's life: every
+    later cross-user launch would fail on a command that is sitting on disk.
+    """
+
+    def test_a_command_that_appears_later_is_found(self, tmp_path: Path) -> None:
+        # GIVEN a lookup that misses, as it would mid-upgrade
+        with patch(f"{_MODULE}.TRUSTED_SYSTEM_DIRECTORIES", (str(tmp_path),)):
+            assert find_system_command("target-cmd") is None
+
+            # WHEN the binary appears
+            target = tmp_path / "target-cmd"
+            target.write_text("#!/bin/sh\ntrue\n")
+            target.chmod(target.stat().st_mode | stat.S_IXUSR)
+
+            # THEN the next lookup finds it rather than repeating the cached miss
+            assert find_system_command("target-cmd") == str(target)
+
+    def test_a_resolved_path_is_cached(self, executable_dir: Path) -> None:
+        """The other half of the asymmetry. Without this, 'do not cache misses'
+        could be satisfied by caching nothing at all, and the reason the cache
+        exists (these lookups sit on signal-delivery paths) would be lost."""
+        # GIVEN one successful lookup
+        with patch(f"{_MODULE}.TRUSTED_SYSTEM_DIRECTORIES", (str(executable_dir),)):
+            first = find_system_command("target-cmd")
+        assert first == str(executable_dir / "target-cmd")
+
+        # WHEN the directory list no longer contains it, and the file is gone
+        (executable_dir / "target-cmd").unlink()
+
+        # THEN the cached answer is still returned, without touching the filesystem
+        with patch(f"{_MODULE}.TRUSTED_SYSTEM_DIRECTORIES", ()):
+            assert find_system_command("target-cmd") == first
