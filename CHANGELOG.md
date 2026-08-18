@@ -1,3 +1,12 @@
+## 0.11.0 (2026-08-18)
+
+
+### Features
+* shorten the session working directory name for Windows MAX_PATH (#348) ([`3252e69`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/3252e693eec2cb31a0546f12e0e39f5778d9eb9d))
+* shorten the session working directory name for Windows MAX_PATH ([`3252e69`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/3252e693eec2cb31a0546f12e0e39f5778d9eb9d))
+
+
+
 ## 0.10.14 (2026-08-11)
 
 ### Features
