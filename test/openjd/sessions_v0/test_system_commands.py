@@ -13,6 +13,7 @@ guarantees checkable rather than asserted.
 """
 
 import os
+import posixpath
 import stat
 from pathlib import Path
 from unittest.mock import patch
@@ -221,9 +222,16 @@ class TestMissingCommandRaises:
 class TestTrustedDirectories:
     def test_all_entries_are_absolute(self) -> None:
         """A relative entry would resolve against the process working directory,
-        which a session changes."""
+        which a session changes.
+
+        posixpath rather than os.path: these entries are POSIX paths, and from Python
+        3.13 ntpath.isabs() treats a single-slash path as drive-relative rather than
+        absolute. Using os.path made this a statement about the host running the
+        tests rather than about the constant, and it failed the windows-latest 3.13
+        leg on "/run/wrappers/bin is not absolute".
+        """
         for directory in TRUSTED_SYSTEM_DIRECTORIES:
-            assert os.path.isabs(directory), f"{directory} is not absolute"
+            assert posixpath.isabs(directory), f"{directory} is not absolute"
 
     def test_searches_the_setuid_wrapper_directory_before_usr_bin(self) -> None:
         assert TRUSTED_SYSTEM_DIRECTORIES.index(
