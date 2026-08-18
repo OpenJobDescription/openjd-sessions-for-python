@@ -56,7 +56,7 @@ steps:
               echo PathParam={{repr_sh(Param.PathParam)}}
               echo PathParam.name={{repr_sh(Param.PathParam.name)}}
               echo BoolParam={{repr_sh(string(Param.BoolParam))}}
-              echo RangeExprParam={{repr_sh(Param.RangeExprParam)}}
+              echo RangeExprParam={{repr_sh(string(Param.RangeExprParam))}}
               echo len-RangeExprParam={{repr_sh(string(len(Param.RangeExprParam)))}}
               echo ListStringParam={{repr_sh(string(Param.ListStringParam))}}
               echo ListStringParam-0={{repr_sh(Param.ListStringParam[0])}}
