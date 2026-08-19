@@ -1,17 +1,14 @@
-## 0.11.0 (2026-08-19)
+## 0.11.0 (2026-08-20)
 
+### ⚠ BREAKING CHANGES 
 
-### Features
-* shorten the session working directory name for Windows MAX_PATH (#348) ([`3252e69`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/3252e693eec2cb31a0546f12e0e39f5778d9eb9d))
-* shorten the session working directory name for Windows MAX_PATH ([`3252e69`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/3252e693eec2cb31a0546f12e0e39f5778d9eb9d))
+* shorten the session working directory name for Windows MAX_PATH — session working dir is no longer prefixed with session ID; `embedded_files<random>` renamed to `ef<random>` (#348) 
 
-### Bug Fixes
-* raise openjd-model floor to >= 0.11.4 ([`ea0ea7f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/ea0ea7ffe885fd9c6ad7fd18d9ed04d8fe1ebf38))
-* do not cache failed command lookups ([`3574ced`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/3574ced5dc0c042fd74a12557f4f068ea9823a0b))
-* address automated review findings on the trusted-path resolver ([`3744653`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/37446538e6f6ba3ec2b5d9d77f1ea1a80b86c1bd))
-* resolve system commands from trusted dirs, not PATH ([`419b434`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/419b434cc2a0f01484f2d3c0c67adea0eab60a08))
-* use absolute paths for system commands to prevent PATH injection ([`d3b978f`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/d3b978f5deb4557e8f49b5d5cd4e9ce30e6d04c5))
+### Bug Fixes 
 
+* resolve system commands from trusted dirs, not PATH (#351) 
+* do not cache failed command lookups (#351)
+* address automated review findings on the trusted-path resolver (#351)
 
 ## 0.10.14 (2026-08-11)
 
