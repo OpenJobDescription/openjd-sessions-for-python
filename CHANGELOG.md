@@ -1,3 +1,15 @@
+## 0.11.0 (2026-08-20)
+
+### ⚠ BREAKING CHANGES 
+
+* shorten the session working directory name for Windows MAX_PATH — session working dir is no longer prefixed with session ID; `embedded_files<random>` renamed to `ef<random>` (#348) 
+
+### Bug Fixes 
+
+* resolve system commands from trusted dirs, not PATH (#351) 
+* do not cache failed command lookups (#351)
+* address automated review findings on the trusted-path resolver (#351)
+
 ## 0.10.14 (2026-08-11)
 
 ### Features
