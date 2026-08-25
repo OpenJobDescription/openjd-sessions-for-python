@@ -19,7 +19,7 @@ table:
 
 - a wrapped task's ``Task.Param.*`` / ``Task.RawParam.*``
 - the running step's ``Step.Name``
-- the ``extra_let_bindings`` the *inner* environment was entered with
+- the ``step_name`` the *inner* environment was entered with
 
 ``WrappedStep.Name`` exists in RFC 0008 precisely because ``Step.Name`` is not
 meant to be reachable from a hook. openjd-model does not reject any of these
@@ -401,11 +401,14 @@ class TestInnerEnvironmentScopeDoesNotReachTheHook:
     must not be in the hook's scope."""
 
     @pytest.mark.parametrize("phase", ["enter", "exit"])
-    def test_inner_extra_let_bindings_are_not_in_the_hook_scope(
-        self, phase: str, python_exe: str
-    ) -> None:
-        # GIVEN: a wrap env, and an inner env entered with its own step-level
-        # bindings and step name
+    def test_inner_step_name_is_not_in_the_hook_scope(self, phase: str, python_exe: str) -> None:
+        """The inner env's ``step_name`` channel must not leak into the hook.
+
+        Deliberately scoped to that channel. An inner env's *resolved base* is
+        a different matter: ``TestResolvedBaseReachesTheHook`` pins that it is
+        hook-visible on purpose, matching openjd-rs.
+        """
+        # GIVEN: a wrap env, and an inner env entered with its own step name
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             wrap_id = session.enter_environment(environment=_wrap_env(python_exe))
             _run_until_ready(session)
@@ -414,7 +417,6 @@ class TestInnerEnvironmentScopeDoesNotReachTheHook:
             # WHEN
             inner_id = session.enter_environment(
                 environment=_inner_env(python_exe),
-                extra_let_bindings=["inner_secret = 'INNER-ONLY'"],
                 step_name="InnerStep",
             )
             _run_until_ready(session)
@@ -422,13 +424,12 @@ class TestInnerEnvironmentScopeDoesNotReachTheHook:
                 session.exit_environment(identifier=inner_id)
                 _run_until_ready(session)
 
-            # THEN: neither the inner env's binding nor its step name is
-            # reachable from the hook that intercepted it. Index the hook we
-            # care about rather than the most recent capture, so a hook that
-            # stopped running cannot pass by inheriting the other's table.
+            # THEN: the inner env's step name is not reachable from the hook
+            # that intercepted it. Index the hook we care about rather than the
+            # most recent capture, so a hook that stopped running cannot pass
+            # by inheriting the other's table.
             expected = 2 if phase == "exit" else 1
             hook_scope = capture.table(expected - 1, expected_count=expected)
-            assert not _defined(hook_scope, "inner_secret")
             assert not _defined(hook_scope, "Step.Name")
             assert hook_scope["WrappedEnv.Name"] == "Inner"
 
@@ -444,14 +445,20 @@ class TestInnerEnvironmentScopeDoesNotReachTheHook:
 
         ``test_wrap_task_run.py::test_env_hooks_resolve_step_level_let_bindings``
         covers the same ground by asserting the hook merely SUCCEEDs; this
-        asserts the binding is in the hook's scope with the right value, which is
-        what distinguishes "seeded" from "the hook happened not to need it".
+        asserts the step-level value is in the hook's scope with the right
+        value, which is what distinguishes "seeded" from "the hook happened not
+        to need it". ``test_wrap_envs_own_base_reaches_a_later_hook`` is the
+        onWrapTaskRun counterpart; this covers the two env hooks.
         """
-        # GIVEN: a wrap env entered WITH step-level bindings
+        # GIVEN: a wrap env entered WITH a step-level let value in its
+        # resolved table, the channel the service supplies it through
+        wrap_base = _serialized_table(
+            [{"name": "wrap_secret", "type": "string", "value": "WRAP-OWN"}]
+        )
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             wrap_id = session.enter_environment(
                 environment=_wrap_env(python_exe),
-                extra_let_bindings=["wrap_secret = 'WRAP-OWN'"],
+                resolved_symtab=wrap_base,
                 step_name="WrapStep",
             )
             _run_until_ready(session)
@@ -464,7 +471,7 @@ class TestInnerEnvironmentScopeDoesNotReachTheHook:
                 session.exit_environment(identifier=inner_id)
                 _run_until_ready(session)
 
-            # THEN. `let` bindings are stored as the EXPR engine's typed value,
+            # THEN. Base values are stored as the EXPR engine's typed value,
             # so compare the rendered form rather than the object.
             expected = 2 if phase == "exit" else 1
             hook_scope = capture.table(expected - 1, expected_count=expected)
@@ -740,11 +747,11 @@ class TestResolvedBaseReachesTheHook:
     def test_fallback_step_context_wins_over_the_stored_base(self, python_exe: str) -> None:
         """Pins the seeding order inside ``_seed_wrap_env_scope``.
 
-        The stored base seeds first and the ``step_name``/``extra_let_bindings``
-        fallback overwrites it, because those carry the same values through the
-        channel the base does not cover. This is the accepted divergence from
-        openjd-rs, which takes the service's value: when the two disagree, this
-        runtime takes the locally supplied one.
+        The stored base seeds first and the ``step_name`` fallback overwrites
+        it, because that carries the same value for a caller with no resolved
+        table. This is the accepted divergence from openjd-rs, which takes the
+        service's value: when the two disagree, this runtime takes the locally
+        supplied one.
         """
         # GIVEN: a wrap env entered with BOTH a base Step.Name and the
         # step_name fallback, disagreeing on purpose.
