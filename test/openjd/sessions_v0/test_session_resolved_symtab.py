@@ -449,9 +449,10 @@ class TestInvalidResolvedSymtab:
         cleanly AND drains the environment's stored step context.
 
         The exit-side deserialization branch returns early. Everything the
-        environment stored at enter time (``Step.Name`` and its extra ``let``
-        bindings) must already be popped by then, or it is stranded: those
-        dicts are keyed by identifier and nothing else removes an entry.
+        environment stored at enter time (``Step.Name``, its extra ``let``
+        bindings, and its own enter-time base) must already be popped by then,
+        or it is stranded: those dicts are keyed by identifier and nothing
+        else removes an entry.
 
         Why a stranded entry is not merely untidy: ``enter_environment``
         accepts a caller-supplied identifier and does not reject one that
@@ -469,17 +470,21 @@ class TestInvalidResolvedSymtab:
             callback_events.append(status)
 
         bad_base = _serialized_table([{"name": "v", "type": "bogus", "value": "5"}])
+        good_base = _serialized_table(
+            [{"name": "from_base", "type": "string", "value": "base value"}]
+        )
         env = _env("Env", onEnter=_action("true"), onExit=_action("true"))
         with Session(
             session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
         ) as session:
-            # GIVEN: an environment entered cleanly WITH step context, so
-            # both tracking dicts hold an entry for it (non-vacuously: a
-            # drain assertion on an empty dict pins nothing).
+            # GIVEN: an environment entered cleanly WITH step context and a
+            # valid base, so all three tracking dicts hold an entry for it
+            # (non-vacuously: a drain assertion on an empty dict pins nothing).
             identifier = session.enter_environment(
                 environment=env,
                 step_name="S",
                 extra_let_bindings=["msg = 'from step'"],
+                resolved_symtab=good_base,
             )
             _run_until_ready(session)
             assert session.state == SessionState.READY
@@ -488,6 +493,7 @@ class TestInvalidResolvedSymtab:
             assert status.state == ActionState.SUCCESS
             assert session._environment_step_names[identifier] == "S"
             assert session._environment_extra_let_bindings[identifier] == ["msg = 'from step'"]
+            assert "from_base" in session._environment_resolved_bases[identifier]
 
             # WHEN: exiting with an invalid base — this must not raise.
             session.exit_environment(identifier=identifier, resolved_symtab=bad_base)
@@ -505,3 +511,4 @@ class TestInvalidResolvedSymtab:
             # stranded by the early return.
             assert identifier not in session._environment_step_names
             assert identifier not in session._environment_extra_let_bindings
+            assert identifier not in session._environment_resolved_bases

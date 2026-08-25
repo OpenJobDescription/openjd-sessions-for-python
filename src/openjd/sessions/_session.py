@@ -472,6 +472,13 @@ class Session(object):
         # exits so the re-applied extra `let` bindings resolve in the same
         # scope.
         self._environment_step_names: dict[EnvironmentIdentifier, str] = dict()
+        # The service-resolved base table (already converted by
+        # _resolved_base_entries) an environment was entered with. A wrap
+        # environment's hooks resolve in its own enter-time scope, so its base
+        # is re-seeded into every hook scope by _seed_wrap_env_scope —
+        # mirroring how openjd-rs merges the wrap environment's frozen
+        # enter-time resolved table onto the hook's table.
+        self._environment_resolved_bases: dict[EnvironmentIdentifier, dict[str, Any]] = dict()
         self._environments_entered = list()
         self._runner = None
         self._running_environment_identifier = None
@@ -871,6 +878,14 @@ class Session(object):
                 )
                 return identifier
 
+        # Remember this environment's base for its own wrap hooks (RFC 0008),
+        # which resolve in its enter-time scope. Stored here rather than beside
+        # the step-name/extra-lets stores above because those run before the
+        # conversion: storing there would leave a base behind on a failed
+        # deserialization.
+        if resolved_base:
+            self._environment_resolved_bases[identifier] = resolved_base
+
         symtab = self._symbol_table(environment.revision, resolved_base=resolved_base)
 
         # RFC 0005; Template Schemas §7.3.1 (EXPR): the owning step's name. Only EXPR templates
@@ -1144,6 +1159,11 @@ class Session(object):
         # exists.
         exit_step_name = self._environment_step_names.pop(identifier, None)
         exit_extra_let_bindings = self._environment_extra_let_bindings.pop(identifier, None)
+        # Safe to drop here even though a wrap hook may intercept this exit:
+        # the interceptor is always a different, still-entered outer
+        # environment, and an environment that has exited can never intercept
+        # again.
+        self._environment_resolved_bases.pop(identifier, None)
 
         self._running_environment_identifier = identifier
 
@@ -1996,18 +2016,26 @@ class Session(object):
         return hook_symtab
 
     def _seed_wrap_env_scope(self, symtab: SymbolTable, wrap_env: EnvironmentModel) -> bool:
-        """Re-seed the scope a wrap hook resolves in with the step context the
-        wrap environment was *entered* with (RFC 0005 step-level ``let``
-        bindings and ``Step.Name``).
+        """Re-seed the scope a wrap hook resolves in with the context the
+        wrap environment was *entered* with: its service-resolved base, its
+        ``Step.Name``, and its RFC 0005 step-level ``let`` bindings.
 
         A wrap hook resolves in the wrap environment's own scope, and in
         openjd-rs that scope is the environment's frozen enter-time resolved
-        symbol table — so a step environment that defines wrap hooks carries
-        the owning step's step-level ``let`` bindings into every hook
-        invocation. Python builds a fresh session-scope table per action, so
-        those bindings have to be re-applied here from what
-        :meth:`enter_environment` remembered (it already keeps them to
-        re-apply on the exit side).
+        symbol table merged onto the action's table — so a step environment
+        that defines wrap hooks carries the owning step's base and step-level
+        ``let`` bindings into every hook invocation. Python builds a fresh
+        session-scope table per action, so both have to be re-applied here
+        from what :meth:`enter_environment` remembered (it already keeps the
+        step context to re-apply on the exit side).
+
+        Ordering: the base seeds first, then the fallback ``Step.Name`` and
+        ``let`` bindings overwrite it, because those are the same values
+        arriving through the channel the base does not cover. Known and
+        accepted divergence: the fallback bindings re-evaluate locally on top
+        of the base, so a binding whose local result differs from the value
+        the service resolved takes the local result here and the base's in
+        openjd-rs.
 
         Call this *after* the wrapped action's own scope has been built, so
         the wrap environment's bindings cannot reach the wrapped action's
@@ -2019,6 +2047,10 @@ class Session(object):
             return.
         """
         identifier = self._wrap_env_identifier(wrap_env)
+        # Values only, exactly as _symbol_table seeds a base: the EXPR types
+        # ride the values the engine already built.
+        for base_name, base_value in self._environment_resolved_bases.get(identifier, {}).items():
+            symtab[base_name] = base_value
         step_name = self._environment_step_names.get(identifier)
         if step_name is not None:
             symtab["Step.Name"] = step_name
