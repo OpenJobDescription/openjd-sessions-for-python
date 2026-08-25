@@ -472,12 +472,11 @@ class Session(object):
         # exits so the re-applied extra `let` bindings resolve in the same
         # scope.
         self._environment_step_names: dict[EnvironmentIdentifier, str] = dict()
-        # The service-resolved base table (already converted by
-        # _resolved_base_entries) an environment was entered with. A wrap
-        # environment's hooks resolve in its own enter-time scope, so its base
-        # is re-seeded into every hook scope by _seed_wrap_env_scope —
-        # mirroring how openjd-rs merges the wrap environment's frozen
-        # enter-time resolved table onto the hook's table.
+        # The converted service-resolved base an environment was entered with.
+        # A wrap environment's hooks resolve in its enter-time scope, so
+        # _seed_wrap_env_scope re-seeds this into every hook scope, mirroring
+        # openjd-rs merging the environment's frozen resolved table onto the
+        # hook's table.
         self._environment_resolved_bases: dict[EnvironmentIdentifier, dict[str, Any]] = dict()
         self._environments_entered = list()
         self._runner = None
@@ -878,11 +877,10 @@ class Session(object):
                 )
                 return identifier
 
-        # Remember this environment's base for its own wrap hooks (RFC 0008),
-        # which resolve in its enter-time scope. Stored here rather than beside
-        # the step-name/extra-lets stores above because those run before the
-        # conversion: storing there would leave a base behind on a failed
-        # deserialization.
+        # Remembered for this environment's own wrap hooks (RFC 0008), which
+        # resolve in its enter-time scope. Stored after the conversion, not
+        # beside the step-name/extra-lets stores above: those run before it, so
+        # storing there would leave a base behind on a failed deserialization.
         if resolved_base:
             self._environment_resolved_bases[identifier] = resolved_base
 
@@ -1151,12 +1149,12 @@ class Session(object):
         # environment's hook invocations; the files themselves live in the
         # session directory and are cleaned up with it.
         self._wrap_env_file_records.pop(identifier, None)
-        # Drain this environment's stored step context here, with the rest of
-        # its per-enter tracking, so no failure branch below can strand it.
-        # Identifiers are allocated per-enter, so a stranded entry is
-        # unreachable to a later exit of the same environment. The replay of
-        # these values into the symbol table stays below, where the table
-        # exists.
+        # Drained here, with the rest of this environment's per-enter
+        # tracking, so no failure branch below can strand it. A stranded entry
+        # is not merely a leak: identifiers may be supplied by the caller and
+        # reused after an exit, and a re-entered identifier would then replay
+        # this stale context. The replay into the symbol table stays below,
+        # where the table exists.
         exit_step_name = self._environment_step_names.pop(identifier, None)
         exit_extra_let_bindings = self._environment_extra_let_bindings.pop(identifier, None)
         # Safe to drop here even though a wrap hook may intercept this exit:
@@ -1991,11 +1989,11 @@ class Session(object):
         ``resolved_base`` is the base the *inner* entity's action was handed,
         which is what openjd-rs's hook scope carries: a hook there resolves
         against the current action's full symbol table, base included. Seeding
-        it does not weaken the isolation above — the base a step's action
-        carries never holds ``Task.Param.*`` (the service copies only
-        ``Param.*``/``RawParam.*``/``Job.Name``/``Step.Name``/step-level
-        ``let`` values into it), and with no base the scope is unchanged. Base
-        ``Step.Name`` IS hook-visible as a result, matching openjd-rs.
+        it does not weaken the isolation above, because the service copies only
+        ``Param.*``/``RawParam.*``/``Job.Name``/``Step.Name`` and step-level
+        ``let`` values into that base, never ``Task.Param.*``. With no base the
+        scope is unchanged. Base ``Step.Name`` is hook-visible as a result,
+        matching openjd-rs.
 
         The path-mapping symbols are copied rather than re-materialized: the
         rules file has already been written for this action, and both scopes must
