@@ -1134,6 +1134,14 @@ class Session(object):
         # environment's hook invocations; the files themselves live in the
         # session directory and are cleaned up with it.
         self._wrap_env_file_records.pop(identifier, None)
+        # Drain this environment's stored step context here, with the rest of
+        # its per-enter tracking, so no failure branch below can strand it.
+        # Identifiers are allocated per-enter, so a stranded entry is
+        # unreachable to a later exit of the same environment. The replay of
+        # these values into the symbol table stays below, where the table
+        # exists.
+        exit_step_name = self._environment_step_names.pop(identifier, None)
+        exit_extra_let_bindings = self._environment_extra_let_bindings.pop(identifier, None)
 
         self._running_environment_identifier = identifier
 
@@ -1145,9 +1153,10 @@ class Session(object):
                 resolved_base = self._resolved_base_entries(resolved_symtab)
             except ValueError as e:
                 # Fail the action through the normal failure path rather than
-                # raising out of the public API — the environment was already
-                # removed from tracking above, matching how the extra `let`
-                # bindings failure below leaves it.
+                # raising out of the public API — the environment and its
+                # stored step context were already removed from tracking
+                # above, matching how the _materialize_path_mapping failure
+                # below leaves it.
                 self._fail_action_before_start(
                     f"Failed to deserialize the resolved symbol table: {e}"
                 )
@@ -1164,10 +1173,8 @@ class Session(object):
         # re-apply the extra `let` bindings this environment was entered with
         # (e.g. the owning step's step-level bindings, RFC 0005) so its onExit
         # resolves in the same scope as its onEnter.
-        exit_step_name = self._environment_step_names.pop(identifier, None)
         if exit_step_name is not None:
             symtab["Step.Name"] = exit_step_name
-        exit_extra_let_bindings = self._environment_extra_let_bindings.pop(identifier, None)
         if exit_extra_let_bindings:
             try:
                 apply_let_bindings(symtab=symtab, let_bindings=exit_extra_let_bindings)
