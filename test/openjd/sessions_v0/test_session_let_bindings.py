@@ -208,6 +208,174 @@ class TestEnterEnvironmentStepName:
 
 
 # ---------------------------------------------------------------------------
+# run_task(extra_let_bindings=...) delivers step-template-scope `let`
+# (RFC 0005 §3.6) to the task, the counterpart of enter_environment's
+# parameter of the same name.
+#
+# Why this needs its own coverage: step-scope bindings resolve at job
+# instantiation, so a caller holding a Job from create_job never sees the
+# problem -- instantiation folds them into the script's own `let`. A caller
+# handed an un-instantiated StepTemplate (the Deadline Cloud worker agent,
+# which receives one from the service) has `let` and `script.let` as separate
+# fields, and without this parameter the step-scope names are simply absent
+# from the table and every reference fails with "Undefined variable".
+# ---------------------------------------------------------------------------
+
+
+class TestRunTaskExtraLetBindings:
+    def test_step_scope_binding_resolvable_in_action(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a step script whose onRun references a name defined only by
+        # the step-template-scope bindings.
+        script = StepScript_2023_09(
+            actions={"onRun": _action("echo", "task:{{ from_step }}")},  # type: ignore[arg-type]
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values={},
+                extra_let_bindings=["from_step = 'step value'"],
+            )
+            _run_until_ready(session)
+
+            # THEN
+            assert session.state == SessionState.READY
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("task:step value" in m for m in caplog.messages)
+
+    def test_step_scope_binding_can_reference_step_name(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a step-scope binding referencing Step.Name. Pins the seeding
+        # order -- Step.Name must be in the table before the bindings evaluate,
+        # matching enter_environment.
+        script = StepScript_2023_09(
+            actions={"onRun": _action("echo", "task:{{ msg }}")},  # type: ignore[arg-type]
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values={},
+                step_name="MyStep",
+                extra_let_bindings=["msg = 'step is ' + Step.Name"],
+            )
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("task:step is MyStep" in m for m in caplog.messages)
+
+    def test_script_scope_binding_shadows_step_scope(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: the same name bound at both scopes. RFC 0005 §3.6 scoping
+        # requires the narrower (script) scope to win rather than the two
+        # colliding, which holds because the runner evaluates script bindings
+        # into a child table sourced from the session-scope one.
+        script = StepScript_2023_09(
+            actions={"onRun": _action("echo", "task:{{ shared }}")},  # type: ignore[arg-type]
+            let=["shared = 'from script'"],
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values={},
+                extra_let_bindings=["shared = 'from step'"],
+            )
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("task:from script" in m for m in caplog.messages)
+            assert not any("task:from step" in m for m in caplog.messages)
+
+    def test_script_scope_binding_can_reference_step_scope(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a script-scope binding building on a step-scope one. This is
+        # the shape the failing conformance fixtures use, and it only works if
+        # the step bindings are in the parent of the runner's child table.
+        script = StepScript_2023_09(
+            actions={"onRun": _action("echo", "task:{{ derived }}")},  # type: ignore[arg-type]
+            let=["derived = base + '/leaf'"],
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(
+                step_script=script,
+                task_parameter_values={},
+                extra_let_bindings=["base = '/root'"],
+            )
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("task:/root/leaf" in m for m in caplog.messages)
+
+    def test_failing_binding_fails_action_cleanly(self) -> None:
+        # GIVEN: a step-scope binding referencing an undefined symbol. It must
+        # fail the action through the callback path, never raise out of the
+        # public API -- the same contract enter_environment holds.
+        callback_events: list[ActionStatus] = []
+
+        def callback(session_id: str, status: ActionStatus) -> None:
+            callback_events.append(status)
+
+        script = StepScript_2023_09(
+            actions={"onRun": _action("echo", "unreachable")},  # type: ignore[arg-type]
+        )
+        with Session(
+            session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
+        ) as session:
+            # WHEN: this must not raise.
+            session.run_task(
+                step_script=script,
+                task_parameter_values={},
+                extra_let_bindings=["msg = NoSuchSymbol"],
+            )
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert status.fail_message is not None
+            assert "let" in status.fail_message
+            assert callback_events and callback_events[-1].state == ActionState.FAILED
+
+    def test_omitting_the_parameter_changes_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        # GIVEN: the negative control. The parameter is additive and optional,
+        # so a task that does not use it must behave exactly as before -- this
+        # is what makes the change safe for every existing caller.
+        script = StepScript_2023_09(
+            actions={"onRun": _action("echo", "task:{{ own }}")},  # type: ignore[arg-type]
+            let=["own = 'script only'"],
+        )
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            # WHEN
+            session.run_task(step_script=script, task_parameter_values={})
+            _run_until_ready(session)
+
+            # THEN
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert any("task:script only" in m for m in caplog.messages)
+
+
+# ---------------------------------------------------------------------------
 # Binding-RHS parsing is memoized: re-applying the same bindings (per task,
 # per env enter/exit) must not re-parse through the engine each time.
 # ---------------------------------------------------------------------------

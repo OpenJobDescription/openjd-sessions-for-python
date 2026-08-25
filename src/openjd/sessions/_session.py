@@ -1210,6 +1210,7 @@ class Session(object):
         os_env_vars: Optional[dict[str, str]] = None,
         log_task_banner: bool = True,
         step_name: Optional[str] = None,
+        extra_let_bindings: Optional[list[str]] = None,
     ) -> None:
         """Run a Task within the Session.
         This method is non-blocking; it will exit when the subprocess is either confirmed to have
@@ -1231,6 +1232,22 @@ class Session(object):
             step_name (Optional[str]): The name of the step whose task is being run.
                 Used by RFC 0008 to populate ``WrappedStep.Name`` in wrap hooks.
                 Required when a wrap Environment is active.
+            extra_let_bindings (Optional[list[str]]): Additional EXPR ``let``
+                bindings (RFC 0005) evaluated into the symbol table before the
+                step script's own bindings and actions resolve. This is the
+                step-template-scope ``let`` (``Step.let`` on the instantiated
+                Job), which resolves at job instantiation and so is not part of
+                the step script — the ``run_task`` counterpart of
+                :meth:`enter_environment`'s parameter of the same name, and the
+                v0 counterpart of the per-step resolved symbol table that
+                openjd-rs threads into ``run_task``.
+
+                A caller that obtained its step script from
+                ``create_job`` does not need this: job instantiation folds the
+                step-scope bindings into the script's own ``let``
+                (``StepTemplate.resolve_syntax_sugar``). It is required by a
+                caller that is handed an *un-instantiated* ``StepTemplate``,
+                where ``let`` and ``script.let`` are still separate fields.
 
         Raises:
             RuntimeError: If the Session is not in the READY state.
@@ -1280,6 +1297,31 @@ class Session(object):
         # not change non-EXPR behavior.
         if step_name is not None:
             symtab["Step.Name"] = step_name
+
+        # Step-template-scope `let` bindings (RFC 0005 §3.6) accompany the task:
+        # evaluate them into the session-scope table so the step script's own
+        # bindings and its actions can reference them. Seeded after Step.Name so
+        # a step-level binding may reference it, and before path mapping so
+        # {{Session.PathMappingRulesFile}} and the env-var evaluation below see a
+        # complete table -- the same ordering enter_environment uses.
+        #
+        # Script-scope bindings shadow these rather than colliding with them:
+        # StepScriptRunner evaluates `script.let` into a CHILD table sourced from
+        # this one, so a same-named script binding takes precedence.
+        if extra_let_bindings:
+            try:
+                apply_let_bindings(symtab=symtab, let_bindings=extra_let_bindings)
+            except ValueError as e:
+                # ExpressionError and FormatStringError subclass ValueError: a
+                # binding failed to evaluate (e.g. it referenced an undefined
+                # symbol). Fail the action through the normal failure path
+                # rather than raising out of the public API, matching how
+                # enter_environment reports the same failure.
+                self._fail_action_before_start(
+                    f"Failed to evaluate the extra `let` bindings for the task: {e}"
+                )
+                return
+
         action_env_vars = self._evaluate_current_session_env_vars(os_env_vars)
         try:
             self._materialize_path_mapping(step_script.revision, action_env_vars, symtab)
