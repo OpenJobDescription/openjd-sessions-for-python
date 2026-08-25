@@ -3,12 +3,9 @@
 """Regression tests for the Session-level handling of EXPR ``let``
 bindings (RFC 0005):
 
-- a failing ``extra_let_bindings`` entry on ``enter_environment`` /
-  ``exit_environment`` fails the action through the normal callback path
-  instead of raising out of the public API;
-- ``enter_environment(step_name=...)`` seeds ``Step.Name`` so step-level
-  bindings and the environment's actions can reference it (on both the
-  enter and exit sides);
+- ``enter_environment(step_name=...)`` seeds ``Step.Name`` so the
+  environment's actions can reference it (on both the enter and exit
+  sides);
 - binding-RHS parsing is memoized across applications;
 - the unified optional int-or-format-string field resolver
   (``resolve_optional_int_field``) enforces consistent bounds;
@@ -113,58 +110,8 @@ class _StrDiffersFromRepr(int):
 
 
 # ---------------------------------------------------------------------------
-# A failing extra `let` binding must FAIL the action via the callback path,
-# never raise out of enter_environment()/exit_environment().
-# ---------------------------------------------------------------------------
-
-
-class TestExtraLetBindingFailure:
-    def test_enter_environment_failing_binding_fails_action_cleanly(self) -> None:
-        # GIVEN: an extra binding referencing an undefined symbol.
-        callback_events: list[ActionStatus] = []
-
-        def callback(session_id: str, status: ActionStatus) -> None:
-            callback_events.append(status)
-
-        env = _env("Env", onEnter=_action("true"), onExit=_action("true"))
-        with Session(
-            session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
-        ) as session:
-            # WHEN: entering must not raise.
-            identifier = session.enter_environment(
-                environment=env,
-                extra_let_bindings=["msg = NoSuchSymbol"],
-            )
-            _run_until_ready(session)
-
-            # THEN: the action failed cleanly, the callback fired, and the
-            # environment remains entered-but-failed (exactly as a failing
-            # onEnter subprocess leaves it) so cleanup can exit it.
-            assert session.state == SessionState.READY_ENDING
-            status = session.action_status
-            assert status is not None
-            assert status.state == ActionState.FAILED
-            assert status.fail_message is not None
-            assert "let" in status.fail_message
-            assert callback_events and callback_events[-1].state == ActionState.FAILED
-            assert identifier in session.environments_entered
-
-            # WHEN: exiting the failed environment re-applies the failing
-            # bindings — the exit action must also fail cleanly, not raise.
-            session.exit_environment(identifier=identifier)
-            _run_until_ready(session)
-
-            # THEN
-            assert session.state == SessionState.READY_ENDING
-            status = session.action_status
-            assert status is not None
-            assert status.state == ActionState.FAILED
-            assert identifier not in session.environments_entered
-
-
-# ---------------------------------------------------------------------------
 # enter_environment(step_name=...) seeds Step.Name (RFC 0005 EXPR), for both
-# the enter side and the re-applied bindings on the exit side.
+# the enter side and the re-seed on the exit side.
 # ---------------------------------------------------------------------------
 
 
@@ -172,20 +119,24 @@ class TestEnterEnvironmentStepName:
     def test_step_name_resolvable_in_bindings_and_actions(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        # GIVEN: a step-level binding referencing Step.Name, echoed by both
-        # the environment's onEnter and onExit actions.
-        env = _env(
-            "StepEnv",
-            onEnter=_action("echo", "enter:{{ msg }}"),
-            onExit=_action("echo", "exit:{{ msg }}"),
+        # GIVEN: an environment whose own script-level `let` references
+        # Step.Name, echoed by both its onEnter and onExit actions. The
+        # binding is what makes the ORDERING observable: Step.Name has to be
+        # in the session table before the script runner evaluates the script's
+        # lets into its child table.
+        env = Environment_2023_09(
+            name="StepEnv",
+            script=EnvironmentScript_2023_09(
+                actions=EnvironmentActions_2023_09(
+                    onEnter=_action("echo", "enter:{{ msg }}"),
+                    onExit=_action("echo", "exit:{{ msg }}"),
+                ),
+                let=["msg = 'step is ' + Step.Name"],
+            ),
         )
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             # WHEN
-            identifier = session.enter_environment(
-                environment=env,
-                extra_let_bindings=["msg = 'step is ' + Step.Name"],
-                step_name="MyStep",
-            )
+            identifier = session.enter_environment(environment=env, step_name="MyStep")
             _run_until_ready(session)
 
             # THEN: the enter action ran with the binding resolved.
@@ -195,8 +146,8 @@ class TestEnterEnvironmentStepName:
             assert status.state == ActionState.SUCCESS
             assert any("enter:step is MyStep" in m for m in caplog.messages)
 
-            # WHEN: the exit re-applies the bindings — Step.Name must be
-            # re-seeded so onExit resolves in the same scope as onEnter.
+            # WHEN: exiting — Step.Name must be re-seeded so onExit resolves
+            # in the same scope as onEnter.
             session.exit_environment(identifier=identifier)
             _run_until_ready(session)
 

@@ -11,11 +11,13 @@ place, with ``WrappedAction.Command``, ``WrappedAction.Args``,
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 
 import pytest
 
+from openjd.expr import SerializedSymbolTable
 from openjd.model import SymbolTable
 from openjd.model.v2023_09 import (
     Action as Action_2023_09,
@@ -35,6 +37,11 @@ from openjd.sessions import ActionState, ActionStatus, Session, SessionState
 
 
 _NOOP = Action_2023_09(command=CommandString_2023_09("true"))
+
+
+def _serialized_table(entries: list[dict[str, str]]) -> SerializedSymbolTable:
+    """A service-resolved base table in its wire (JSON) form."""
+    return SerializedSymbolTable.from_json_str(json.dumps(entries))
 
 
 def _wrap_env(name: str, wrap_action: Action_2023_09) -> Environment_2023_09:
@@ -616,16 +623,17 @@ class TestWrappedStepNameRequired:
 # ---------------------------------------------------------------------------
 # A wrap hook resolves in the wrap environment's own scope, which in openjd-rs
 # is that environment's frozen enter-time symbol table. So a step environment
-# that defines wrap hooks must carry the step-level `let` bindings it was
-# entered with into every hook invocation -- without letting them replace the
-# wrapped action's own resolution scope.
+# that defines wrap hooks must carry the step-level `let` values it was entered
+# with -- which reach it in its resolved symbol table -- into every hook
+# invocation, without letting them replace the wrapped action's own resolution
+# scope.
 # ---------------------------------------------------------------------------
 
 
 class TestWrapHookSeesEnterTimeStepScope:
     def test_hook_resolves_step_level_let_bindings(self, tmp_path) -> None:
-        # GIVEN: a wrap environment entered with a step's step-level bindings,
-        # and a hook that references one of them.
+        # GIVEN: a wrap environment entered with a step's resolved table,
+        # carrying a step-level `let` value, and a hook referencing it.
         env = _wrap_env(
             "WrapEnv",
             Action_2023_09(
@@ -637,7 +645,9 @@ class TestWrapHookSeesEnterTimeStepScope:
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             identifier = session.enter_environment(
                 environment=env,
-                extra_let_bindings=["greeting = 'from-step-let'"],
+                resolved_symtab=_serialized_table(
+                    [{"name": "greeting", "type": "string", "value": "from-step-let"}]
+                ),
                 step_name="Step1",
             )
             _run_until_ready(session)
@@ -679,9 +689,7 @@ class TestWrapHookSeesEnterTimeStepScope:
         )
         step = _step_script("echo", ["{{Step.Name}}"])
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
-            identifier = session.enter_environment(
-                environment=env, extra_let_bindings=None, step_name="StepA"
-            )
+            identifier = session.enter_environment(environment=env, step_name="StepA")
             _run_until_ready(session)
 
             original = session._inject_wrapped_task_symbols
@@ -737,7 +745,9 @@ class TestWrapHookSeesEnterTimeStepScope:
         with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
             wrap_id = session.enter_environment(
                 environment=env,
-                extra_let_bindings=["greeting = 'from-step-let'"],
+                resolved_symtab=_serialized_table(
+                    [{"name": "greeting", "type": "string", "value": "from-step-let"}]
+                ),
                 step_name="Step1",
             )
             _run_until_ready(session)
