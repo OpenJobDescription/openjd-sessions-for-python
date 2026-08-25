@@ -32,6 +32,7 @@ test built itself would only re-assert the test's own construction.
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from pathlib import PurePosixPath
@@ -39,6 +40,7 @@ from typing import Any
 
 import pytest
 
+from openjd.expr import SerializedSymbolTable
 from openjd.model import ParameterValue, ParameterValueType, SymbolTable
 from openjd.model.v2023_09 import (
     Action as Action_2023_09,
@@ -94,6 +96,43 @@ def _wrap_env(python_exe: str, name: str = "WrapEnv") -> Environment_2023_09:
             )
         ),
     )
+
+
+def _echo(python_exe: str, text: str) -> Action_2023_09:
+    """An action that prints ``text``.
+
+    Passing the text as an argv element rather than embedding it in the source
+    keeps quoting out of the picture. A reference inside ``text`` must resolve
+    for the action to start at all, so a test using this proves resolution
+    rather than mere presence in a table.
+    """
+    return Action_2023_09(
+        command=CommandString_2023_09(python_exe),
+        args=[
+            ArgString_2023_09("-c"),
+            ArgString_2023_09("import sys; print(sys.argv[1])"),
+            ArgString_2023_09(text),
+        ],
+    )
+
+
+def _echoing_wrap_env(python_exe: str, text: str, name: str = "WrapEnv") -> Environment_2023_09:
+    """A wrap environment whose three hooks all print ``text``."""
+    return Environment_2023_09(
+        name=name,
+        script=EnvironmentScript_2023_09(
+            actions=EnvironmentActions_2023_09(
+                onWrapEnvEnter=_echo(python_exe, text),
+                onWrapTaskRun=_echo(python_exe, text),
+                onWrapEnvExit=_echo(python_exe, text),
+            )
+        ),
+    )
+
+
+def _serialized_table(entries: list[dict[str, str]]) -> SerializedSymbolTable:
+    """A service-resolved base table in its wire (JSON) form."""
+    return SerializedSymbolTable.from_json_str(json.dumps(entries))
 
 
 def _inner_env(python_exe: str, name: str = "Inner") -> Environment_2023_09:
@@ -524,3 +563,162 @@ class TestHookScopeBuilderUnit:
             hook_symtab = session._build_wrap_hook_scope(revision, SymbolTable())
             assert not _defined(hook_symtab, "Session.PathMappingRulesFile")
             assert not _defined(hook_symtab, "Session.HasPathMappingRules")
+
+
+class TestResolvedBaseReachesTheHook:
+    """The service-resolved base IS hook scope, matching openjd-rs.
+
+    A hook in openjd-rs resolves against the current action's full symbol
+    table, which is built with the base — so a hook referencing a name only
+    the base defines resolves there. Python built the hook's table with no
+    base at all, so the same hook failed. These tests pin the convergence.
+
+    They do NOT relax the isolation this file is otherwise about. The base a
+    step's action carries never holds ``Task.Param.*``: the service copies
+    only ``Param.*``/``RawParam.*``/``Job.Name``/``Step.Name``/step-level
+    ``let`` values into it. The last test here is the control for that.
+    """
+
+    def test_base_symbol_resolves_in_a_task_hook(
+        self, python_exe: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # GIVEN: a wrap env whose onWrapTaskRun references a base-only name
+        base = _serialized_table([{"name": "from_base", "type": "string", "value": "base value"}])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            wrap_id = session.enter_environment(
+                environment=_echoing_wrap_env(python_exe, "HOOK={{from_base}}")
+            )
+            _run_until_ready(session)
+            capture = _HookScopeCapture(session)
+
+            # WHEN: a task runs under it WITH a base
+            session.run_task(
+                step_script=_step_script(python_exe),
+                task_parameter_values={},
+                step_name="S",
+                resolved_symtab=base,
+            )
+            _run_until_ready(session)
+
+            # THEN: the hook resolved it and ran.
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS
+            assert any("HOOK=base value" in m for m in caplog.messages)
+            hook_scope = capture.table(0, expected_count=1)
+            assert str(hook_scope["from_base"]) == "base value"
+
+            session.exit_environment(identifier=wrap_id)
+            _run_until_ready(session)
+
+    @pytest.mark.parametrize("phase", ["enter", "exit"])
+    def test_base_symbol_resolves_in_an_environment_hook(
+        self, phase: str, python_exe: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The base rides the INNER environment's call, not the wrap env's.
+
+        A wrap environment's own enter is never itself wrapped, so the base
+        that reaches an onWrapEnvEnter hook is the one the inner environment
+        was entered with — and for onWrapEnvExit, the one its exit was given.
+        """
+        # GIVEN
+        base = _serialized_table([{"name": "from_base", "type": "string", "value": "base value"}])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            wrap_id = session.enter_environment(
+                environment=_echoing_wrap_env(python_exe, "HOOK={{from_base}}")
+            )
+            _run_until_ready(session)
+            capture = _HookScopeCapture(session)
+
+            # WHEN: an inner env is entered (and exited) WITH a base
+            inner_id = session.enter_environment(
+                environment=_inner_env(python_exe), resolved_symtab=base
+            )
+            _run_until_ready(session)
+            if phase == "exit":
+                session.exit_environment(identifier=inner_id, resolved_symtab=base)
+                _run_until_ready(session)
+
+            # THEN: the intercepting hook resolved the base-only name.
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS
+            assert any("HOOK=base value" in m for m in caplog.messages)
+            expected = 2 if phase == "exit" else 1
+            hook_scope = capture.table(expected - 1, expected_count=expected)
+            assert str(hook_scope["from_base"]) == "base value"
+
+            if phase == "enter":
+                session.exit_environment(identifier=inner_id)
+                _run_until_ready(session)
+            session.exit_environment(identifier=wrap_id)
+            _run_until_ready(session)
+
+    def test_base_step_name_is_hook_visible(self, python_exe: str) -> None:
+        """Deliberate, and the opposite of the no-base case above.
+
+        ``test_running_step_name_is_not_in_the_hook_scope`` pins that the
+        *running* step's name does not leak through the session's own
+        ``step_name`` channel. A base ``Step.Name`` is a different channel:
+        openjd-rs carries it into hook scope, so this is parity, not a leak.
+        Pinned so it is not "fixed" back.
+        """
+        # GIVEN: a base carrying Step.Name, and a wrap env with no step
+        # context of its own to overwrite it.
+        base = _serialized_table([{"name": "Step.Name", "type": "string", "value": "BaseStep"}])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            wrap_id = session.enter_environment(environment=_wrap_env(python_exe))
+            _run_until_ready(session)
+            capture = _HookScopeCapture(session)
+
+            # WHEN
+            session.run_task(
+                step_script=_step_script(python_exe),
+                task_parameter_values={},
+                step_name="RunningStep",
+                resolved_symtab=base,
+            )
+            _run_until_ready(session)
+
+            # THEN
+            hook_scope = capture.table(0, expected_count=1)
+            assert str(hook_scope["Step.Name"]) == "BaseStep"
+            assert hook_scope["WrappedStep.Name"] == "RunningStep"
+
+            session.exit_environment(identifier=wrap_id)
+            _run_until_ready(session)
+
+    @pytest.mark.parametrize("leaked_symbol", ["Task.Param.Frame", "Task.RawParam.Frame"])
+    def test_task_parameters_stay_out_with_a_base_present(
+        self, leaked_symbol: str, python_exe: str
+    ) -> None:
+        """The control for the change above.
+
+        The plausible mis-implementation — copying the inner entity's session
+        table into the hook scope instead of threading the base — passes every
+        other test in this class and fails this one.
+        """
+        # GIVEN
+        base = _serialized_table([{"name": "from_base", "type": "string", "value": "base value"}])
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values={}) as session:
+            wrap_id = session.enter_environment(environment=_wrap_env(python_exe))
+            _run_until_ready(session)
+            capture = _HookScopeCapture(session)
+
+            # WHEN: a task with parameters runs under it, WITH a base
+            session.run_task(
+                step_script=_step_script(python_exe),
+                task_parameter_values={
+                    "Frame": ParameterValue(type=ParameterValueType.INT, value="42")
+                },
+                step_name="RenderStep",
+                resolved_symtab=base,
+            )
+            _run_until_ready(session)
+
+            # THEN: the base arrived, and the task's parameters still did not.
+            hook_scope = capture.table(0, expected_count=1)
+            assert str(hook_scope["from_base"]) == "base value"
+            assert not _defined(hook_scope, leaked_symbol)
+            assert leaked_symbol not in hook_scope.expr_types
+
+            session.exit_environment(identifier=wrap_id)
+            _run_until_ready(session)

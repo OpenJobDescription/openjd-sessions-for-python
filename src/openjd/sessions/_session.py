@@ -1011,7 +1011,9 @@ class Session(object):
             # failure the environment stays in the entered list, exactly as
             # when enter() itself fails, so the caller's cleanup exits it
             # as usual.
-            hook_symtab = self._build_wrap_hook_scope(environment.revision, symtab)
+            hook_symtab = self._build_wrap_hook_scope(
+                environment.revision, symtab, resolved_base=resolved_base
+            )
             if not self._try_inject_wrapped_symbols(
                 scope=EmbeddedFilesScope.ENV,
                 inner_script=environment.script,
@@ -1215,7 +1217,9 @@ class Session(object):
             # See the onWrapEnvEnter path (_try_inject_wrapped_symbols). On
             # failure the environment was already removed from tracking
             # above, matching how a failed exit() behaves.
-            hook_symtab = self._build_wrap_hook_scope(environment.revision, symtab)
+            hook_symtab = self._build_wrap_hook_scope(
+                environment.revision, symtab, resolved_base=resolved_base
+            )
             if not self._try_inject_wrapped_symbols(
                 scope=EmbeddedFilesScope.ENV,
                 inner_script=environment.script,
@@ -1440,7 +1444,9 @@ class Session(object):
             # _build_wrap_hook_scope. The wrap environment's own lets/files are
             # evaluated into the hook's table by the script runner from
             # wrap_env.script.
-            hook_symtab = self._build_wrap_hook_scope(step_script.revision, symtab)
+            hook_symtab = self._build_wrap_hook_scope(
+                step_script.revision, symtab, resolved_base=resolved_base
+            )
             if not self._try_inject_wrapped_symbols(
                 scope=EmbeddedFilesScope.STEP,
                 inner_script=step_script,
@@ -1930,7 +1936,10 @@ class Session(object):
         return identifier
 
     def _build_wrap_hook_scope(
-        self, version: SpecificationRevision, session_symtab: SymbolTable
+        self,
+        version: SpecificationRevision,
+        session_symtab: SymbolTable,
+        resolved_base: Optional[dict[str, Any]] = None,
     ) -> SymbolTable:
         """The scope an RFC 0008 wrap hook resolves in.
 
@@ -1952,17 +1961,27 @@ class Session(object):
         the only gate.
 
         What a hook legitimately gets: session scope (``Session.*``,
-        ``Job.Name``, ``Param.*``/``RawParam.*``), the path-mapping symbols, the
-        wrap environment's *own* enter-time step context (applied afterwards by
+        ``Job.Name``, ``Param.*``/``RawParam.*``), the service-resolved base
+        ``resolved_base`` seeds, the path-mapping symbols, the wrap
+        environment's *own* enter-time step context (applied afterwards by
         :meth:`_seed_wrap_env_scope`), the ``WrappedAction.*`` overlay, and its
         own script-level ``let`` bindings and embedded files (evaluated by the
         runner).
+
+        ``resolved_base`` is the base the *inner* entity's action was handed,
+        which is what openjd-rs's hook scope carries: a hook there resolves
+        against the current action's full symbol table, base included. Seeding
+        it does not weaken the isolation above — the base a step's action
+        carries never holds ``Task.Param.*`` (the service copies only
+        ``Param.*``/``RawParam.*``/``Job.Name``/``Step.Name``/step-level
+        ``let`` values into it), and with no base the scope is unchanged. Base
+        ``Step.Name`` IS hook-visible as a result, matching openjd-rs.
 
         The path-mapping symbols are copied rather than re-materialized: the
         rules file has already been written for this action, and both scopes must
         name the same file.
         """
-        hook_symtab = self._symbol_table(version)
+        hook_symtab = self._symbol_table(version, resolved_base=resolved_base)
         for key in (
             ValueReferenceConstants_2023_09.HAS_PATH_MAPPING_RULES.value,
             ValueReferenceConstants_2023_09.PATH_MAPPING_RULES_FILE.value,
