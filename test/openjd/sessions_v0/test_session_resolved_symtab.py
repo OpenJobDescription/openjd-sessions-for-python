@@ -443,3 +443,65 @@ class TestInvalidResolvedSymtab:
 
             # THEN
             assert identifier not in session.environments_entered
+
+    def test_invalid_base_on_exit_fails_cleanly_and_drains(self) -> None:
+        """An invalid base handed to ``exit_environment`` fails the action
+        cleanly AND drains the environment's stored step context.
+
+        The exit-side deserialization branch returns early. Everything the
+        environment stored at enter time (``Step.Name`` and its extra ``let``
+        bindings) must already be popped by then, or it is stranded: those
+        dicts are keyed by identifier and nothing else removes an entry.
+
+        Why a stranded entry is not merely untidy: ``enter_environment``
+        accepts a caller-supplied identifier and does not reject one that
+        was used before, and the worker agent passes the service's
+        environment id. Re-entering the same id without step context would
+        replay the STALE stored values on its next exit or wrap-hook seed.
+
+        The FAILED assertions below pass with or without the drain fix —
+        only the private-dict assertions catch a revert of it, so this test
+        doubles as that fix's regression test.
+        """
+        callback_events: list[ActionStatus] = []
+
+        def callback(session_id: str, status: ActionStatus) -> None:
+            callback_events.append(status)
+
+        bad_base = _serialized_table([{"name": "v", "type": "bogus", "value": "5"}])
+        env = _env("Env", onEnter=_action("true"), onExit=_action("true"))
+        with Session(
+            session_id=uuid.uuid4().hex, job_parameter_values={}, callback=callback
+        ) as session:
+            # GIVEN: an environment entered cleanly WITH step context, so
+            # both tracking dicts hold an entry for it (non-vacuously: a
+            # drain assertion on an empty dict pins nothing).
+            identifier = session.enter_environment(
+                environment=env,
+                step_name="S",
+                extra_let_bindings=["msg = 'from step'"],
+            )
+            _run_until_ready(session)
+            assert session.state == SessionState.READY
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.SUCCESS
+            assert session._environment_step_names[identifier] == "S"
+            assert session._environment_extra_let_bindings[identifier] == ["msg = 'from step'"]
+
+            # WHEN: exiting with an invalid base — this must not raise.
+            session.exit_environment(identifier=identifier, resolved_symtab=bad_base)
+            _run_until_ready(session)
+
+            # THEN: the action failed through the callback path.
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert status.fail_message is not None
+            assert "resolved symbol table" in status.fail_message
+            assert callback_events and callback_events[-1].state == ActionState.FAILED
+
+            # AND: the environment's stored step context was drained, not
+            # stranded by the early return.
+            assert identifier not in session._environment_step_names
+            assert identifier not in session._environment_extra_let_bindings
