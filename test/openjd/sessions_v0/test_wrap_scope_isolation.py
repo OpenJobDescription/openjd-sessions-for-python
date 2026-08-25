@@ -36,12 +36,17 @@ import json
 import time
 import uuid
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
 from openjd.expr import SerializedSymbolTable
-from openjd.model import ParameterValue, ParameterValueType, SymbolTable
+from openjd.model import (
+    ParameterValue,
+    ParameterValueType,
+    SpecificationRevision,
+    SymbolTable,
+)
 from openjd.model.v2023_09 import (
     Action as Action_2023_09,
     ArgString as ArgString_2023_09,
@@ -719,11 +724,16 @@ class TestResolvedBaseReachesTheHook:
             inner_scopes: list[SymbolTable] = []
             original_builder = session._build_wrap_hook_scope
 
+            # Signature matches _build_wrap_hook_scope exactly, including the
+            # resolved_base parameter: a **kwargs stand-in is not assignable to
+            # the bound method's type.
             def _capturing_builder(
-                version: Any, session_symtab: SymbolTable, **kwargs: Any
+                version: SpecificationRevision,
+                session_symtab: SymbolTable,
+                resolved_base: Optional[dict[str, Any]] = None,
             ) -> SymbolTable:
                 inner_scopes.append(session_symtab)
-                return original_builder(version, session_symtab, **kwargs)
+                return original_builder(version, session_symtab, resolved_base)
 
             session._build_wrap_hook_scope = _capturing_builder  # type: ignore[method-assign]
 
