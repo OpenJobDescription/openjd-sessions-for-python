@@ -1,9 +1,13 @@
 ## 0.12.0 (2026-08-26)
 
 
+### ⚠ BREAKING CHANGES
+* `extra_let_bindings` is removed from `Session.enter_environment`, `Session.exit_environment` and `Session.run_task` (#357). The parameter was public in 0.11.0. Callers must deliver step-scope EXPR `let` values through the new `resolved_symtab` parameter — the resolved symbol table the service already produces per step and per environment — instead. `step_name` is unchanged on both methods. ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+
+
 ### Features
 * accept a resolved symbol table on the v0 session (#357) ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
-* deliver step-scope let bindings to run_task ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* deliver step-scope let bindings to run_task — added `extra_let_bindings` to `run_task`, then superseded within this same release; see BREAKING CHANGES above ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
 * Accept resolved symbol table on v0 session ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
 
 ### Bug Fixes
