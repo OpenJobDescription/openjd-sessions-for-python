@@ -1,3 +1,18 @@
+## 0.11.1 (2026-08-26)
+
+
+### Features
+* accept a resolved symbol table on the v0 session (#357) ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* deliver step-scope let bindings to run_task ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* Accept resolved symbol table on v0 session ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+
+### Bug Fixes
+* drain exit step context before failures ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* seed the resolved base into wrap hook scope ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* replay a wrap env's own base into hook scope ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* type the hook-scope capture stand-in exactly ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+
+
 ## 0.12.0 (2026-08-26)
 
 
