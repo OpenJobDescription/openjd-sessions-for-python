@@ -8,7 +8,7 @@
 ### Features
 * accept a resolved symbol table on the v0 session (#357) ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
 * deliver step-scope let bindings to run_task — added `extra_let_bindings` to `run_task`, then superseded within this same release; see BREAKING CHANGES above ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
-* Accept resolved symbol table on v0 session ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
+* accept resolved symbol table on v0 session ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
 
 ### Bug Fixes
 * drain exit step context before failures ([`457a364`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/457a364371cb44bf5a6253e612a451e5678621d3))
