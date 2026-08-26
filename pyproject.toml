@@ -31,14 +31,17 @@ classifiers = [
   "Topic :: Software Development :: Libraries"
 ]
 dependencies = [
-  # 0.11.4 is the floor because it is the first release whose SerializedSymbolTable
-  # has a JSON transport form (to_json_str/from_json_str), which is how a caller
-  # gets a table across a process boundary and into the v1 Session's
-  # `resolved_symtab`. Do not drop below 0.11.2: the EXPR/WRAP_ACTIONS model
-  # surface this package imports (FormatString.whole_field_expression,
-  # evaluate_let_bindings, CancelationMethodDeferred, SymbolTable.expr_host_rules,
-  # `let` on StepTemplate/StepScript) does not exist before then.
-  "openjd-model >= 0.11.4,< 0.12",
+  # 0.11.6 is the floor: it is the first release that accepts an environment
+  # defining only `onExit`, a template this package is expected to enter and
+  # exit. Earlier floors, still load-bearing: 0.11.4 is where
+  # SerializedSymbolTable gained its JSON transport form
+  # (to_json_str/from_json_str), which is how a caller gets a table across a
+  # process boundary and into the v1 Session's `resolved_symtab`; and the
+  # EXPR/WRAP_ACTIONS model surface this package imports
+  # (FormatString.whole_field_expression, evaluate_let_bindings,
+  # CancelationMethodDeferred, SymbolTable.expr_host_rules, `let` on
+  # StepTemplate/StepScript) does not exist before 0.11.2.
+  "openjd-model >= 0.11.6,< 0.12",
   "pywin32 >= 307; platform_system == 'Windows'",
   "psutil >= 5.9,< 7.3; platform_system == 'Windows'",
 ]
