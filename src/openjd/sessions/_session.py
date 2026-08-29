@@ -1998,7 +1998,6 @@ class Session(object):
         let_bindings: Optional[list[str]],
         embedded_files: Optional[Any],
         base: SymbolTable,
-        script: Any = None,
     ) -> SymbolTable:
         """Build the scope a wrapped action would have resolved against had
         it run unwrapped: a copy of ``base`` (the session-scope table) plus
@@ -2013,12 +2012,10 @@ class Session(object):
         symmetrically, the inner entity's lets never apply to the hook's own
         resolution scope. Mirrors openjd-rs's ``build_wrapped_inner_scope``.
 
-        ``script`` is the inner entity's script -- the model object
-        ``let_bindings`` came from -- forwarded to
-        :func:`~._runner_base.apply_script_let_bindings` exactly as the step
-        runner forwards it. A script's own ``let`` is session scope either way,
-        so a wrapped action resolves against the same scope it would have had
-        unwrapped, which is the property this method exists to reproduce.
+        A script's own ``let`` is session scope here exactly as it is in the
+        runners, so a wrapped action resolves against the same scope it would
+        have had unwrapped, which is the property this method exists to
+        reproduce.
 
         Raises:
             ValueError (FormatStringError/ExpressionError): a binding or file
@@ -2035,10 +2032,10 @@ class Session(object):
             )
             records = file_writer.allocate_file_paths(embedded_files, symtab)
             if let_bindings:
-                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
+                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
             file_writer.write_file_contents(records, symtab)
         elif let_bindings:
-            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
+            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
         return symtab
 
     def _try_inject_wrapped_symbols(
@@ -2069,7 +2066,6 @@ class Session(object):
                 inner_script.let if inner_script is not None else None,
                 inner_script.embeddedFiles if inner_script is not None else None,
                 symtab,
-                inner_script,
             )
             inject(inner_symtab)
         except (FormatStringError, ValueError, RuntimeError) as e:

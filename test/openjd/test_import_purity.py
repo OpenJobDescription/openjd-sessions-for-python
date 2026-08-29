@@ -424,13 +424,7 @@ from openjd.model import SymbolTable
 from openjd.sessions._runner_base import apply_script_let_bindings
 
 
-class Script:
-    pass
-
-
-apply_script_let_bindings(
-    symtab=SymbolTable(), let_bindings=["malformed"], script=Script()
-)
+apply_script_let_bindings(symtab=SymbolTable(), let_bindings=["malformed"])
 print(RS in sys.modules)
 """
 

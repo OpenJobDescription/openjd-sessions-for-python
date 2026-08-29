@@ -542,9 +542,7 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
 
 
-def apply_script_let_bindings(
-    *, symtab: SymbolTable, let_bindings: list[str], script: Any = None
-) -> None:
+def apply_script_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     """Evaluate a script's own ``let`` list into ``symtab`` in the host's path
     format.
 
@@ -564,11 +562,6 @@ def apply_script_let_bindings(
     a re-evaluation would also *win*, overwriting the correctly-formatted seeded
     value. Nothing in a session re-evaluates a step's bindings; it reads the
     resolved ones.
-
-    ``script`` is the model object the ``let`` list came from. It is accepted so
-    the runners and ``Session._build_wrapped_inner_scope`` can pass the script
-    they already have, but nothing is read off it: a script's own ``let`` needs
-    no per-script scope information.
 
     Raises:
         ValueError: as :func:`apply_let_bindings`.
@@ -1065,14 +1058,9 @@ class ScriptRunnerBase(ABC):
         symtab: SymbolTable,
         let_bindings: Optional[list[str]] = None,
         preallocated_records: Optional[list[_FileRecord]] = None,
-        script: Any = None,
     ) -> None:
         """Helper for derived classes that wraps all of the logic around
         materializing embedded files to disk.
-
-        ``script`` is the model object ``let_bindings`` came from, forwarded to
-        :func:`apply_script_let_bindings`. Every binding is evaluated in the
-        host's path format.
 
         When ``let_bindings`` is given, they are evaluated between file-path
         allocation and content writing (RFC 0005, mirroring the openjd-rs
@@ -1111,7 +1099,7 @@ class ScriptRunnerBase(ABC):
             else:
                 records = file_writer.allocate_file_paths(files, symtab)
             if let_bindings:
-                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
+                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
             file_writer.write_file_contents(records, symtab)
         except (RuntimeError, ValueError) as exc:
             # Had a problem writing at least one file to disk, or evaluating
@@ -1119,17 +1107,12 @@ class ScriptRunnerBase(ABC):
             # ValueError). Surface the error.
             self._fail_action(str(exc))
 
-    def _apply_let_bindings_or_fail(
-        self, symtab: SymbolTable, let_bindings: list[str], script: Any = None
-    ) -> bool:
+    def _apply_let_bindings_or_fail(self, symtab: SymbolTable, let_bindings: list[str]) -> bool:
         """Evaluate the script's EXPR ``let`` bindings into ``symtab``. On an
         evaluation error the action is failed through the normal failure path
-        (openjd_fail log, FAILED state, callback). Returns True on success.
-
-        ``script`` is the model object the bindings came from, forwarded to
-        :func:`apply_script_let_bindings`."""
+        (openjd_fail log, FAILED state, callback). Returns True on success."""
         try:
-            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
+            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
         except ValueError as exc:
             self._fail_action(str(exc))
             return False

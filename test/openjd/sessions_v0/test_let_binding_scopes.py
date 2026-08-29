@@ -180,9 +180,7 @@ class TestSeededStepValuesAreNotReEvaluated:
 
                 # WHEN
                 with _spy_on_evaluation() as spy:
-                    apply_script_let_bindings(
-                        symtab=symtab, let_bindings=script.let or [], script=script
-                    )
+                    apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
 
                 # THEN: the seeded value is untouched, in the host's format.
                 assert str(symtab[_SEEDED_NAME]) == _SEEDED_WINDOWS_TEXT, (
@@ -209,9 +207,7 @@ class TestSeededStepValuesAreNotReEvaluated:
 
             # WHEN
             with _spy_on_evaluation() as spy:
-                apply_script_let_bindings(
-                    symtab=symtab, let_bindings=script.let or [], script=script
-                )
+                apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
 
             # THEN: the evaluator saw the script's own bindings and nothing else.
             evaluated = _evaluated_bindings(spy)
@@ -243,9 +239,7 @@ class TestAScriptsOwnLetIsSessionScope:
                 symtab = _session_symtab(session)
 
                 # WHEN
-                apply_script_let_bindings(
-                    symtab=symtab, let_bindings=script.let or [], script=script
-                )
+                apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
 
                 # THEN: the path rendered in the *host's* format, not POSIX.
                 assert str(symtab["built"]) == r"\a\b", (
@@ -270,6 +264,4 @@ class TestAScriptsOwnLetIsSessionScope:
 
             # WHEN / THEN
             with pytest.raises(ValueError, match="bad"):
-                apply_script_let_bindings(
-                    symtab=symtab, let_bindings=script.let or [], script=script
-                )
+                apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])

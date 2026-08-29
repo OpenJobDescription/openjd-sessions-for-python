@@ -114,13 +114,12 @@ class StepScriptRunner(ScriptRunnerBase):
                 self._session_files_directory,
                 symtab,
                 let_bindings=let_bindings,
-                script=self._script,
             )
             if self.state == ScriptRunnerState.FAILED:
                 return
         elif let_bindings:
             symtab = SymbolTable(source=self._symtab)
-            if not self._apply_let_bindings_or_fail(symtab, let_bindings, self._script):
+            if not self._apply_let_bindings_or_fail(symtab, let_bindings):
                 return
         else:
             symtab = self._symtab
