@@ -166,14 +166,12 @@ class _ExprKind(Enum):
 def _classify_expr_value(value: Any) -> _ExprKind:
     """Classify ``value`` against the EXPR type system.
 
-    This is one of two places in this module that import ``openjd.expr``, and
-    it is the one reached from the non-EXPR path, so it sits behind the
+    This is the *only* place in this module that imports ``openjd.expr``, so
+    that every crossing into the native extension sits behind the one
     ``sys.modules`` guard below. Doing the whole classification here rather
     than exposing a separate "is it a list" predicate keeps that property
     structural instead of merely documented: there is no second, unguarded
-    entry point for a future caller to reach with an arbitrary value. The other
-    crossing is in :func:`_apply_template_scope_let_bindings`, guarded instead
-    by a non-zero template-scope prefix, which only an EXPR template produces.
+    entry point for a future caller to reach with an arbitrary value.
 
     ``ExprValue`` instances are created only by the native extension, so if
     that extension has not been loaded then ``value`` cannot be one and the
@@ -497,9 +495,7 @@ def resolve_effective_cancelation(
     )
 
 
-def apply_let_bindings(
-    *, symtab: SymbolTable, let_bindings: list[str], path_format: Any = None
-) -> None:
+def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     """Evaluate EXPR ``let`` bindings (RFC 0005) and add them to ``symtab``.
 
     ``let_bindings`` is a script's ``let`` field: an ordered list of
@@ -515,11 +511,12 @@ def apply_let_bindings(
     ``Env.File.*``/``Task.File.*`` and a file's ``data`` may reference
     let-bound values (mirroring openjd-rs's runner ordering).
 
-    ``path_format`` is the EXPR ``PathFormat`` that PATH-typed results render
-    with. ``None`` -- the default, and what every session-scope binding wants --
-    leaves the engine's default, which is the host's format. Callers
-    re-evaluating a *template*-scope binding pass ``PathFormat.POSIX``; see
-    :func:`apply_script_let_bindings`.
+    PATH-typed results render in the engine's default format, which is the
+    host's. That is the only format a session ever evaluates in: a step's
+    template-scope ``let`` is resolved once at job creation and its values reach
+    the session already resolved, through ``Step.resolved_symtab`` (see
+    :meth:`Session._resolved_base_entries`), so nothing here re-evaluates a
+    binding that belongs to another scope.
 
     Raises:
         ValueError (FormatStringError/ExpressionError): if a binding's
@@ -538,254 +535,45 @@ def apply_let_bindings(
                 f"which exceeds the maximum of {MAX_LET_BINDING_LENGTH}"
             )
     # Single-sourced in openjd.model (parse-memoized; skips malformed
-    # bindings; raises ValueError naming the failing binding).
-    #
-    # The kwarg is forwarded only when it is set, because `path_format` does not
-    # exist on openjd-model at this package's declared floor (>= 0.11.6) and
-    # passing it there is a TypeError, not a no-op -- which would break EVERY
-    # EXPR template rather than degrading. On such a model the else branch is
-    # unreachable from any internal caller: apply_script_let_bindings reads
-    # the template-scope count through getattr, and a model without
-    # `path_format` has no `_template_scope_let_count` either, so the count is 0
-    # and nothing asks for a non-default format. Tests call it directly. On a model that does have it, `None` and "omitted"
-    # are the same call. Collapse this to an unconditional forward once the
-    # openjd-model floor carries the parameter.
-    if path_format is None:
-        evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
-    else:
-        evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings, path_format=path_format)
-
-
-def _host_path_format() -> Any:
-    """The EXPR ``PathFormat`` for this host.
-
-    The Python engine bindings expose no ``PathFormat.host()``, so it is derived
-    the same way :meth:`Session._resolved_base_entries` derives it.
-    """
-    import os
-
-    from openjd.expr import PathFormat
-
-    return PathFormat.WINDOWS if os.name == "nt" else PathFormat.POSIX
-
-
-def _type_carries_path_format(expr_type: Any) -> bool:
-    """Whether an EXPR type renders a path, and so carries a path format.
-
-    ``list[path]`` carries one as much as ``path`` does, so the type parameters
-    are walked rather than only the outer type code.
-    """
-    from openjd.expr import TypeCode
-
-    if expr_type.type_code == TypeCode.PATH:
-        return True
-    return any(_type_carries_path_format(param) for param in expr_type.type_params)
-
-
-def _is_format_neutral(value: Any, declared_type: Optional[str]) -> bool:
-    """Whether a symbol can be read under a path format other than the one it
-    was built in.
-
-    Tested by *shape*, not by name, because the set of session symbols grows and
-    a name denylist would rot. Two shapes carry a path format, and the session
-    symbol table holds both:
-
-    - a native engine value that is itself path-typed, which is what
-      :meth:`Session._resolved_base_entries` seeds (a create-time table
-      deserialized in host format); and
-    - a plain string (or list of strings) whose ``expr_types`` entry declares it
-      ``PATH`` or ``LIST[PATH]``, which is what ``Session.WorkingDirectory`` and
-      every path-typed ``Param.*``/``Task.Param.*`` are.
-
-    ``"PATH" in declared_type`` covers both ``PATH`` and ``LIST[PATH]``; no other
-    OpenJD parameter type name contains it.
-
-    Fails closed: a value whose type cannot be determined is treated as carrying
-    a format, because wrongly *including* a path-typed symbol is the defect this
-    filter exists to prevent, while wrongly excluding one only triggers the
-    fallback in :func:`_apply_template_scope_let_bindings`.
-    """
-    if declared_type is not None and "PATH" in declared_type:
-        return False
-
-    from openjd.expr import ExprValue
-
-    if not isinstance(value, ExprValue):
-        # A plain Python value carries no format of its own; its `expr_types`
-        # entry, checked above, is the only thing that could give it one.
-        return True
-    try:
-        return not _type_carries_path_format(value.type)
-    except Exception:
-        return False
-
-
-def _apply_template_scope_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> bool:
-    """Evaluate self-contained template-scope ``let`` bindings and seed them in
-    host format. Returns whether the bindings could be evaluated this way.
-
-    Three parts, and all three are load-bearing.
-
-    **The bindings are evaluated with ``PathFormat.POSIX``**, because that is
-    what openjd-model and openjd-rs use at job creation, so a value that leaves
-    path-space during evaluation freezes the same text it froze there. That
-    covers ``string(path(...))``, ``join(...)``, ``repr_sh(...)``, ``.parts``
-    and every comparison against a POSIX literal.
-
-    **They are evaluated against only the format-neutral symbols in scope**
-    (:func:`_is_format_neutral`), plus the prefix bindings already bound. A
-    POSIX evaluation cannot read a symbol that carries a path format: the
-    session table holds host-format values, and on a Windows host reading one
-    either raises::
-
-        ValueError: let binding 'out': Path format mismatch for
-                    'Session.WorkingDirectory': value has Windows but
-                    evaluator uses Posix
-
-    or, worse, silently succeeds against a re-rendered value -- a ``.parent`` of
-    a Windows path read as POSIX is ``'.'``, because a backslash is an ordinary
-    character in a POSIX path. Neither is acceptable, so those symbols are not
-    in scope for this evaluation at all.
-
-    **The results are then re-tagged to the host's format** before they are
-    seeded. An EXPR path value carries its format, and reading one under a
-    different format is the same hard error in the other direction. Action
-    arguments, embedded-file ``data`` and environment-variable values all
-    resolve in the host's format, so seeding a Posix-tagged path would make
-    every one of those reads raise on Windows. The re-tag round trip leaves a
-    frozen string alone and re-renders a live path, which is exactly the split
-    the conformance suite asks for: ``expr2.2.1--string-conversion`` wants
-    ``/mnt/out`` on both platforms, while ``expr2.3.2--path-construction`` wants
-    ``\\a\\b`` on Windows. This mirrors how a create-time table already reaches
-    a session: :meth:`Session._resolved_base_entries` deserializes it with
-    ``to_symtab(path_format=host_format)``.
-
-    Returns:
-        bool: ``True`` when the prefix was evaluated in template scope and
-            seeded. ``False`` when it could not be -- because a binding reads a
-            symbol that carries a path format, and so is missing from the
-            narrowed scope, or the POSIX evaluation failed for any other reason.
-            The caller then abandons the split for the whole ``let`` list. This
-            is all-or-nothing on purpose: freezing per binding would let a
-            POSIX-evaluated binding read a host-evaluated sibling, which is the
-            same cross-format read in a new place. Nothing has been written to
-            ``symtab`` when ``False`` is returned, so the caller's fallback
-            starts from an untouched table.
-    """
-    from openjd.expr import PathFormat, SerializedSymbolTable
-
-    from openjd.model._format_strings._expr_support import symtab_to_expr_values
-
-    # A separate table, so the POSIX evaluation neither writes host-format
-    # neighbours back into `symtab` nor reads a symbol whose format it cannot
-    # honour. Bindings land in it in order, so a later prefix binding still
-    # reads an earlier one.
-    declared_types = getattr(symtab, "expr_types", None) or {}
-    scratch = SymbolTable()
-    # Host-context rules are deliberately NOT carried over. `apply_path_mapping`
-    # is a host-context function and RFC 0005 bars those from template scope:
-    # the create-time hook runs with no host context, so a binding calling one
-    # raises `Unknown function` there and has no create-time value to reproduce.
-    # Without the rules this evaluation raises the same way, and the
-    # `except ValueError` below turns that into the whole-list fallback.
-    for name in symtab.symbols:
-        if _is_format_neutral(symtab[name], declared_types.get(name)):
-            scratch[name] = symtab[name]
-            if name in declared_types:
-                scratch.expr_types[name] = declared_types[name]
-
-    try:
-        apply_let_bindings(symtab=scratch, let_bindings=let_bindings, path_format=PathFormat.POSIX)
-    except ValueError:
-        # Most often an `Undefined variable` for a symbol the filter removed.
-        # The catch is deliberately not narrowed to that: every other failure
-        # mode is also one where this prefix cannot be reproduced in template
-        # scope, and the caller's fallback -- evaluating the whole list in the
-        # host's format -- is precisely the pre-fix behaviour, which re-raises
-        # a genuine error with the same message rather than swallowing it.
-        return False
-
-    # Only the names these bindings defined. A malformed binding is skipped by
-    # the evaluator, so membership is checked rather than assumed.
-    holder = SymbolTable()
-    for binding in let_bindings:
-        name = binding.partition("=")[0].strip()
-        if name and name in scratch:
-            holder[name] = scratch[name]
-    if not holder.symbols:
-        return True
-
-    engine = symtab_to_expr_values(
-        holder, types=getattr(holder, "expr_types", None), path_format=PathFormat.POSIX
-    )
-    retagged = SerializedSymbolTable.from_symtab(engine).to_symtab(path_format=_host_path_format())
-    for name in retagged.symbols:
-        symtab[name] = retagged[name]
-    return True
+    # bindings; raises ValueError naming the failing binding). No `path_format`
+    # kwarg: the engine default is the host's format, which is the only format a
+    # session evaluates in, and the parameter does not exist on openjd-model at
+    # this package's declared floor (>= 0.11.6).
+    evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
 
 
 def apply_script_let_bindings(
     *, symtab: SymbolTable, let_bindings: list[str], script: Any = None
 ) -> None:
-    """Evaluate a script's ``let`` list into ``symtab``, honouring the
-    template-scope / session-scope boundary inside it.
+    """Evaluate a script's own ``let`` list into ``symtab`` in the host's path
+    format.
 
-    An instantiated Step's script carries a *merged* ``let`` list: the
-    step-level bindings the template declared, followed by the script's own
-    (openjd-model's ``StepTemplate.resolve_syntax_sugar``). The step-level
-    prefix is template scope and was already evaluated as such at job creation.
-    Re-evaluating it here in the host's format changes its value: on Windows
+    Every binding in ``let_bindings`` is session scope, so there is one scope
+    here and one format. A step's *template*-scope ``let`` does not appear in
+    this list: openjd-model resolves it once at job creation and its values
+    travel to the session in the step symbol table, reaching ``symtab`` through
+    ``Step.resolved_symtab`` (:meth:`Session._resolved_base_entries`) already
+    resolved and deserialized into the host's format.
+
+    That division matters because the two are not interchangeable. A
+    template-scope value is frozen at creation with ``PathFormat::Posix`` so it
+    cannot depend on the host that created the job, and re-deriving one here
+    would re-render its PATH values -- on Windows
     ``startswith(path("/foo/bar"), "/foo")`` flips from ``true`` to ``false``.
+    Both a seeded value and a re-evaluated one would land in this same table, so
+    a re-evaluation would also *win*, overwriting the correctly-formatted seeded
+    value. Nothing in a session re-evaluates a step's bindings; it reads the
+    resolved ones.
 
-    So the list is split. The prefix goes through
-    :func:`_apply_template_scope_let_bindings`, which reproduces the
-    create-time value and then seeds it in host format. The remainder is the
-    script's own bindings, evaluated unchanged in the host's format, because
-    they legitimately reference host-scope symbols
-    (``Session.WorkingDirectory``, ``Task.File.*``, ``apply_path_mapping``).
-
-    Both halves land in the **same** table in the **same** order, so a
-    script-level binding can reference a step-level one.
-
-    The claim is deliberately narrow: only a *self-contained* prefix is
-    reproduced. Template scope is POSIX, so it cannot read a symbol that carries
-    the host's path format, and the session table is full of those. When a prefix
-    binding needs one, ``_apply_template_scope_let_bindings`` declines and the
-    whole list falls back to a single host-format evaluation -- the previous
-    behaviour, still wrong on Windows for that script, but never raising and
-    never silently reading a path under the wrong format. Fixing that case needs
-    the create-time value carried to the session (``Step.resolved_symtab``)
-    rather than recomputed here.
-
-    ``script`` is the model object the ``let`` list came from. The boundary is
-    read off it as ``_template_scope_let_count`` through ``getattr`` with a
-    default of 0, so an openjd-model that predates the model-side half of this
-    fix degrades to the previous behaviour rather than raising. ``None`` --
-    what an environment script's caller passes -- means the same thing: an
-    environment script's own bindings are session scope.
+    ``script`` is the model object the ``let`` list came from. It is accepted so
+    the runners and ``Session._build_wrapped_inner_scope`` can pass the script
+    they already have, but nothing is read off it: a script's own ``let`` needs
+    no per-script scope information.
 
     Raises:
         ValueError: as :func:`apply_let_bindings`.
     """
-    template_scope_count = getattr(script, "_template_scope_let_count", 0)
-    if not 0 <= template_scope_count <= len(let_bindings):
-        # A model/sessions version skew reported a boundary this list cannot
-        # have. Treating everything as session scope is the previous behaviour,
-        # which is wrong on Windows but never raises; guessing a prefix could
-        # evaluate a genuinely session-scope binding in the wrong scope.
-        template_scope_count = 0
-    if template_scope_count and not _apply_template_scope_let_bindings(
-        symtab=symtab, let_bindings=let_bindings[:template_scope_count]
-    ):
-        # The prefix is not self-contained. Abandon the split for the whole list
-        # rather than for the one binding that needed a host-format symbol:
-        # freezing the rest would leave a POSIX-evaluated binding reading a
-        # host-evaluated sibling, which is the same cross-format read moved
-        # somewhere less visible. A count of 0 is the pre-fix path exactly.
-        template_scope_count = 0
-    host_scope_bindings = let_bindings[template_scope_count:]
-    if host_scope_bindings:
-        apply_let_bindings(symtab=symtab, let_bindings=host_scope_bindings)
+    apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
 
 
 class ScriptRunnerBase(ABC):
@@ -1283,10 +1071,8 @@ class ScriptRunnerBase(ABC):
         materializing embedded files to disk.
 
         ``script`` is the model object ``let_bindings`` came from, forwarded to
-        :func:`apply_script_let_bindings` so a step script's merged list is
-        split at its template-scope boundary. Omitting it evaluates every
-        binding in the host's path format, which is what an environment script
-        wants.
+        :func:`apply_script_let_bindings`. Every binding is evaluated in the
+        host's path format.
 
         When ``let_bindings`` is given, they are evaluated between file-path
         allocation and content writing (RFC 0005, mirroring the openjd-rs
@@ -1340,8 +1126,8 @@ class ScriptRunnerBase(ABC):
         evaluation error the action is failed through the normal failure path
         (openjd_fail log, FAILED state, callback). Returns True on success.
 
-        ``script`` is the model object the bindings came from; see
-        :func:`apply_script_let_bindings` for what it is read for."""
+        ``script`` is the model object the bindings came from, forwarded to
+        :func:`apply_script_let_bindings`."""
         try:
             apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
         except ValueError as exc:

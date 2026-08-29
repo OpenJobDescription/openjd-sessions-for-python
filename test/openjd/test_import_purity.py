@@ -410,25 +410,22 @@ class TestSessionLifecycleStaysExtensionFree:
 
 
 # ---------------------------------------------------------------------------
-# `apply_script_let_bindings` imports `openjd.expr.PathFormat` to pin a step
-# script's template-scope `let` prefix to POSIX. A function-local import is not
-# enough on its own (rule: lazy is not conditional) -- the enclosing function is
-# reachable from every script that has any `let` at all, so the import has to sit
-# behind "there is a template-scope prefix to evaluate".
+# `apply_script_let_bindings` evaluates a script's own `let` list and nothing
+# else, so on its own it must not drag the native extension in.
 #
-# Both probes use a MALFORMED binding, which openjd-model skips without parsing.
-# That removes the evaluation itself as a possible cause of the load, leaving the
-# PathFormat import as the only crossing either probe can observe.
+# The probe uses a MALFORMED binding, which openjd-model skips without parsing.
+# That removes the evaluation itself as a cause of the load, so anything the
+# probe observes would have to be an unguarded import on the call path.
 # ---------------------------------------------------------------------------
 
 
-_LET_SPLIT_PROBE = """
+_LET_PROBE = """
 from openjd.model import SymbolTable
 from openjd.sessions._runner_base import apply_script_let_bindings
 
 
 class Script:
-    _template_scope_let_count = %d
+    pass
 
 
 apply_script_let_bindings(
@@ -438,32 +435,14 @@ print(RS in sys.modules)
 """
 
 
-def test_a_let_list_with_no_template_scope_prefix_stays_pure(tmp_path: Path) -> None:
-    """A script whose ``let`` is entirely its own -- the only shape a non-EXPR
-    template can even produce -- must not reach the ``PathFormat`` import."""
+def test_applying_a_scripts_let_list_stays_pure(tmp_path: Path) -> None:
+    """Evaluating a script's ``let`` must not itself load the native extension."""
     # WHEN
-    loaded = _run_probe(tmp_path, _LET_SPLIT_PROBE % 0)
+    loaded = _run_probe(tmp_path, _LET_PROBE)
 
     # THEN
     assert loaded == "False", (
-        "evaluating a let list with no template-scope prefix loaded the native "
-        "extension. The `if template_scope_count:` guard around the PathFormat "
-        "import in apply_script_let_bindings is what prevents this; a bare "
-        "function-local import is not sufficient."
-    )
-
-
-def test_a_template_scope_prefix_does_load_the_extension(tmp_path: Path) -> None:
-    """Positive control for the probe above. Without it, ``False`` would be
-    indistinguishable from the probe being unable to observe the load at all --
-    and it confirms the guarded import is the only crossing on this path, since
-    the malformed binding is never parsed."""
-    # WHEN
-    loaded = _run_probe(tmp_path, _LET_SPLIT_PROBE % 1)
-
-    # THEN
-    assert loaded == "True", (
-        "a template-scope prefix must load the extension to reach "
-        "PathFormat.POSIX; if this is False the prefix is no longer being pinned "
-        "to POSIX at all"
+        "applying a script's let list loaded the native extension. Nothing on "
+        "this path should import openjd.expr: the bindings are evaluated by "
+        "openjd-model, which skips a malformed binding without parsing it."
     )

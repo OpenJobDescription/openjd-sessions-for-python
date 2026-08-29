@@ -2014,15 +2014,11 @@ class Session(object):
         resolution scope. Mirrors openjd-rs's ``build_wrapped_inner_scope``.
 
         ``script`` is the inner entity's script -- the model object
-        ``let_bindings`` came from -- forwarded so that a wrapped *step* script's
-        merged ``let`` list is split at its template-scope boundary exactly as
-        the step runner splits it (see
-        :func:`~._runner_base.apply_script_let_bindings`). Without it a wrapped
-        action would resolve against template-scope values re-rendered in the
-        host's path format, i.e. against a scope that differs from the one it
-        would have had unwrapped -- which is the whole property this method
-        exists to reproduce. An inner *environment* script has no such prefix and
-        is unaffected.
+        ``let_bindings`` came from -- forwarded to
+        :func:`~._runner_base.apply_script_let_bindings` exactly as the step
+        runner forwards it. A script's own ``let`` is session scope either way,
+        so a wrapped action resolves against the same scope it would have had
+        unwrapped, which is the property this method exists to reproduce.
 
         Raises:
             ValueError (FormatStringError/ExpressionError): a binding or file
