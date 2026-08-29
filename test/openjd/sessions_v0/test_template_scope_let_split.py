@@ -495,7 +495,12 @@ class TestEndToEndScopeAgreement:
             command=python_exe,
             args=["-c", "import sys; sys.exit(0 if sys.argv[1] == 'true' else 1)", "{{ under }}"],
         )
-        _set_count(script, 1)
+        # count=2, so BOTH bindings are template scope. With count=1, `under`
+        # would be session scope, and on a Windows host it reads `root` in host
+        # format and evaluates to `false` -- correct behaviour, but it would make
+        # this assertion fail there while passing on POSIX. The step-level pair
+        # is what this test is about, so both belong in the prefix.
+        _set_count(script, 2)
 
         session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
         try:
