@@ -13,10 +13,18 @@ format, against the live session symbols.
 The two must not be confused, and the failure mode is asymmetric. Both a seeded
 value and a session-time re-evaluation land in the *same* symbol table, so when
 both happen the re-evaluation writes **last** and clobbers the correctly
-formatted seeded value. That overwrite is the bug these tests exist to prevent:
-:class:`TestSeededStepValuesAreNotReEvaluated` pins the seeded value surviving,
-and it is what fails if anyone reintroduces session-side re-evaluation of a
-step's bindings.
+formatted seeded value. That overwrite is the bug these tests exist to prevent.
+
+What :class:`TestSeededStepValuesAreNotReEvaluated` pins, measured rather than
+assumed, is the *host-format deserialization* of ``resolved_symtab``: forcing
+:mod:`openjd.sessions._session`'s ``host_format`` to POSIX fails it. It does not
+by itself fail if the model starts re-merging a step's bindings into the script,
+because it builds the script's ``let`` list itself rather than getting one from
+job creation. That other half is pinned model-side, by
+``TestStepLetIsNotMergedIntoScript`` in
+``test/openjd/model_v0/v2023_09/test_let_bindings.py``, whose six cases all fail
+against the pre-fix ``_model.py``. Together the two cover the clobber; neither
+covers it alone.
 
 On simulating a Windows host. A POSIX host renders both scopes identically, so a
 value comparison here proves nothing about format on this machine -- it would
@@ -54,7 +62,7 @@ from openjd.model.v2023_09 import (
     StepScript as StepScript_2023_09,
 )
 from openjd.sessions import Session
-from openjd.sessions._runner_base import apply_script_let_bindings
+from openjd.sessions._runner_base import apply_let_bindings
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -78,6 +86,15 @@ def _windows_host() -> Generator[None, None, None]:
     """Force a Windows path format at both seams that decide one.
 
     See this module's docstring for why one seam is not enough.
+
+    Note the scope of the ``os.name`` patch: ``_session.py`` does ``import os``,
+    so ``openjd.sessions._session.os`` *is* the ``os`` module and patching the
+    attribute is **process-wide**, not module-scoped. It is inert today because
+    ``os.name`` is read exactly once in ``_session.py``, at the seam this is
+    aiming at, and nothing else runs inside the block. A module-scoped patch is
+    not available without changing that import, so if you add a call inside this
+    context manager, check first that it does not read ``os.name`` for an
+    unrelated reason.
     """
     original = ExprNode._evaluate_raw
 
@@ -181,7 +198,7 @@ class TestSeededStepValuesAreNotReEvaluated:
 
                 # WHEN
                 with _spy_on_evaluation() as spy:
-                    apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
+                    apply_let_bindings(symtab=symtab, let_bindings=script.let or [])
 
                 # THEN: the seeded value is untouched, in the host's format.
                 assert str(symtab[_SEEDED_NAME]) == _SEEDED_WINDOWS_TEXT, (
@@ -208,7 +225,7 @@ class TestSeededStepValuesAreNotReEvaluated:
 
             # WHEN
             with _spy_on_evaluation() as spy:
-                apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
+                apply_let_bindings(symtab=symtab, let_bindings=script.let or [])
 
             # THEN: the evaluator saw the script's own bindings and nothing else.
             evaluated = _evaluated_bindings(spy)
@@ -240,7 +257,7 @@ class TestAScriptsOwnLetIsSessionScope:
                 symtab = _session_symtab(session)
 
                 # WHEN
-                apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
+                apply_let_bindings(symtab=symtab, let_bindings=script.let or [])
 
                 # THEN: the path rendered in the *host's* format, not POSIX.
                 assert str(symtab["built"]) == r"\a\b", (
@@ -271,4 +288,4 @@ class TestAScriptsOwnLetIsSessionScope:
 
             # WHEN / THEN
             with pytest.raises(ValueError, match="bad"):
-                apply_script_let_bindings(symtab=symtab, let_bindings=script.let or [])
+                apply_let_bindings(symtab=symtab, let_bindings=script.let or [])

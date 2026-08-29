@@ -410,7 +410,7 @@ class TestSessionLifecycleStaysExtensionFree:
 
 
 # ---------------------------------------------------------------------------
-# `apply_script_let_bindings` is on the session path for every script, EXPR or
+# `apply_let_bindings` is on the session path for every script, EXPR or
 # not, so reaching it must not by itself load the native extension. Actually
 # *evaluating* a binding must, because the expression engine is the extension --
 # the two cases are split below so each says which it is.
@@ -419,21 +419,21 @@ class TestSessionLifecycleStaysExtensionFree:
 
 _NO_BINDINGS_PROBE = """
 from openjd.model import SymbolTable
-from openjd.sessions._runner_base import apply_script_let_bindings
+from openjd.sessions._runner_base import apply_let_bindings
 
 
-apply_script_let_bindings(symtab=SymbolTable(), let_bindings=[])
+apply_let_bindings(symtab=SymbolTable(), let_bindings=[])
 print(RS in sys.modules)
 """
 
 
 _LET_PROBE = """
 from openjd.model import SymbolTable
-from openjd.sessions._runner_base import apply_script_let_bindings
+from openjd.sessions._runner_base import apply_let_bindings
 
 
 symtab = SymbolTable()
-apply_script_let_bindings(symtab=symtab, let_bindings=["mine = 1 + 1"])
+apply_let_bindings(symtab=symtab, let_bindings=["mine = 1 + 1"])
 assert symtab["mine"].item() == 2, symtab["mine"]
 print(RS in sys.modules)
 """
@@ -441,7 +441,7 @@ print(RS in sys.modules)
 
 def test_applying_an_empty_let_list_stays_pure(tmp_path: Path) -> None:
     """The no-``let`` script, which is every non-EXPR script: reaching
-    ``apply_script_let_bindings`` must not load the native extension.
+    ``apply_let_bindings`` must not load the native extension.
 
     This is the production-reachable purity claim on this path. Nothing here
     should import openjd.expr -- not the module-level imports in

@@ -44,7 +44,7 @@ from ._os_checker import is_posix, is_windows
 from ._path_mapping import PathMappingRule
 from ._runner_base import (
     ScriptRunnerBase,
-    apply_script_let_bindings,
+    apply_let_bindings,
     resolve_action_arg_values,
     resolve_effective_cancelation,
     resolve_optional_int_field,
@@ -2032,10 +2032,10 @@ class Session(object):
             )
             records = file_writer.allocate_file_paths(embedded_files, symtab)
             if let_bindings:
-                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
+                apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
             file_writer.write_file_contents(records, symtab)
         elif let_bindings:
-            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
+            apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
         return symtab
 
     def _try_inject_wrapped_symbols(

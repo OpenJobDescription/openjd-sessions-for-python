@@ -39,7 +39,6 @@ __all__ = (
     "NotifyCancelMethod",
     "ScriptRunnerBase",
     "apply_let_bindings",
-    "apply_script_let_bindings",
     "resolve_action_arg_values",
     "resolve_effective_cancelation",
     "resolve_optional_int_field",
@@ -511,12 +510,24 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     ``Env.File.*``/``Task.File.*`` and a file's ``data`` may reference
     let-bound values (mirroring openjd-rs's runner ordering).
 
-    PATH-typed results render in the engine's default format, which is the
-    host's. That is the only format a session ever evaluates in: a step's
-    template-scope ``let`` is resolved once at job creation and its values reach
-    the session already resolved, through ``Step.resolved_symtab`` (see
-    :meth:`Session._resolved_base_entries`), so nothing here re-evaluates a
-    binding that belongs to another scope.
+    Every binding in ``let_bindings`` is session scope, so there is one scope
+    here and one format: PATH-typed results render in the engine's default
+    format, which is the host's. A step's *template*-scope ``let`` does not
+    appear in this list — openjd-model resolves it once at job creation and its
+    values travel to the session in the step symbol table, reaching ``symtab``
+    through ``Step.resolved_symtab``
+    (:meth:`Session._resolved_base_entries`) already resolved and deserialized
+    into the host's format.
+
+    That division matters because the two are not interchangeable. A
+    template-scope value is frozen at creation with ``PathFormat::Posix`` so it
+    cannot depend on the host that created the job, and re-deriving one here
+    would re-render its PATH values — on Windows
+    ``startswith(path("/foo/bar"), "/foo")`` flips from ``true`` to ``false``.
+    Both a seeded value and a re-evaluated one would land in this same table, so
+    a re-evaluation would also *win*, overwriting the correctly-formatted seeded
+    value. Nothing in a session re-evaluates a step's bindings; it reads the
+    resolved ones.
 
     Raises:
         ValueError (FormatStringError/ExpressionError): if a binding's
@@ -540,33 +551,6 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     # session evaluates in, and the parameter does not exist on openjd-model at
     # this package's declared floor (>= 0.11.6).
     evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
-
-
-def apply_script_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
-    """Evaluate a script's own ``let`` list into ``symtab`` in the host's path
-    format.
-
-    Every binding in ``let_bindings`` is session scope, so there is one scope
-    here and one format. A step's *template*-scope ``let`` does not appear in
-    this list: openjd-model resolves it once at job creation and its values
-    travel to the session in the step symbol table, reaching ``symtab`` through
-    ``Step.resolved_symtab`` (:meth:`Session._resolved_base_entries`) already
-    resolved and deserialized into the host's format.
-
-    That division matters because the two are not interchangeable. A
-    template-scope value is frozen at creation with ``PathFormat::Posix`` so it
-    cannot depend on the host that created the job, and re-deriving one here
-    would re-render its PATH values -- on Windows
-    ``startswith(path("/foo/bar"), "/foo")`` flips from ``true`` to ``false``.
-    Both a seeded value and a re-evaluated one would land in this same table, so
-    a re-evaluation would also *win*, overwriting the correctly-formatted seeded
-    value. Nothing in a session re-evaluates a step's bindings; it reads the
-    resolved ones.
-
-    Raises:
-        ValueError: as :func:`apply_let_bindings`.
-    """
-    apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
 
 
 class ScriptRunnerBase(ABC):
@@ -1099,7 +1083,7 @@ class ScriptRunnerBase(ABC):
             else:
                 records = file_writer.allocate_file_paths(files, symtab)
             if let_bindings:
-                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
+                apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
             file_writer.write_file_contents(records, symtab)
         except (RuntimeError, ValueError) as exc:
             # Had a problem writing at least one file to disk, or evaluating
@@ -1112,7 +1096,7 @@ class ScriptRunnerBase(ABC):
         evaluation error the action is failed through the normal failure path
         (openjd_fail log, FAILED state, callback). Returns True on success."""
         try:
-            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings)
+            apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
         except ValueError as exc:
             self._fail_action(str(exc))
             return False
