@@ -39,6 +39,7 @@ __all__ = (
     "NotifyCancelMethod",
     "ScriptRunnerBase",
     "apply_let_bindings",
+    "apply_script_let_bindings",
     "resolve_action_arg_values",
     "resolve_effective_cancelation",
     "resolve_optional_int_field",
@@ -494,7 +495,9 @@ def resolve_effective_cancelation(
     )
 
 
-def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
+def apply_let_bindings(
+    *, symtab: SymbolTable, let_bindings: list[str], path_format: Any = None
+) -> None:
     """Evaluate EXPR ``let`` bindings (RFC 0005) and add them to ``symtab``.
 
     ``let_bindings`` is a script's ``let`` field: an ordered list of
@@ -509,6 +512,12 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     before file *contents* are written, so a binding may reference
     ``Env.File.*``/``Task.File.*`` and a file's ``data`` may reference
     let-bound values (mirroring openjd-rs's runner ordering).
+
+    ``path_format`` is the EXPR ``PathFormat`` that PATH-typed results render
+    with. ``None`` -- the default, and what every session-scope binding wants --
+    leaves the engine's default, which is the host's format. Callers
+    re-evaluating a *template*-scope binding pass ``PathFormat.POSIX``; see
+    :func:`apply_script_let_bindings`.
 
     Raises:
         ValueError (FormatStringError/ExpressionError): if a binding's
@@ -528,7 +537,84 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
             )
     # Single-sourced in openjd.model (parse-memoized; skips malformed
     # bindings; raises ValueError naming the failing binding).
-    evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
+    #
+    # The kwarg is forwarded only when it is set, because `path_format` does not
+    # exist on openjd-model at this package's declared floor (>= 0.11.6) and
+    # passing it there is a TypeError, not a no-op -- which would break EVERY
+    # EXPR template rather than degrading. On such a model the else branch is
+    # unreachable: apply_script_let_bindings reads the template-scope count
+    # through getattr, and a model without `path_format` has no
+    # `_template_scope_let_count` either, so the count is 0 and nothing asks for
+    # a non-default format. On a model that does have it, `None` and "omitted"
+    # are the same call. Collapse this to an unconditional forward once the
+    # openjd-model floor carries the parameter.
+    if path_format is None:
+        evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
+    else:
+        evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings, path_format=path_format)
+
+
+def apply_script_let_bindings(
+    *, symtab: SymbolTable, let_bindings: list[str], script: Any = None
+) -> None:
+    """Evaluate a script's ``let`` list into ``symtab``, honouring the
+    template-scope / session-scope boundary inside it.
+
+    An instantiated Step's script carries a *merged* ``let`` list: the
+    step-level bindings the template declared, followed by the script's own
+    (openjd-model's ``StepTemplate.resolve_syntax_sugar``). The step-level
+    prefix was already evaluated at job creation, in **template** scope, which
+    openjd-rs -- and now openjd-model -- evaluate with ``PathFormat::Posix`` so
+    that a create-time result cannot depend on the host that created the job.
+    Re-evaluating that prefix here in the host's format re-renders its PATH
+    values: on Windows ``path("/foo/bar")`` becomes ``\\foo\\bar``, so
+    ``startswith(path("/foo/bar"), "/foo")`` flips from ``true`` to ``false``
+    and the binding's value silently differs between the two evaluations.
+
+    So the list is split at the boundary and the two halves are evaluated in
+    different path formats -- the prefix as POSIX, the remainder (the script's
+    own bindings) with the host's format, unchanged. Script-level bindings
+    legitimately see host-scope symbols (``Session.WorkingDirectory``,
+    ``Task.File.*``, ``apply_path_mapping``), so their format must stay the
+    host's.
+
+    Both halves are evaluated into the **same** table in the **same** order,
+    because a later binding may reference an earlier one -- including a
+    script-level binding referencing a step-level one.
+
+    ``script`` is the model object the ``let`` list came from. The boundary is
+    read off it as ``_template_scope_let_count``, through ``getattr`` with a
+    default of 0: an openjd-model that predates the model-side half of this fix
+    does not carry the attribute, and must degrade to exactly the previous
+    behaviour (everything in host format) rather than raising. ``None`` -- what
+    an environment script's caller passes -- means the same thing: an
+    environment script's own bindings are session scope and correctly use the
+    host format.
+
+    Raises:
+        ValueError: as :func:`apply_let_bindings`.
+    """
+    # min() because the count comes from a separate distribution: a model/
+    # sessions version skew that reported a longer prefix than the list would
+    # otherwise silently evaluate nothing at all here.
+    template_scope_count = min(getattr(script, "_template_scope_let_count", 0), len(let_bindings))
+    if template_scope_count:
+        # Lazy AND conditional (see the module comment on _EXTENSION_MODULE): a
+        # function-local import still fires unconditionally once its function is
+        # called, so it sits behind "there is a template-scope prefix to
+        # evaluate". Only a step script with step-level `let` bindings reaches
+        # here, and a `let` field only parses under the EXPR extension -- which
+        # has already loaded the extension. A non-EXPR session never gets here.
+        from openjd.expr import PathFormat
+
+        apply_let_bindings(
+            symtab=symtab,
+            let_bindings=let_bindings[:template_scope_count],
+            path_format=PathFormat.POSIX,
+        )
+    host_scope_bindings = let_bindings[template_scope_count:]
+    if host_scope_bindings:
+        apply_let_bindings(symtab=symtab, let_bindings=host_scope_bindings)
 
 
 class ScriptRunnerBase(ABC):
@@ -1020,9 +1106,16 @@ class ScriptRunnerBase(ABC):
         symtab: SymbolTable,
         let_bindings: Optional[list[str]] = None,
         preallocated_records: Optional[list[_FileRecord]] = None,
+        script: Any = None,
     ) -> None:
         """Helper for derived classes that wraps all of the logic around
         materializing embedded files to disk.
+
+        ``script`` is the model object ``let_bindings`` came from, forwarded to
+        :func:`apply_script_let_bindings` so a step script's merged list is
+        split at its template-scope boundary. Omitting it evaluates every
+        binding in the host's path format, which is what an environment script
+        wants.
 
         When ``let_bindings`` is given, they are evaluated between file-path
         allocation and content writing (RFC 0005, mirroring the openjd-rs
@@ -1061,7 +1154,7 @@ class ScriptRunnerBase(ABC):
             else:
                 records = file_writer.allocate_file_paths(files, symtab)
             if let_bindings:
-                apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
+                apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
             file_writer.write_file_contents(records, symtab)
         except (RuntimeError, ValueError) as exc:
             # Had a problem writing at least one file to disk, or evaluating
@@ -1069,12 +1162,17 @@ class ScriptRunnerBase(ABC):
             # ValueError). Surface the error.
             self._fail_action(str(exc))
 
-    def _apply_let_bindings_or_fail(self, symtab: SymbolTable, let_bindings: list[str]) -> bool:
+    def _apply_let_bindings_or_fail(
+        self, symtab: SymbolTable, let_bindings: list[str], script: Any = None
+    ) -> bool:
         """Evaluate the script's EXPR ``let`` bindings into ``symtab``. On an
         evaluation error the action is failed through the normal failure path
-        (openjd_fail log, FAILED state, callback). Returns True on success."""
+        (openjd_fail log, FAILED state, callback). Returns True on success.
+
+        ``script`` is the model object the bindings came from; see
+        :func:`apply_script_let_bindings` for what it is read for."""
         try:
-            apply_let_bindings(symtab=symtab, let_bindings=let_bindings)
+            apply_script_let_bindings(symtab=symtab, let_bindings=let_bindings, script=script)
         except ValueError as exc:
             self._fail_action(str(exc))
             return False

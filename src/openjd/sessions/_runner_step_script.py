@@ -102,6 +102,10 @@ class StepScriptRunner(ScriptRunnerBase):
         # the script's EXPR `let` bindings evaluate (so bindings can reference
         # Task.File.*), and contents are written after (so `data` can
         # reference let-bound values) — mirroring the openjd-rs runner.
+        #
+        # `script=self._script` is what tells the evaluation where this merged
+        # `let` list stops being template scope and starts being session scope;
+        # see apply_script_let_bindings.
         if self._script.embeddedFiles is not None:
             symtab = SymbolTable(source=self._symtab)
             self._materialize_files(
@@ -110,12 +114,13 @@ class StepScriptRunner(ScriptRunnerBase):
                 self._session_files_directory,
                 symtab,
                 let_bindings=let_bindings,
+                script=self._script,
             )
             if self.state == ScriptRunnerState.FAILED:
                 return
         elif let_bindings:
             symtab = SymbolTable(source=self._symtab)
-            if not self._apply_let_bindings_or_fail(symtab, let_bindings):
+            if not self._apply_let_bindings_or_fail(symtab, let_bindings, self._script):
                 return
         else:
             symtab = self._symtab

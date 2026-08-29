@@ -1,0 +1,493 @@
+# Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+"""A step script's merged ``let`` list spans two scopes; each half must be
+evaluated in its own path format.
+
+An instantiated Step's ``script.let`` is ``step-level bindings + the script's
+own``, in that order. The step-level prefix was already evaluated at job
+creation in *template* scope, which openjd-rs (and now openjd-model) evaluate
+with ``PathFormat::Posix`` so a create-time value cannot depend on the host that
+created the job. Re-evaluating that prefix at session time in the host's format
+re-renders its PATH values -- on Windows ``path("/foo/bar")`` becomes
+``\\foo\\bar``, so ``startswith(path("/foo/bar"), "/foo")`` flips from ``true``
+to ``false`` and the same binding holds a different value in the two
+evaluations. That is what broke 11 conformance fixtures on the Python-on-Windows
+CI leg.
+
+``apply_script_let_bindings`` owns the split. The script's own bindings are
+session scope and keep the host's format, because they legitimately reference
+``Session.WorkingDirectory``, ``Task.File.*`` and ``apply_path_mapping``.
+
+Note on what these tests can and cannot prove. The path format handed to each
+half is asserted directly, by spying on the model's ``evaluate_let_bindings``,
+rather than by comparing rendered values. On a POSIX host the host format *is*
+POSIX, so a value comparison cannot distinguish "POSIX because we asked for it"
+from "POSIX because that is the host" -- it would pass on this host no matter
+what the code did. ``test_path_format_is_load_bearing`` supplies the missing
+anchor: it shows a non-POSIX format really does change rendering, so the
+argument these tests assert on is the argument that matters. The Windows
+behaviour itself is not exercised here.
+"""
+
+from __future__ import annotations
+
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Optional
+from unittest.mock import patch as mock_patch
+
+import pytest
+
+from openjd.model import SymbolTable, evaluate_let_bindings
+from openjd.model.v2023_09 import (
+    ModelParsingContext as ModelParsingContext_2023_09,
+    StepScript as StepScript_2023_09,
+)
+from openjd.sessions import ActionState, Session, SessionState
+from openjd.sessions._embedded_files import EmbeddedFilesScope
+from openjd.sessions._runner_base import apply_let_bindings, apply_script_let_bindings
+from openjd.sessions._runner_step_script import StepScriptRunner
+
+from .conftest import build_logger
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_A_PATH_BINDING = "path('/foo/bar')"
+"""A binding RHS whose value renders differently per path format, which is the
+whole reason the split exists."""
+
+
+class _FakeScript:
+    """Stands in for an instantiated ``StepScript``.
+
+    A fake rather than a real model object because these tests are about the
+    *boundary index*, and the model only produces indices its own templates can
+    express. Reading the count off a plain attribute is exactly what the
+    ``getattr`` in the helper does, and the real-model wiring is pinned
+    separately by :class:`TestStepScriptWiring`.
+    """
+
+    def __init__(self, count: int) -> None:
+        self._template_scope_let_count = count
+
+
+class _NoCountScript:
+    """An openjd-model that predates the model-side half of the fix: no
+    ``_template_scope_let_count`` attribute at all."""
+
+
+def _set_count(script: Any, count: int) -> None:
+    """Set the template-scope boundary on a real model object.
+
+    ``setattr`` rather than a direct assignment because openjd-sessions builds
+    against ``openjd-model >= 0.11.6``, which does not declare the private
+    attribute -- a direct assignment fails ``hatch run typing`` against the
+    declared floor. Reaching it through ``setattr`` keeps the tests type-clean
+    on both model versions, which is the same reason the helper under test
+    reads it through ``getattr``.
+    """
+    setattr(script, "_template_scope_let_count", count)
+
+
+def _spy_on_evaluation():
+    """Patch the model's ``evaluate_let_bindings`` where openjd-sessions imports
+    it, recording every call while still evaluating for real.
+
+    Spying here rather than on ``apply_let_bindings`` keeps the
+    ``MAX_LET_BINDING_LENGTH`` guard and the real evaluation in the loop, so a
+    test can assert both the calls and the resulting symbol values.
+    """
+    return mock_patch(
+        "openjd.sessions._runner_base.evaluate_let_bindings",
+        side_effect=evaluate_let_bindings,
+    )
+
+
+def _calls(spy: Any) -> list[tuple[list[str], Any]]:
+    """The spy's calls as ``[(let_bindings, path_format), ...]``.
+
+    ``path_format`` is read with ``.get`` because ``apply_let_bindings`` omits
+    the kwarg entirely for the host format -- it does not exist on openjd-model
+    at this package's declared floor. Omitted and ``None`` are the same request
+    (the engine's default, i.e. the host's format), so both read as ``None``
+    here.
+    """
+    return [
+        (call.kwargs["let_bindings"], call.kwargs.get("path_format")) for call in spy.call_args_list
+    ]
+
+
+def _posix_format() -> Any:
+    from openjd.expr import PathFormat
+
+    return PathFormat.POSIX
+
+
+def _step_script(
+    let: list[str], command: str = "echo", args: Optional[list[str]] = None
+) -> StepScript_2023_09:
+    """A real ``StepScript`` carrying ``let``. The merged-list *boundary* is set
+    by the caller via ``_template_scope_let_count``, because building it through
+    ``create_job`` would drag a whole job template into a test about one
+    index."""
+    context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+    return StepScript_2023_09.model_validate(
+        {"let": let, "actions": {"onRun": {"command": command, "args": args or ["ok"]}}},
+        context=context,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The helper
+# ---------------------------------------------------------------------------
+
+
+class TestApplyScriptLetBindings:
+    def test_splits_at_the_template_scope_count(self) -> None:
+        # GIVEN: four bindings, of which the first two are step level.
+        bindings = ["a = 1", "b = 2", "c = 3", "d = 4"]
+        symtab = SymbolTable()
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(2))
+
+        # THEN: exactly two evaluations, split at index 2, prefix first.
+        assert _calls(spy) == [
+            (["a = 1", "b = 2"], _posix_format()),
+            (["c = 3", "d = 4"], None),
+        ]
+        # ...and both halves landed in the SAME table.
+        assert [str(symtab[name]) for name in ("a", "b", "c", "d")] == ["1", "2", "3", "4"]
+
+    def test_prefix_evaluates_posix_and_suffix_evaluates_host_format(self) -> None:
+        # GIVEN
+        bindings = [f"tmpl = {_A_PATH_BINDING}", f"own = {_A_PATH_BINDING}"]
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(
+                symtab=SymbolTable(), let_bindings=bindings, script=_FakeScript(1)
+            )
+
+        # THEN: the template-scope half is pinned to POSIX; the session-scope
+        # half is left at the engine default, which is the host's format.
+        prefix, suffix = _calls(spy)
+        assert prefix == ([f"tmpl = {_A_PATH_BINDING}"], _posix_format())
+        assert suffix == ([f"own = {_A_PATH_BINDING}"], None)
+
+    def test_path_format_is_load_bearing(self) -> None:
+        """The anchor for the assertions above: a path format other than POSIX
+        really does change how a PATH value renders, so forwarding the argument
+        is not cosmetic. Without this, a mutant that passed the host format for
+        the prefix would only be caught by an argument comparison that could
+        itself be dismissed as testing the mock."""
+        from openjd.expr import PathFormat
+
+        posix, windows = SymbolTable(), SymbolTable()
+
+        # WHEN
+        apply_let_bindings(
+            symtab=posix, let_bindings=[f"p = {_A_PATH_BINDING}"], path_format=PathFormat.POSIX
+        )
+        apply_let_bindings(
+            symtab=windows, let_bindings=[f"p = {_A_PATH_BINDING}"], path_format=PathFormat.WINDOWS
+        )
+
+        # THEN
+        assert str(posix["p"]) == "/foo/bar"
+        assert str(windows["p"]) == "\\foo\\bar"
+        # And the flip that broke the fixtures, reproduced without a Windows host.
+        assert str(posix["p"]).startswith("/foo")
+        assert not str(windows["p"]).startswith("/foo")
+
+    def test_no_template_scope_prefix_behaves_exactly_as_before(self) -> None:
+        # GIVEN: a script with only its own bindings -- count 0.
+        bindings = ["a = 1", "b = 2"]
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(
+                symtab=SymbolTable(), let_bindings=bindings, script=_FakeScript(0)
+            )
+
+        # THEN: one evaluation, host format, whole list. No POSIX evaluation at
+        # all -- a count of 0 must not produce an empty extra call.
+        assert _calls(spy) == [(bindings, None)]
+
+    def test_missing_count_attribute_falls_back_to_host_format(self) -> None:
+        """An openjd-model without the model-side half of the fix must degrade
+        to the previous behaviour, not raise."""
+        # GIVEN
+        bindings = ["a = 1", "b = 2"]
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(
+                symtab=SymbolTable(), let_bindings=bindings, script=_NoCountScript()
+            )
+
+        # THEN
+        assert _calls(spy) == [(bindings, None)]
+
+    def test_no_script_falls_back_to_host_format(self) -> None:
+        """What an environment script's caller passes: its own bindings are
+        session scope and correctly use the host format."""
+        # GIVEN
+        bindings = ["a = 1"]
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=SymbolTable(), let_bindings=bindings)
+
+        # THEN
+        assert _calls(spy) == [(bindings, None)]
+
+    def test_count_beyond_the_list_is_clamped(self) -> None:
+        """A model/sessions version skew reporting a longer prefix than the list
+        must still evaluate every binding, not silently none."""
+        # GIVEN
+        bindings = ["a = 1"]
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(
+                symtab=SymbolTable(), let_bindings=bindings, script=_FakeScript(5)
+            )
+
+        # THEN
+        assert _calls(spy) == [(bindings, _posix_format())]
+
+    def test_ordering_is_preserved_across_the_boundary(self) -> None:
+        """A script-level binding may reference a step-level one, so the prefix
+        must be evaluated -- into the same table -- before the suffix."""
+        # GIVEN: `under` is session scope and reads `root`, which is template
+        # scope.
+        bindings = [f"root = {_A_PATH_BINDING}", "under = startswith(root, '/foo')"]
+        symtab = SymbolTable()
+
+        # WHEN
+        apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(1))
+
+        # THEN
+        assert str(symtab["root"]) == "/foo/bar"
+        assert str(symtab["under"]) == "true"
+
+    def test_a_failing_suffix_binding_still_raises(self) -> None:
+        """The split must not swallow an evaluation error in either half."""
+        # WHEN / THEN
+        with pytest.raises(ValueError, match="let binding 'bad'"):
+            apply_script_let_bindings(
+                symtab=SymbolTable(),
+                let_bindings=["ok = 1", "bad = NoSuchSymbol"],
+                script=_FakeScript(1),
+            )
+
+
+# ---------------------------------------------------------------------------
+# The wiring: the runner and the RFC 0008 wrapped-inner-scope path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.usefixtures("message_queue", "queue_handler")
+class TestStepScriptWiring:
+    """The helper is only useful if the sites that evaluate a step script's
+    merged ``let`` actually hand it the script."""
+
+    def _run(
+        self,
+        queue_handler: Any,
+        session_dir: Path,
+        script: StepScript_2023_09,
+        count: int,
+    ) -> list[tuple[list[str], Any]]:
+        _set_count(script, count)
+        # `with runner:` rather than `with StepScriptRunner(...) as runner:` --
+        # ScriptRunnerBase.__enter__ is annotated as returning the base class, so
+        # the `as` form loses the subclass and with it `run()`.
+        runner = StepScriptRunner(
+            logger=build_logger(queue_handler),
+            script=script,
+            symtab=SymbolTable(),
+            session_working_directory=session_dir,
+            session_files_directory=session_dir,
+        )
+        with runner:
+            with _spy_on_evaluation() as spy:
+                runner.run()
+            deadline = time.time() + 20
+            while runner.state.value == "running" and time.time() < deadline:
+                time.sleep(0.05)
+            return _calls(spy)
+
+    def test_step_runner_splits_its_merged_let(
+        self, queue_handler: Any, tmp_path: Path, python_exe: str
+    ) -> None:
+        # GIVEN: a step script whose first binding is step level.
+        script = _step_script(
+            [f"tmpl = {_A_PATH_BINDING}", "own = 1"],
+            command=python_exe,
+            args=["-c", "pass"],
+        )
+
+        # WHEN
+        calls = self._run(queue_handler, tmp_path, script, count=1)
+
+        # THEN
+        assert calls == [
+            ([f"tmpl = {_A_PATH_BINDING}"], _posix_format()),
+            (["own = 1"], None),
+        ]
+
+    def test_step_runner_with_embedded_files_splits_its_merged_let(
+        self, queue_handler: Any, tmp_path: Path, python_exe: str
+    ) -> None:
+        """The embedded-files branch evaluates the same merged list through
+        ``_materialize_files``, so it needs the same split. Missing this leaves
+        the bug live for any step that has both step-level bindings and
+        embedded files."""
+        # GIVEN
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        script = StepScript_2023_09.model_validate(
+            {
+                "let": [f"tmpl = {_A_PATH_BINDING}", "own = 1"],
+                "embeddedFiles": [{"name": "F", "type": "TEXT", "data": "{{ tmpl }}"}],
+                "actions": {"onRun": {"command": python_exe, "args": ["-c", "pass"]}},
+            },
+            context=context,
+        )
+
+        # WHEN
+        calls = self._run(queue_handler, tmp_path, script, count=1)
+
+        # THEN
+        assert calls == [
+            ([f"tmpl = {_A_PATH_BINDING}"], _posix_format()),
+            (["own = 1"], None),
+        ]
+
+    def test_wrapped_inner_scope_splits_a_step_scripts_merged_let(self) -> None:
+        """RFC 0008: the wrapped action's scope is rebuilt from the inner
+        script's ``let``, so it must be split the same way -- otherwise a
+        wrapped action resolves against a scope that differs from the one it
+        would have had unwrapped."""
+        # GIVEN
+        script = _step_script([f"tmpl = {_A_PATH_BINDING}", "own = 1"])
+        _set_count(script, 1)
+        session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
+
+        # WHEN
+        try:
+            with _spy_on_evaluation() as spy:
+                inner = session._build_wrapped_inner_scope(
+                    EmbeddedFilesScope.STEP, script.let, None, SymbolTable(), script
+                )
+        finally:
+            session.cleanup()
+
+        # THEN
+        assert _calls(spy) == [
+            ([f"tmpl = {_A_PATH_BINDING}"], _posix_format()),
+            (["own = 1"], None),
+        ]
+        assert str(inner["tmpl"]) == "/foo/bar"
+
+    def test_environment_script_bindings_stay_host_format(
+        self, queue_handler: Any, tmp_path: Path, python_exe: str
+    ) -> None:
+        """The other half of the contract: an environment script's own ``let``
+        is session scope. Nothing about it may change."""
+        from openjd.model.v2023_09 import EnvironmentScript as EnvironmentScript_2023_09
+        from openjd.sessions._runner_env_script import EnvironmentScriptRunner
+
+        # GIVEN
+        context = ModelParsingContext_2023_09(supported_extensions=["EXPR"])
+        env_script = EnvironmentScript_2023_09.model_validate(
+            {
+                "let": [f"a = {_A_PATH_BINDING}", "b = 1"],
+                "actions": {"onEnter": {"command": python_exe, "args": ["-c", "pass"]}},
+            },
+            context=context,
+        )
+
+        # WHEN
+        runner = EnvironmentScriptRunner(
+            logger=build_logger(queue_handler),
+            environment_script=env_script,
+            symtab=SymbolTable(),
+            session_working_directory=tmp_path,
+            session_files_directory=tmp_path,
+        )
+        with runner:
+            with _spy_on_evaluation() as spy:
+                runner.enter()
+            deadline = time.time() + 20
+            while runner.state.value == "running" and time.time() < deadline:
+                time.sleep(0.05)
+            calls = _calls(spy)
+
+        # THEN: one evaluation, host format, whole list.
+        assert calls == [([f"a = {_A_PATH_BINDING}", "b = 1"], None)]
+
+
+@pytest.mark.usefixtures("message_queue", "queue_handler")
+class TestEndToEndScopeAgreement:
+    """The property the conformance fixtures actually check: the value a
+    step-level binding holds at session time equals the value it held at job
+    creation."""
+
+    def test_a_step_level_path_binding_agrees_across_the_two_evaluations(
+        self, python_exe: str
+    ) -> None:
+        # GIVEN: a step script whose step-level prefix is a path predicate --
+        # the shape that flipped on Windows.
+        script = _step_script(
+            [f"root = {_A_PATH_BINDING}", "under = startswith(root, '/foo')"],
+            command=python_exe,
+        )
+        _set_count(script, 2)
+
+        # AND: the value the model computed at job creation, in template scope.
+        create_time = SymbolTable()
+        apply_let_bindings(
+            symtab=create_time, let_bindings=script.let or [], path_format=_posix_format()
+        )
+
+        # WHEN: the session re-evaluates the same list.
+        session_time = SymbolTable()
+        apply_script_let_bindings(symtab=session_time, let_bindings=script.let or [], script=script)
+
+        # THEN: the two agree. On a POSIX host they would agree either way; the
+        # per-half format assertions above are what make this host-independent.
+        assert str(session_time["root"]) == str(create_time["root"])
+        assert str(session_time["under"]) == str(create_time["under"]) == "true"
+
+    def test_a_session_runs_a_step_with_a_step_level_path_binding(self, python_exe: str) -> None:
+        """End to end through the public API, so the split cannot break the
+        ordinary run."""
+        # GIVEN: the action's exit status is driven by the step-level binding's
+        # value, so a scope disagreement fails the action rather than passing
+        # quietly.
+        script = _step_script(
+            [f"root = {_A_PATH_BINDING}", "under = startswith(root, '/foo')"],
+            command=python_exe,
+            args=["-c", "import sys; sys.exit(0 if sys.argv[1] == 'true' else 1)", "{{ under }}"],
+        )
+        _set_count(script, 1)
+
+        session = Session(session_id=uuid.uuid4().hex, job_parameter_values={})
+        try:
+            # WHEN
+            session.run_task(step_script=script, task_parameter_values={})
+            deadline = time.time() + 20
+            while session.state == SessionState.RUNNING and time.time() < deadline:
+                time.sleep(0.05)
+
+            # THEN
+            status = session.action_status
+            assert status is not None and status.state == ActionState.SUCCESS, status
+        finally:
+            session.cleanup()
