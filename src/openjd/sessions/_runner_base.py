@@ -682,10 +682,12 @@ def _apply_template_scope_let_bindings(*, symtab: SymbolTable, let_bindings: lis
     # reads an earlier one.
     declared_types = getattr(symtab, "expr_types", None) or {}
     scratch = SymbolTable()
-    # Host-context rules ride along unchanged: a prefix binding that resolved
-    # through `apply_path_mapping` before this narrowing still resolves.
-    if symtab.expr_host_rules is not None:
-        scratch.expr_host_rules = list(symtab.expr_host_rules)
+    # Host-context rules are deliberately NOT carried over. `apply_path_mapping`
+    # is a host-context function and RFC 0005 bars those from template scope:
+    # the create-time hook runs with no host context, so a binding calling one
+    # raises `Unknown function` there and has no create-time value to reproduce.
+    # Without the rules this evaluation raises the same way, and the
+    # `except ValueError` below turns that into the whole-list fallback.
     for name in symtab.symbols:
         if _is_format_neutral(symtab[name], declared_types.get(name)):
             scratch[name] = symtab[name]

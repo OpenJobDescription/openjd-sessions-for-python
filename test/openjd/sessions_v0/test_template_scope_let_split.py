@@ -507,6 +507,87 @@ class TestPrefixScopeIsNarrowedToFormatNeutralSymbols:
         assert str(symtab["first"]) == str(expected["first"])
         assert str(symtab["second"]) == str(expected["second"])
 
+    def test_a_prefix_binding_calling_apply_path_mapping_falls_back(self) -> None:
+        """``apply_path_mapping`` is a *host-context* function, and RFC 0005 bars
+        those from template scope: openjd-model invokes the create-time hook with
+        no host context, so a template-scope binding calling one raises
+        ``Unknown function: 'apply_path_mapping'`` at job creation and never had
+        a create-time value to reproduce. So this evaluation must not resolve it
+        either -- it must decline and let the whole list fall back.
+
+        The assertion is the fallback, not the raise: the raise is internal to
+        the helper and is swallowed by design.
+
+        An earlier revision copied ``symtab.expr_host_rules`` into the scratch
+        table, which made such a binding resolve here against the *host's* rules
+        while evaluating in POSIX -- freezing a mixed-separator value like
+        ``C:\\Users\\test/bar`` instead of falling back to the host-format value.
+        """
+        # GIVEN: a session table in the shape `Session._resolved_base_entries`
+        # leaves it -- host rules attached (`_session.py` seeds `[]` even with no
+        # rules, so `apply_path_mapping` stays available in session scope).
+        from openjd.expr import PathFormat, PathMappingRule
+
+        bindings = ["mapped = string(apply_path_mapping(path('/foo/bar')))", "own = 1"]
+        rule = PathMappingRule(
+            source_path_format=PathFormat.POSIX,
+            source_path="/foo",
+            destination_path="C:\\Users\\test",
+        )
+        symtab = self._session_shaped_symtab()
+        symtab.expr_host_rules = [rule]
+        # `_unsplit` derives its table with `SymbolTable(source=...)`, which
+        # carries the host rules across, so the expectation has them too.
+        expected = self._unsplit(symtab, bindings)
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(1))
+
+        # THEN: the POSIX prefix was attempted, declined, and the WHOLE list was
+        # re-evaluated in the host's format. Without the fallback the second call
+        # would be `["own = 1"]` alone, with `mapped` holding the POSIX-evaluated
+        # value.
+        assert _calls(spy) == [([bindings[0]], _posix_format()), (bindings, None)]
+        assert str(symtab["mapped"]) == str(expected["mapped"])
+
+    def test_the_filter_survives_the_derived_table_production_hands_it(self) -> None:
+        """The narrowing must still work on the table shape the runners actually
+        pass, which is not the session table itself but a *derived* one:
+        ``SymbolTable(source=self._symtab)`` at ``_runner_step_script.py:110``
+        and ``:122``, and ``SymbolTable(source=base)`` at ``_session.py:2032``.
+
+        Why this is worth its own test, given the unwrapped cases above already
+        pass. The filter identifies a plain-string PATH symbol purely from its
+        ``expr_types`` entry, and that entry only survives the wrap because
+        openjd-model's ``SymbolTable.__init__`` copies it --
+        ``self._expr_types.update(source._expr_types)`` in
+        ``openjd/model/_symbol_table.py`` (line 131 at the version this pins
+        against). Nothing in openjd-sessions re-declares those types. If a future
+        openjd-model refactor drops that one line, ``declared_types`` here goes
+        empty, every plain-string PATH symbol reads as format-neutral, and the
+        filter silently stops filtering -- the split would then read
+        ``Session.WorkingDirectory`` under POSIX on a Windows host, which is the
+        exact defect the filter exists to prevent. No other test in this file
+        would notice, because they all pass the undertived table.
+        """
+        # GIVEN: the session-shaped table, wrapped exactly as production wraps it.
+        base = self._session_shaped_symtab()
+        derived = SymbolTable(source=base)
+        # The wrap is what is under test, so state the precondition it depends on.
+        assert derived.expr_types.get("Session.WorkingDirectory") == "PATH"
+        bindings = ["under = string(Session.WorkingDirectory.parent)", "own = 1"]
+        expected = self._unsplit(derived, bindings)
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=derived, let_bindings=bindings, script=_FakeScript(1))
+
+        # THEN: the PATH symbol was still filtered out, so the prefix declined
+        # and the whole list fell back to the host's format.
+        assert _calls(spy) == [([bindings[0]], _posix_format()), (bindings, None)]
+        assert str(derived["under"]) == str(expected["under"])
+
     def test_a_failing_prefix_binding_still_raises_through_the_fallback(self) -> None:
         """The fallback must not turn a genuine error into silence. Evaluating
         the whole list in the host's format re-raises it -- which is exactly what
