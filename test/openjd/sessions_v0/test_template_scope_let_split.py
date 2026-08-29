@@ -246,9 +246,14 @@ class TestApplyScriptLetBindings:
         # THEN
         assert _calls(spy) == [(bindings, None)]
 
-    def test_count_beyond_the_list_is_clamped(self) -> None:
-        """A model/sessions version skew reporting a longer prefix than the list
-        must still evaluate every binding, not silently none."""
+    def test_count_beyond_the_list_falls_back_to_session_scope(self) -> None:
+        """A model/sessions version skew reporting a boundary the list cannot
+        have is not guessed at.
+
+        Clamping to the list length was the earlier behaviour and it is worse:
+        it would evaluate a genuinely session-scope binding in template scope.
+        Falling back to 0 is the pre-fix behaviour, which is wrong on Windows
+        but never raises and never mis-scopes a binding."""
         # GIVEN
         bindings = ["a = 1"]
 
@@ -258,8 +263,22 @@ class TestApplyScriptLetBindings:
                 symtab=SymbolTable(), let_bindings=bindings, script=_FakeScript(5)
             )
 
+        # THEN: one evaluation, host format, whole list.
+        assert _calls(spy) == [(bindings, None)]
+
+    def test_negative_count_falls_back_to_session_scope(self) -> None:
+        """Same guard, other side: a negative boundary is impossible."""
+        # GIVEN
+        bindings = ["a = 1", "b = 2"]
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(
+                symtab=SymbolTable(), let_bindings=bindings, script=_FakeScript(-1)
+            )
+
         # THEN
-        assert _calls(spy) == [(bindings, _posix_format())]
+        assert _calls(spy) == [(bindings, None)]
 
     def test_ordering_is_preserved_across_the_boundary(self) -> None:
         """A script-level binding may reference a step-level one, so the prefix
