@@ -18,6 +18,15 @@ CI leg.
 session scope and keep the host's format, because they legitimately reference
 ``Session.WorkingDirectory``, ``Task.File.*`` and ``apply_path_mapping``.
 
+The claim is narrow, and ``TestPrefixScopeIsNarrowedToFormatNeutralSymbols``
+is where the boundary is drawn. Template scope is POSIX, so the prefix is
+evaluated against only the symbols in scope that carry no path format. A prefix
+binding that needs one -- a PATH job parameter, ``Session.WorkingDirectory``, a
+create-time value seeded natively -- cannot be reproduced here at all, and the
+whole list falls back to a single host-format evaluation instead: the previous
+behaviour, still wrong on Windows for that script, but never raising and never
+reading a path under a format it was not built in.
+
 Note on what these tests can and cannot prove. The path format handed to each
 half is asserted directly, by spying on the model's ``evaluate_let_bindings``,
 rather than by comparing rendered values. On a POSIX host the host format *is*
@@ -302,6 +311,175 @@ class TestApplyScriptLetBindings:
             apply_script_let_bindings(
                 symtab=SymbolTable(),
                 let_bindings=["ok = 1", "bad = NoSuchSymbol"],
+                script=_FakeScript(1),
+            )
+
+
+# ---------------------------------------------------------------------------
+# The narrowed prefix scope, and the all-or-nothing fallback
+# ---------------------------------------------------------------------------
+
+
+class TestPrefixScopeIsNarrowedToFormatNeutralSymbols:
+    """Template scope is POSIX, so the prefix cannot read a session symbol that
+    carries the host's path format.
+
+    Reading one either raises ``Path format mismatch`` or -- worse -- silently
+    succeeds against a re-rendered value: ``.parent`` of a Windows path read as
+    POSIX is ``'.'``, because a backslash is an ordinary POSIX path character.
+    So those symbols are not in scope for the prefix, and a prefix that needs one
+    abandons the split for the whole list.
+
+    These assertions are host-independent: the filter removes the symbol on
+    either host, so the binding fails with ``Undefined variable`` on both.
+    """
+
+    @staticmethod
+    def _session_shaped_symtab() -> SymbolTable:
+        """A symbol table with one symbol of each shape the session seeds."""
+        symtab = SymbolTable()
+        symtab["Job.Name"] = "a-job"
+        symtab["Param.S"] = "text"
+        symtab.expr_types["Param.S"] = "STRING"
+        symtab["Param.N"] = "3"
+        symtab.expr_types["Param.N"] = "INT"
+        symtab["Param.Out"] = "/mnt/out"
+        symtab.expr_types["Param.Out"] = "PATH"
+        symtab["Param.Ins"] = ["/mnt/a", "/mnt/b"]
+        symtab.expr_types["Param.Ins"] = "LIST[PATH]"
+        symtab["Session.WorkingDirectory"] = "/sessions/s1"
+        symtab.expr_types["Session.WorkingDirectory"] = "PATH"
+        return symtab
+
+    @staticmethod
+    def _unsplit(symtab: SymbolTable, bindings: list[str]) -> SymbolTable:
+        """The pre-fix behaviour: the whole list, once, in the host's format."""
+        before = SymbolTable(source=symtab)
+        apply_let_bindings(symtab=before, let_bindings=bindings)
+        return before
+
+    def _assert_fell_back(self, bindings: list[str], count: int) -> None:
+        """The prefix was attempted in POSIX, declined, and the WHOLE list was
+        then evaluated once in the host's format -- with the pre-fix values."""
+        symtab = self._session_shaped_symtab()
+        expected = self._unsplit(symtab, bindings)
+
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(
+                symtab=symtab, let_bindings=bindings, script=_FakeScript(count)
+            )
+
+        assert _calls(spy) == [(bindings[:count], _posix_format()), (bindings, None)]
+        bound = [b.partition("=")[0].strip() for b in bindings]
+        assert [str(symtab[n]) for n in bound] == [str(expected[n]) for n in bound]
+
+    def test_a_self_contained_prefix_binding_still_freezes(self) -> None:
+        """The case the fix exists for is untouched: a prefix that reads nothing
+        format-carrying is still evaluated in template scope."""
+        # GIVEN
+        bindings = [f"tmpl = string({_A_PATH_BINDING})", "own = 1"]
+        symtab = self._session_shaped_symtab()
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(1))
+
+        # THEN: still split, and the value froze the POSIX text on either host.
+        assert _calls(spy) == [([bindings[0]], _posix_format()), (["own = 1"], None)]
+        assert str(symtab["tmpl"]) == "/foo/bar"
+
+    def test_a_format_neutral_symbol_is_readable_from_the_prefix(self) -> None:
+        """The filter is a *shape* test, not a name denylist: a STRING or INT
+        parameter and ``Job.Name`` carry no path format, so they stay in scope
+        and do not trigger the fallback.
+
+        ``Param.N * 2`` is 6 only if the symbol's declared INT type came across
+        with it; an untyped ``"3"`` would make it the string ``"33"``."""
+        # GIVEN
+        bindings = ["label = join([Job.Name, Param.S], '-')", "doubled = Param.N * 2"]
+        symtab = self._session_shaped_symtab()
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(2))
+
+        # THEN: one POSIX evaluation of the whole prefix, and no fallback call.
+        assert _calls(spy) == [(bindings, _posix_format())]
+        assert str(symtab["label"]) == "a-job-text"
+        assert str(symtab["doubled"]) == "6"
+
+    def test_a_prefix_binding_reading_a_path_parameter_falls_back(self) -> None:
+        # GIVEN: `Param.Out` is a host-format PATH.
+        self._assert_fell_back(["out = string(Param.Out)", "own = 1"], count=1)
+
+    def test_a_prefix_binding_reading_a_list_path_parameter_falls_back(self) -> None:
+        # GIVEN: LIST[PATH] carries a format as much as PATH does.
+        self._assert_fell_back(["ins = string(Param.Ins[0])", "own = 1"], count=1)
+
+    def test_a_prefix_binding_reading_the_session_working_directory_falls_back(self) -> None:
+        # GIVEN: the symbol whose `.parent` silently yields '.' on Windows.
+        self._assert_fell_back(["under = string(Session.WorkingDirectory.parent)"], count=1)
+
+    @pytest.mark.parametrize(
+        "base_rhs, read",
+        [
+            pytest.param(_A_PATH_BINDING, "base", id="path"),
+            pytest.param(f"[{_A_PATH_BINDING}, path('/a')]", "base[0]", id="list[path]"),
+        ],
+    )
+    def test_a_prefix_binding_reading_a_native_path_value_falls_back(
+        self, base_rhs: str, read: str
+    ) -> None:
+        """The other half of the filter. A create-time table reaches the session
+        as native engine values (``Session._resolved_base_entries``), so a
+        path-typed one carries its format in the value itself with no
+        ``expr_types`` entry to declare it. A native ``list[path]`` carries one
+        just as much, one type parameter down."""
+        # GIVEN: `base` in the shape `_resolved_base_entries` produces -- a
+        # native path value tagged with the host's format.
+        seed = SymbolTable()
+        apply_let_bindings(symtab=seed, let_bindings=[f"base = {base_rhs}"])
+        symtab = self._session_shaped_symtab()
+        symtab["base"] = seed["base"]
+        assert "base" not in symtab.expr_types
+        bindings = [f"out = string({read})", "own = 1"]
+        expected = self._unsplit(symtab, bindings)
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(1))
+
+        # THEN
+        assert _calls(spy) == [([bindings[0]], _posix_format()), (bindings, None)]
+        assert str(symtab["out"]) == str(expected["out"])
+
+    def test_the_fallback_leaves_no_partial_prefix_behind(self) -> None:
+        """All-or-nothing. A prefix binding that succeeded in POSIX before a
+        later one declined must not be seeded: it would leave a POSIX-evaluated
+        value for a host-evaluated sibling to read."""
+        # GIVEN: `first` evaluates fine in POSIX; `second` needs a PATH param.
+        bindings = [f"first = string({_A_PATH_BINDING})", "second = string(Param.Out)"]
+        symtab = self._session_shaped_symtab()
+        expected = self._unsplit(symtab, bindings)
+
+        # WHEN
+        with _spy_on_evaluation() as spy:
+            apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(2))
+
+        # THEN: both names hold the host-format value, not the POSIX one.
+        assert _calls(spy) == [(bindings, _posix_format()), (bindings, None)]
+        assert str(symtab["first"]) == str(expected["first"])
+        assert str(symtab["second"]) == str(expected["second"])
+
+    def test_a_failing_prefix_binding_still_raises_through_the_fallback(self) -> None:
+        """The fallback must not turn a genuine error into silence. Evaluating
+        the whole list in the host's format re-raises it -- which is exactly what
+        the pre-fix code did."""
+        # WHEN / THEN
+        with pytest.raises(ValueError, match="let binding 'bad'"):
+            apply_script_let_bindings(
+                symtab=self._session_shaped_symtab(),
+                let_bindings=["bad = NoSuchSymbol", "own = 1"],
                 script=_FakeScript(1),
             )
 
