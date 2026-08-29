@@ -410,13 +410,21 @@ class TestSessionLifecycleStaysExtensionFree:
 
 
 # ---------------------------------------------------------------------------
-# `apply_script_let_bindings` evaluates a script's own `let` list and nothing
-# else, so on its own it must not drag the native extension in.
-#
-# The probe uses a MALFORMED binding, which openjd-model skips without parsing.
-# That removes the evaluation itself as a cause of the load, so anything the
-# probe observes would have to be an unguarded import on the call path.
+# `apply_script_let_bindings` is on the session path for every script, EXPR or
+# not, so reaching it must not by itself load the native extension. Actually
+# *evaluating* a binding must, because the expression engine is the extension --
+# the two cases are split below so each says which it is.
 # ---------------------------------------------------------------------------
+
+
+_NO_BINDINGS_PROBE = """
+from openjd.model import SymbolTable
+from openjd.sessions._runner_base import apply_script_let_bindings
+
+
+apply_script_let_bindings(symtab=SymbolTable(), let_bindings=[])
+print(RS in sys.modules)
+"""
 
 
 _LET_PROBE = """
@@ -424,19 +432,57 @@ from openjd.model import SymbolTable
 from openjd.sessions._runner_base import apply_script_let_bindings
 
 
-apply_script_let_bindings(symtab=SymbolTable(), let_bindings=["malformed"])
+symtab = SymbolTable()
+apply_script_let_bindings(symtab=symtab, let_bindings=["mine = 1 + 1"])
+assert symtab["mine"].item() == 2, symtab["mine"]
 print(RS in sys.modules)
 """
 
 
-def test_applying_a_scripts_let_list_stays_pure(tmp_path: Path) -> None:
-    """Evaluating a script's ``let`` must not itself load the native extension."""
+def test_applying_an_empty_let_list_stays_pure(tmp_path: Path) -> None:
+    """The no-``let`` script, which is every non-EXPR script: reaching
+    ``apply_script_let_bindings`` must not load the native extension.
+
+    This is the production-reachable purity claim on this path. Nothing here
+    should import openjd.expr -- not the module-level imports in
+    ``_runner_base``, and not the binding-length guard ahead of the evaluator.
+    """
+    # WHEN
+    loaded = _run_probe(tmp_path, _NO_BINDINGS_PROBE)
+
+    # THEN
+    assert loaded == "False", (
+        "applying an empty let list loaded the native extension, so something "
+        "on the call path imports openjd.expr unguarded"
+    )
+
+
+def test_evaluating_a_scripts_let_does_load_the_extension(tmp_path: Path) -> None:
+    """Negative control, and a documented limitation rather than a goal.
+
+    A script's own ``let`` is evaluated by the EXPR engine, and the engine *is*
+    the native extension, so any real binding loads it. The probe binds
+    ``mine = 1 + 1`` -- valid, and deliberately not path-valued, so the load
+    cannot be blamed on path handling -- and asserts the bound value, which is
+    what proves the evaluation actually ran rather than being skipped.
+
+    openjd-sessions cannot close this alone, and should not: a session that
+    evaluates an expression needs the evaluator. It is bounded instead, by
+    ``test_applying_an_empty_let_list_stays_pure`` above and by
+    ``TestSessionLifecycleStaysExtensionFree``, which together pin that only a
+    template that actually uses EXPR pays for it.
+
+    Asserted so that the boundary is visible and so a future change that moves
+    it -- in either direction -- is noticed here rather than passing silently.
+    """
     # WHEN
     loaded = _run_probe(tmp_path, _LET_PROBE)
 
     # THEN
-    assert loaded == "False", (
-        "applying a script's let list loaded the native extension. Nothing on "
-        "this path should import openjd.expr: the bindings are evaluated by "
-        "openjd-model, which skips a malformed binding without parsing it."
+    assert loaded == "True", (
+        "evaluating a script's let binding no longer loads the native "
+        "extension. If openjd-model has gained a pure-Python evaluator this "
+        "control should become a purity assertion; if the binding is being "
+        "silently skipped instead, the value assertion in the probe is what "
+        "will have failed first."
     )

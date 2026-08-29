@@ -40,6 +40,7 @@ from __future__ import annotations
 import json
 import uuid
 from contextlib import contextmanager
+from pathlib import PureWindowsPath
 from typing import Any, Generator, Optional
 from unittest.mock import patch as mock_patch
 
@@ -247,13 +248,19 @@ class TestAScriptsOwnLetIsSessionScope:
                     "host's path format"
                 )
                 # AND: it resolved against the live session symbol table.
-                # `Session.WorkingDirectory` is PATH-typed, so on the simulated
-                # Windows host it renders with backslashes too. The claim here is
-                # *which* path the binding saw, not how it renders, so the
-                # separator is normalised before comparing; the format claim is
-                # the `built` assertion above.
-                rendered_wd = str(symtab["wd"]).replace("\\", "/")
-                assert rendered_wd == str(session.working_directory)
+                # `Session.WorkingDirectory` is PATH-typed, so under the forced
+                # Windows format it renders with backslashes -- while
+                # `session.working_directory` is a real path object in the *host
+                # OS's* flavour, which is POSIX here and Windows on CI. The claim
+                # is *which* path the binding saw, not how it renders, so both
+                # sides are compared as paths rather than as text.
+                # `PureWindowsPath` is the right parser for the rendered side
+                # because the format was forced to Windows; it also accepts `/`
+                # as a separator, so a POSIX `working_directory` parses to the
+                # same parts. The format claim is the `built` assertion above.
+                assert PureWindowsPath(str(symtab["wd"])) == PureWindowsPath(
+                    session.working_directory
+                )
 
     def test_a_failing_binding_still_raises(self) -> None:
         """Negative control for the two tests above: the evaluation is real, so a
