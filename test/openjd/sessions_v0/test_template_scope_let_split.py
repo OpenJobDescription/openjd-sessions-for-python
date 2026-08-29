@@ -34,8 +34,15 @@ POSIX, so a value comparison cannot distinguish "POSIX because we asked for it"
 from "POSIX because that is the host" -- it would pass on this host no matter
 what the code did. ``test_path_format_is_load_bearing`` supplies the missing
 anchor: it shows a non-POSIX format really does change rendering, so the
-argument these tests assert on is the argument that matters. The Windows
-behaviour itself is not exercised here.
+argument these tests assert on is the argument that matters.
+
+Where a rendered value *is* compared, the expectation goes through
+``_as_the_host_renders`` rather than a POSIX literal. A POSIX literal is not a
+weaker assertion, it is a wrong one on Windows: a binding still holding a path
+is seeded in the host's format, so ``path('/foo/bar')`` reads ``\\foo\\bar``
+there and both texts are correct. Hardcoding one made the Windows leg red, and a
+red leg judges nothing -- fail-fast cancelled it before it reported, so these
+assertions had never been run on Windows at all.
 """
 
 from __future__ import annotations
@@ -133,6 +140,28 @@ def _posix_format() -> Any:
     from openjd.expr import PathFormat
 
     return PathFormat.POSIX
+
+
+def _as_the_host_renders(rhs: str) -> str:
+    """The text ``rhs`` reads as on *this* host.
+
+    A binding whose result has left path-space freezes the POSIX text it froze
+    at job creation; a binding still holding a path renders in the host's
+    format. So an assertion about the second kind cannot be a POSIX literal --
+    ``path('/foo/bar')`` is ``/foo/bar`` on a POSIX host and ``\\foo\\bar`` on
+    Windows, and both are correct.
+
+    The expectation is built by evaluating the same expression through the same
+    machinery at the engine default -- which *is* the host's format, and is what
+    every session-scope binding gets -- rather than by hardcoding one literal
+    per platform behind a conditional. It reaches the answer by a different
+    route than the code under test (a direct host-format evaluation, not a POSIX
+    evaluation re-tagged to the host), so it is not asserting the code against
+    itself.
+    """
+    symtab = SymbolTable()
+    apply_let_bindings(symtab=symtab, let_bindings=[f"value = {rhs}"])
+    return str(symtab["value"])
 
 
 def _step_script(
@@ -300,9 +329,16 @@ class TestApplyScriptLetBindings:
         # WHEN
         apply_script_let_bindings(symtab=symtab, let_bindings=bindings, script=_FakeScript(1))
 
-        # THEN
-        assert str(symtab["root"]) == "/foo/bar"
-        assert str(symtab["under"]) == "true"
+        # THEN: `root` is still a path when it is seeded, so it reads in the
+        # host's format. `under` is session scope and reads it there, so its
+        # answer is host-dependent too -- `false` on Windows, where `root` is
+        # `\foo\bar` and does not start with `/foo`. That is the correct
+        # behaviour for a session-scope binding, not a defect: the ordering this
+        # test is about is that `under` sees `root` at all.
+        assert str(symtab["root"]) == _as_the_host_renders(_A_PATH_BINDING)
+        assert str(symtab["under"]) == _as_the_host_renders(
+            f"startswith({_A_PATH_BINDING}, '/foo')"
+        )
 
     def test_a_failing_suffix_binding_still_raises(self) -> None:
         """The split must not swallow an evaluation error in either half."""
@@ -590,7 +626,8 @@ class TestStepScriptWiring:
             ([f"tmpl = {_A_PATH_BINDING}"], _posix_format()),
             (["own = 1"], None),
         ]
-        assert str(inner["tmpl"]) == "/foo/bar"
+        # `tmpl` is still a path, so it is seeded in the host's format.
+        assert str(inner["tmpl"]) == _as_the_host_renders(_A_PATH_BINDING)
 
     def test_environment_script_bindings_stay_host_format(
         self, queue_handler: Any, tmp_path: Path, python_exe: str
@@ -657,9 +694,23 @@ class TestEndToEndScopeAgreement:
         session_time = SymbolTable()
         apply_script_let_bindings(symtab=session_time, let_bindings=script.let or [], script=script)
 
-        # THEN: the two agree. On a POSIX host they would agree either way; the
-        # per-half format assertions above are what make this host-independent.
-        assert str(session_time["root"]) == str(create_time["root"])
+        # THEN: the two agree, once the create-time side is read at the point in
+        # its journey that `session_time` occupies. A create-time table does not
+        # reach a session POSIX-tagged: `Session._resolved_base_entries`
+        # deserializes it with `to_symtab(path_format=host_format)`, and the
+        # split applies the same re-tag. So a create-time value still holding a
+        # path is re-rendered on the way in, while one that left path-space keeps
+        # its frozen text.
+        #
+        # `create_time` here is the raw POSIX evaluation, one step earlier. That
+        # is the fixture's doing, and comparing the two raw is what made this
+        # host-dependent -- not the rule.
+        assert str(create_time["root"]) == "/foo/bar"
+        assert str(session_time["root"]) == _as_the_host_renders(_A_PATH_BINDING)
+        # `under` left path-space during the create-time evaluation, so both
+        # sides hold the same frozen text on every host. Both bindings are
+        # template scope here (count=2), which is what makes this the whole
+        # property the fixtures check.
         assert str(session_time["under"]) == str(create_time["under"]) == "true"
 
     def test_a_session_runs_a_step_with_a_step_level_path_binding(self, python_exe: str) -> None:
