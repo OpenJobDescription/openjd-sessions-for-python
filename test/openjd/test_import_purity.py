@@ -410,10 +410,10 @@ class TestSessionLifecycleStaysExtensionFree:
 
 
 # ---------------------------------------------------------------------------
-# `apply_let_bindings` is on the session path for every script, EXPR or
-# not, so reaching it must not by itself load the native extension. Actually
-# *evaluating* a binding must, because the expression engine is the extension --
-# the two cases are split below so each says which it is.
+# `apply_let_bindings` delegates to openjd-model's `evaluate_let_bindings`.
+# The two probes below pin that boundary from both sides: an empty list must
+# not load the native extension, and a real binding must, because the
+# expression engine *is* the extension.
 # ---------------------------------------------------------------------------
 
 
@@ -440,12 +440,20 @@ print(RS in sys.modules)
 
 
 def test_applying_an_empty_let_list_stays_pure(tmp_path: Path) -> None:
-    """The no-``let`` script, which is every non-EXPR script: reaching
-    ``apply_let_bindings`` must not load the native extension.
+    """Dependency-boundary control: openjd-model's ``evaluate_let_bindings``
+    must stay pure when handed an empty list.
 
-    This is the production-reachable purity claim on this path. Nothing here
-    should import openjd.expr -- not the module-level imports in
-    ``_runner_base``, and not the binding-length guard ahead of the evaluator.
+    ``let_bindings=[]`` is a test-only shape rather than a production path --
+    every call site guards on truthiness first (``_session.py``,
+    ``_runner_base._materialize_files``, and both callers of
+    ``_apply_let_bindings_or_fail``) -- so what this pins is the boundary, not
+    session behaviour. Production purity for a non-EXPR script is covered by
+    ``test_running_a_non_expr_task_stays_pure_end_to_end`` and
+    ``test_importing_sessions_does_not_load_native_extension``.
+
+    Nothing on this call path should import openjd.expr: not the module-level
+    imports in ``_runner_base``, and not openjd-model's evaluator entry point
+    ahead of any actual evaluation.
     """
     # WHEN
     loaded = _run_probe(tmp_path, _NO_BINDINGS_PROBE)
