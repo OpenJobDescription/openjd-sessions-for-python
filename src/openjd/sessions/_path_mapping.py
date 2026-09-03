@@ -26,6 +26,41 @@ def _ascii_lower(value: str) -> str:
     return value.translate(_ASCII_LOWER_TABLE)
 
 
+def to_host_path_separators(value: str) -> str:
+    """Render ``value`` with this host's path separators.
+
+    A session is host scope, so a ``path`` there takes the host operating
+    system's semantics. openjd-rs applies that to every host-scope path value by
+    constructing it through ``ExprValue::new_path(.., PathFormat::host())``,
+    which calls ``normalize_path_separators``
+    (``crates/openjd-expr/src/value.rs``). This is that function for the host's
+    format, and the three cases are its three arms:
+
+    - a URI keeps forward slashes on every host, because its path portion is a
+      set of opaque identifiers rather than a filesystem path;
+    - a POSIX host changes nothing, because a backslash is a legal character in
+      a POSIX filename and rewriting one would corrupt the path;
+    - a Windows host replaces ``/`` with ``\\``.
+
+    Separators and nothing else. Rendering through ``PureWindowsPath`` would
+    also collapse ``//`` to ``\\``, drop a trailing separator, and turn ``""``
+    into ``"."`` -- and :meth:`PathMappingRule.apply` deliberately preserves a
+    trailing separator, so that one is a behaviour this must not undo.
+
+    Duplicated from Rust rather than called through ``openjd.expr``: the native
+    extension must not become a load-time requirement of a non-EXPR session (see
+    ``test/openjd/test_import_purity.py``), and a PATH parameter reaches this on
+    the non-EXPR path. The URI test reuses :data:`_URI_SOURCE_RE`, which is this
+    module's existing spelling of the same ``<scheme>://`` rule, so the
+    duplication is of Rust's three-way branch only.
+    """
+    if _URI_SOURCE_RE.match(value) is not None:
+        return value
+    if os_name == "posix":
+        return value
+    return value.replace("/", "\\")
+
+
 _URI_SOURCE_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
 """A URI-format rule's ``source_path`` must start with ``<scheme>://``.
 

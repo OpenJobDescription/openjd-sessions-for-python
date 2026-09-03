@@ -41,7 +41,7 @@ from ._action_filter import ActionMessageKind, ActionMonitoringFilter
 from ._embedded_files import EmbeddedFiles, EmbeddedFilesScope, _FileRecord, write_file_for_user
 from ._logging import LOG, log_section_banner, LoggerAdapter, LogExtraInfo, LogContent
 from ._os_checker import is_posix, is_windows
-from ._path_mapping import PathMappingRule
+from ._path_mapping import PathMappingRule, to_host_path_separators
 from ._runner_base import (
     ScriptRunnerBase,
     apply_let_bindings,
@@ -1670,12 +1670,21 @@ class Session(object):
             return path
 
         def processed_parameter_value(param: ParameterValue) -> Any:
+            # The host format is applied to every PATH value, not only to a
+            # mapped one. `apply_mapping` chooses the host's separator for a
+            # rule's output, so before this it was the *only* thing that did:
+            # a value no rule matched reached the task in whatever form the
+            # submitter wrote it, and on a Windows host a POSIX-spelled
+            # parameter stayed POSIX-spelled. openjd-rs wraps both the mapped
+            # and the unmapped case in `ExprValue::new_path(.., host())`.
+            # Applying it after `apply_mapping` is idempotent for a value a rule
+            # did match, which is what keeps the two paths agreeing.
             if param.type == ParameterValueType.PATH:
-                return apply_mapping(param.value)
+                return to_host_path_separators(apply_mapping(param.value))
             if param.type == ParameterValueType.LIST_PATH and isinstance(param.value, list):
                 # openjd-rs maps each element of a LIST[PATH] parameter at
                 # session scope; mirror that element-wise mapping.
-                return [apply_mapping(p) for p in param.value]
+                return [to_host_path_separators(apply_mapping(p)) for p in param.value]
             return param.value
 
         def record_expr_types(
