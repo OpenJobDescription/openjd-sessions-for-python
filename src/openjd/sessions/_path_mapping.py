@@ -26,6 +26,14 @@ def _ascii_lower(value: str) -> str:
     return value.translate(_ASCII_LOWER_TABLE)
 
 
+_URI_SOURCE_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
+"""A URI-format rule's ``source_path`` must start with ``<scheme>://``.
+
+Mirrors the scheme grammar of RFC 3986 §3.1, which is what the EXPR engine's
+URI parser accepts. Validated in the constructor so a malformed rule is rejected
+where the value can be named."""
+
+
 def to_host_path_separators(value: str) -> str:
     """Render ``value`` with this host's path separators.
 
@@ -53,20 +61,44 @@ def to_host_path_separators(value: str) -> str:
     the non-EXPR path. The URI test reuses :data:`_URI_SOURCE_RE`, which is this
     module's existing spelling of the same ``<scheme>://`` rule, so the
     duplication is of Rust's three-way branch only.
+
+    Note that a one-character scheme is a URI to both implementations, so
+    ``C://Users/foo`` keeps its forward slashes while ``C:/Users/foo`` does not.
+    That looks like a drive-letter misclassification and is deliberate: RFC 3986
+    §3.1 admits a single-character scheme, ``openjd-rs``'s ``uri_path::is_uri``
+    accepts one, and the Expression Language's stated pattern
+    (``^[a-zA-Z][a-zA-Z0-9+.-]*://``) does too. Measured against the engine, the
+    two agree on this input and on ``x://y/z``. Tightening the regex here would
+    make this package diverge from the oracle it is being aligned with, so if the
+    behaviour is wrong it is wrong in the specification.
     """
+    # The three branches below are a transcription of openjd-expr's
+    # `normalize_path_separators`, in `crates/openjd-expr/src/value.rs`. Kept in
+    # the same order as the original so the two can be diffed by eye. Quoted here
+    # from openjd-expr 0.6.0; `openjd-model`'s `rust-bindings` links 0.5.0, and
+    # this function and the `uri_path::parse` behind its `is_uri` are byte
+    # identical in both (checked against the two crates.io sources, not assumed):
+    #
+    #     pub fn normalize_path_separators(value: &str, format: PathFormat) -> String {
+    #         if crate::uri_path::is_uri(value) {
+    #             return value.to_string();
+    #         }
+    #         match format {
+    #             PathFormat::Windows => value.replace('/', "\\"),
+    #             PathFormat::Posix | PathFormat::Uri => value.to_string(),
+    #         }
+    #     }
+    #
+    # `format` is always the host's here, so the `Uri` arm of that `match` is
+    # unreachable from this caller and is folded into the POSIX one. If you change
+    # anything below, check it against that function first -- the whole reason this
+    # is a copy rather than a call is in the docstring, and a silent divergence is
+    # the cost that buys.
     if _URI_SOURCE_RE.match(value) is not None:
         return value
     if os_name == "posix":
         return value
     return value.replace("/", "\\")
-
-
-_URI_SOURCE_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://")
-"""A URI-format rule's ``source_path`` must start with ``<scheme>://``.
-
-Mirrors the scheme grammar of RFC 3986 §3.1, which is what the EXPR engine's
-URI parser accepts. Validated in the constructor so a malformed rule is rejected
-where the value can be named."""
 
 
 class PathFormat(str, Enum):

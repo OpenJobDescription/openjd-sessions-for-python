@@ -29,12 +29,12 @@ It patches exactly one seam, ``openjd.sessions._path_mapping.os_name``, and that
 is deliberate rather than a simplification: that module-level name is the single
 place this package decides which separator a host-scope path uses. It is what
 ``PathMappingRule.apply`` reads for the separator of a rule's output, and it is
-what ``host_path_format`` reads for the format of an unmapped value. Patching one
-and not the other would produce a self-inconsistent host -- mapped values
-rendering Windows while unmapped ones rendered POSIX -- and a test built on that
-would assert an arrangement that cannot occur in production. Keeping both readers
-on one seam is the reason the fix put ``host_path_format`` in ``_path_mapping``
-rather than deriving ``os.name`` a second time in ``_session``.
+what ``to_host_path_separators`` reads for the format of an unmapped value.
+Patching one and not the other would produce a self-inconsistent host -- mapped
+values rendering Windows while unmapped ones rendered POSIX -- and a test built on
+that would assert an arrangement that cannot occur in production. Keeping both
+readers on one seam is the reason the fix put ``to_host_path_separators`` in
+``_path_mapping`` rather than deriving ``os.name`` a second time in ``_session``.
 """
 
 from __future__ import annotations
@@ -93,7 +93,11 @@ def _symtab(
 
 
 def _path_param(value: str) -> dict[str, ParameterValue]:
-    return {"InputFile": ParameterValue(type=ParameterValueType.PATH, value=value)}
+    return _path_param_named("InputFile", value)
+
+
+def _path_param_named(name: str, value: str) -> dict[str, ParameterValue]:
+    return {name: ParameterValue(type=ParameterValueType.PATH, value=value)}
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +183,45 @@ class TestPathParameterFormatAndPathMappingAgree:
         # THEN the mapped value is what path mapping produced, unaltered
         assert str(symtab["Task.Param.InputFile"]) == r"C:\dest\a.exr"
 
+    def test_a_matching_uri_rule_is_completed_not_left_mixed(self) -> None:
+        """A URI-format rule is the one case where this is *not* a no-op, and
+        that is deliberate.
+
+        ``PathMappingRule._apply_uri`` copies ``destination_path`` verbatim and
+        uses the host separator only for the appended child parts, so a
+        POSIX-spelled destination on a Windows host comes out of ``apply``
+        half-converted -- ``/tmp/openjd\\scene\\out``. openjd-rs wraps the mapped
+        value in ``new_path(mapped, host())`` regardless of the rule's format, and
+        measured against the engine that yields the fully converted form. So
+        completing it here is agreement with the oracle, not a side effect.
+
+        The `apply`-only value is asserted first, so if `_apply_uri` ever starts
+        emitting host separators for the whole path this test says which half
+        changed instead of just failing.
+        """
+        # GIVEN a URI-format rule with a POSIX-spelled destination, which is how
+        # the existing suite spells cross-format rules
+        rules = [
+            PathMappingRule(
+                source_path_format=PathFormat.URI,
+                source_path="s3://bucket/prefix",
+                destination_path=PurePosixPath("/tmp/openjd"),
+            )
+        ]
+        given = "s3://bucket/prefix/scene/out"
+
+        # WHEN the rule is applied on a Windows host, and again through the table
+        with _host("nt"):
+            matched, mapped_only = rules[0].apply(path=given)
+        symtab = _symtab(_path_param_named("InputFile", given), os_name="nt", rules=rules)
+
+        # THEN path mapping alone leaves a mixed-separator result
+        assert matched is True
+        assert mapped_only == "/tmp/openjd\\scene\\out"
+
+        # AND the symbol table completes it to the host's format
+        assert str(symtab["Task.Param.InputFile"]) == r"\tmp\openjd\scene\out"
+
 
 class TestPathParameterFormatIsSeparatorsOnly:
     """Guards the *shape* of the conversion. Rendering through
@@ -205,6 +248,35 @@ class TestPathParameterFormatIsSeparatorsOnly:
         symtab = _symtab(_path_param(given), os_name="nt")
 
         # THEN only the separators changed
+        assert str(symtab["Task.Param.InputFile"]) == expected
+
+    @pytest.mark.parametrize(
+        "given,expected",
+        [
+            pytest.param("C://Users/foo", "C://Users/foo", id="one-char scheme is a URI"),
+            pytest.param("C:/Users/foo", r"C:\Users\foo", id="drive letter is not a URI"),
+            pytest.param("x://y/z", "x://y/z", id="one-char scheme, non-drive letter"),
+        ],
+    )
+    def test_a_one_character_scheme_matches_the_engine(self, given: str, expected: str) -> None:
+        """``C://Users/foo`` keeps its forward slashes and ``C:/Users/foo`` does
+        not. That reads like a drive-letter misclassification; it is what the
+        oracle does.
+
+        RFC 3986 §3.1 admits a single-character scheme, the Expression Language's
+        stated pattern is ``^[a-zA-Z][a-zA-Z0-9+.-]*://``, and openjd-rs's
+        ``uri_path::is_uri`` accepts one -- measured through the engine, it renders
+        all three of these identically to the assertions below. So this is pinned
+        deliberately: tightening the regex to require two scheme characters would
+        make this package diverge from the implementation it is being aligned
+        with. If the behaviour is wrong, it is wrong in the specification, and
+        this test should change when the specification does.
+        """
+        # GIVEN a value whose scheme is one character
+        # WHEN the table is built on a Windows host
+        symtab = _symtab(_path_param(given), os_name="nt")
+
+        # THEN it is treated exactly as the engine treats it
         assert str(symtab["Task.Param.InputFile"]) == expected
 
     def test_a_uri_is_left_alone(self) -> None:

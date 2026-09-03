@@ -1677,8 +1677,18 @@ class Session(object):
             # submitter wrote it, and on a Windows host a POSIX-spelled
             # parameter stayed POSIX-spelled. openjd-rs wraps both the mapped
             # and the unmapped case in `ExprValue::new_path(.., host())`.
-            # Applying it after `apply_mapping` is idempotent for a value a rule
-            # did match, which is what keeps the two paths agreeing.
+            #
+            # For a POSIX- or WINDOWS-format rule this is idempotent, because
+            # `apply` rebuilds the result through `PureWindowsPath` and leaves no
+            # forward slash to replace. For a URI-format rule it is not:
+            # `_apply_uri` copies `destination_path` verbatim and uses the host
+            # separator only for the appended child parts, so a POSIX-spelled
+            # destination on a Windows host yields a mixed result
+            # ("/tmp/openjd\\scene\\out") that this then completes
+            # ("\\tmp\\openjd\\scene\\out"). That is the openjd-rs answer for the
+            # same input -- measured -- so completing it is the point rather than
+            # a side effect. `TestPathParameterFormatAndPathMappingAgree` pins
+            # both cases.
             if param.type == ParameterValueType.PATH:
                 return to_host_path_separators(apply_mapping(param.value))
             if param.type == ParameterValueType.LIST_PATH and isinstance(param.value, list):
