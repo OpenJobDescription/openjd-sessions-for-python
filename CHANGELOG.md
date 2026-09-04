@@ -1,3 +1,13 @@
+## 0.12.1 (2026-09-04)
+
+
+
+### Bug Fixes
+* Render a PATH parameter in the host's path format (#364) ([`43b2640`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/43b26407f2f831c7e8f428649e63e4b7f97d1e75))
+* Render a PATH parameter in the host's path format ([`43b2640`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/43b26407f2f831c7e8f428649e63e4b7f97d1e75))
+* Address review on the PATH host-format change ([`43b2640`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/43b26407f2f831c7e8f428649e63e4b7f97d1e75))
+
+
 ## 0.12.0 (2026-08-26)
 
 
