@@ -47,10 +47,14 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
 
     Args:
         data: The string data to convert
-        end_of_line: One of None, "AUTO", "LF", or "CRLF"
+        end_of_line: One of None, "AUTO", "LF", or "CRLF". Any other value is
+            rejected rather than silently leaving the data unconverted.
 
     Returns:
         The data with converted line endings
+
+    Raises:
+        ValueError: if ``end_of_line`` is not a recognized value.
     """
     if end_of_line is None or end_of_line == "AUTO":
         # AUTO: use OS native line endings
@@ -63,7 +67,10 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
         return data.replace("\r\n", "\n")
     elif end_of_line == "CRLF":
         return _LF_NOT_CRLF.sub("\r\n", data)
-    return data
+    raise ValueError(
+        f"Unrecognized end_of_line value {end_of_line!r}. Expected one of "
+        "None, 'AUTO', 'LF', or 'CRLF'."
+    )
 
 
 def chown_group(path: Path, group: str) -> None:
@@ -155,7 +162,8 @@ def write_file_for_user(
         additional_permissions: Extra mode bits to set, masked to the owner
             and group triads.
         end_of_line: One of ``None``, ``"AUTO"``, ``"LF"``, or ``"CRLF"``.
-            ``None`` and ``"AUTO"`` select the host's native line ending.
+            ``None`` and ``"AUTO"`` select the host's native line ending. Any
+            other value is rejected.
         verbatim: Write ``data`` exactly as given. The content is not escaped,
             not re-interpreted, and its line endings are not converted:
             ``_convert_line_endings`` is not called at all, and the bytes on
@@ -170,7 +178,8 @@ def write_file_for_user(
 
     Raises:
         ValueError: if ``verbatim`` is True and ``end_of_line`` is not None
-            (the two requests contradict each other).
+            (the two requests contradict each other), or if ``end_of_line``
+            is not a recognized value.
         OSError: if the file could not be created or written, or if the final
             path component is a symbolic link.
     """

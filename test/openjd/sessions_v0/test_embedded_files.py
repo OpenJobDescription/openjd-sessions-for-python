@@ -6,6 +6,7 @@ import stat
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 from unittest.mock import MagicMock, patch
 from openjd.sessions._os_checker import is_posix, is_windows
 import pytest
@@ -26,6 +27,7 @@ from openjd.model.v2023_09 import (
 from openjd.sessions._embedded_files import (
     EmbeddedFiles,
     EmbeddedFilesScope,
+    _convert_line_endings,
     _validate_embedded_filename,
     chown_group,
     write_file_for_user,
@@ -735,6 +737,82 @@ class TestEmbeddedFiles:
             with open(filename, "rb") as file:
                 result_bytes = file.read()
             assert result_bytes == expected_bytes
+
+    class TestConvertLineEndings:
+        """Tests for _convert_line_endings()'s handling of unrecognized values."""
+
+        @pytest.mark.parametrize(
+            "end_of_line",
+            [
+                pytest.param("crlf", id="case-wrong-crlf"),
+                pytest.param("Lf", id="case-wrong-Lf"),
+                pytest.param("", id="empty-string"),
+                pytest.param("typo", id="typo"),
+                pytest.param("VERBATIM", id="not-a-mode"),
+            ],
+        )
+        def test_rejects_unrecognized_value(self, end_of_line: str) -> None:
+            # An unrecognized end_of_line must be rejected, not silently
+            # ignored. Previously each of these returned the data unconverted
+            # with no error, so a case-wrong value looked like it worked.
+
+            # WHEN
+            with pytest.raises(ValueError) as excinfo:
+                _convert_line_endings("a\nb\r\nc\n", end_of_line)
+
+            # THEN
+            assert repr(end_of_line) in str(excinfo.value)
+
+        @pytest.mark.parametrize(
+            "end_of_line",
+            [
+                pytest.param(None, id="None"),
+                pytest.param("AUTO", id="AUTO"),
+            ],
+        )
+        def test_accepts_native_values(self, end_of_line: Optional[str]) -> None:
+            # Negative control: None and AUTO still select the host's native
+            # line ending and do not raise.
+
+            # GIVEN
+            expected = "a\r\nb\r\nc\r\n" if is_windows() else "a\nb\nc\n"
+
+            # WHEN
+            result = _convert_line_endings("a\nb\r\nc\n", end_of_line)
+
+            # THEN
+            assert result == expected
+
+        @pytest.mark.parametrize(
+            "end_of_line,expected",
+            [
+                pytest.param("LF", "a\nb\nc\n", id="LF"),
+                pytest.param("CRLF", "a\r\nb\r\nc\r\n", id="CRLF"),
+            ],
+        )
+        def test_accepts_explicit_values(self, end_of_line: str, expected: str) -> None:
+            # Negative control: the explicit modes still convert and do not
+            # raise, so the strict check is not over-broad.
+
+            # WHEN
+            result = _convert_line_endings("a\nb\r\nc\n", end_of_line)
+
+            # THEN
+            assert result == expected
+
+        def test_write_file_for_user_rejects_unrecognized_value(self, tmp_path: Path) -> None:
+            # End to end through the writer: the conversion happens before the
+            # O_TRUNC open, so a rejected value leaves no file behind.
+
+            # GIVEN
+            filename = tmp_path / uuid.uuid4().hex
+
+            # WHEN
+            with pytest.raises(ValueError):
+                write_file_for_user(filename, "a\nb\r\nc\n", user=None, end_of_line="crlf")
+
+            # THEN
+            assert not filename.exists()
 
     class TestMaterialize:
         """Tests for EmbeddedFiles.materialize()"""
