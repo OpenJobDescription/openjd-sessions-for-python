@@ -157,10 +157,11 @@ def write_file_for_user(
 
     Arguments:
         filename: Absolute path of the file to create or overwrite.
-        data: The text to write, encoded as UTF-8.
+        data: The text to write. Encoded as UTF-8 by this function.
         user: If given, the session user whose group gains read/write access.
         additional_permissions: Extra mode bits to set, masked to the owner
-            and group triads.
+            triad, and extended to the group triad only when ``user`` is given
+            on POSIX.
         end_of_line: One of ``None``, ``"AUTO"``, ``"LF"``, or ``"CRLF"``.
             ``None`` and ``"AUTO"`` select the host's native line ending. Any
             other value is rejected.
