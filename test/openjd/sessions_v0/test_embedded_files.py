@@ -599,6 +599,143 @@ class TestEmbeddedFiles:
                 result_bytes = file.read()
             assert result_bytes == b"line1\r\nline2"
 
+    class TestVerbatimWrite:
+        """Tests for write_file_for_user()'s verbatim option."""
+
+        def test_verbatim_preserves_mixed_line_endings(self, tmp_path: Path) -> None:
+            # verbatim=True must write the input bytes exactly, on POSIX and
+            # Windows alike. A mixed LF/CRLF body is rewritten by every
+            # end_of_line mode, so it fails if verbatim stops bypassing the
+            # conversion.
+
+            # GIVEN
+            filename = tmp_path / uuid.uuid4().hex
+            data = "line1\nline2\r\nline3\n"
+
+            # WHEN
+            write_file_for_user(filename, data, user=None, verbatim=True)
+
+            # THEN
+            with open(filename, "rb") as file:
+                result_bytes = file.read()
+            assert result_bytes == b"line1\nline2\r\nline3\n"
+
+        @pytest.mark.skipif(not is_posix(), reason="posix file mode bits")
+        def test_verbatim_matches_non_verbatim_permissions(self, tmp_path: Path) -> None:
+            # The verbatim branch changes only which string is encoded, so the
+            # resulting file mode must be identical to the default path's.
+
+            # GIVEN
+            verbatim_file = tmp_path / uuid.uuid4().hex
+            converted_file = tmp_path / uuid.uuid4().hex
+
+            # WHEN
+            write_file_for_user(
+                verbatim_file,
+                "data",
+                user=None,
+                additional_permissions=stat.S_IXUSR,
+                verbatim=True,
+            )
+            write_file_for_user(
+                converted_file, "data", user=None, additional_permissions=stat.S_IXUSR
+            )
+
+            # THEN
+            verbatim_mode = os.stat(verbatim_file).st_mode & 0o777
+            converted_mode = os.stat(converted_file).st_mode & 0o777
+            assert verbatim_mode == converted_mode
+            # Asserted absolutely as well, so the equality cannot hold by both
+            # paths regressing together.
+            assert verbatim_mode == (stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+        @pytest.mark.skipif(not is_posix(), reason="O_NOFOLLOW is posix-specific")
+        def test_verbatim_still_refuses_to_follow_symlink(self, tmp_path: Path) -> None:
+            # The verbatim branch must go through the same O_NOFOLLOW-guarded
+            # writer, not a convenience writer that follows symlinks.
+
+            # GIVEN
+            target = tmp_path / "target.txt"
+            target.write_text("original-contents")
+            link = tmp_path / "link.txt"
+            link.symlink_to(target)
+
+            # WHEN / THEN
+            with pytest.raises(OSError):
+                write_file_for_user(link, "overwritten", user=None, verbatim=True)
+            # AND the symlink target is untouched
+            assert target.read_text() == "original-contents"
+
+        @pytest.mark.parametrize(
+            "end_of_line",
+            [
+                pytest.param("AUTO", id="AUTO"),
+                pytest.param("LF", id="LF"),
+                pytest.param("CRLF", id="CRLF"),
+            ],
+        )
+        def test_verbatim_with_explicit_end_of_line_raises(
+            self, tmp_path: Path, end_of_line: str
+        ) -> None:
+            # verbatim=True and an explicit end_of_line are contradictory
+            # requests. Neither silently wins.
+
+            # GIVEN
+            filename = tmp_path / uuid.uuid4().hex
+
+            # WHEN
+            with pytest.raises(ValueError) as excinfo:
+                write_file_for_user(
+                    filename, "data", user=None, end_of_line=end_of_line, verbatim=True
+                )
+
+            # THEN
+            assert "verbatim" in str(excinfo.value)
+            assert "end_of_line" in str(excinfo.value)
+            # AND the guard ran before the O_TRUNC open, so the destination was
+            # not created or truncated on the way to raising.
+            assert not filename.exists()
+
+        def test_verbatim_with_explicit_none_end_of_line_is_allowed(self, tmp_path: Path) -> None:
+            # Negative control for the guard: it fires on a non-None
+            # end_of_line, not on the keyword being present at all.
+
+            # GIVEN
+            filename = tmp_path / uuid.uuid4().hex
+
+            # WHEN
+            write_file_for_user(filename, "a\nb\r\nc\n", user=None, end_of_line=None, verbatim=True)
+
+            # THEN
+            with open(filename, "rb") as file:
+                result_bytes = file.read()
+            assert result_bytes == b"a\nb\r\nc\n"
+
+        @pytest.mark.parametrize(
+            "end_of_line,expected_bytes",
+            [
+                pytest.param("LF", b"a\nb\nc\n", id="LF"),
+                pytest.param("CRLF", b"a\r\nb\r\nc\r\n", id="CRLF"),
+            ],
+        )
+        def test_non_verbatim_still_converts(
+            self, tmp_path: Path, end_of_line: str, expected_bytes: bytes
+        ) -> None:
+            # Negative control: conversion still happens when verbatim is not
+            # requested. AUTO is covered by TestEndOfLine, whose expectation is
+            # platform-dependent.
+
+            # GIVEN
+            filename = tmp_path / uuid.uuid4().hex
+
+            # WHEN
+            write_file_for_user(filename, "a\nb\r\nc\n", user=None, end_of_line=end_of_line)
+
+            # THEN
+            with open(filename, "rb") as file:
+                result_bytes = file.read()
+            assert result_bytes == expected_bytes
+
     class TestMaterialize:
         """Tests for EmbeddedFiles.materialize()"""
 
