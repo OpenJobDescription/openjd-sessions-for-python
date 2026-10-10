@@ -2031,6 +2031,11 @@ class Session(object):
         symmetrically, the inner entity's lets never apply to the hook's own
         resolution scope. Mirrors openjd-rs's ``build_wrapped_inner_scope``.
 
+        A script's own ``let`` is session scope here exactly as it is in the
+        runners, so a wrapped action resolves against the same scope it would
+        have had unwrapped, which is the property this method exists to
+        reproduce.
+
         Raises:
             ValueError (FormatStringError/ExpressionError): a binding or file
                 reference did not resolve.

@@ -102,6 +102,10 @@ class StepScriptRunner(ScriptRunnerBase):
         # the script's EXPR `let` bindings evaluate (so bindings can reference
         # Task.File.*), and contents are written after (so `data` can
         # reference let-bound values) — mirroring the openjd-rs runner.
+        #
+        # This `let` list is the script's own, and is entirely session scope. A
+        # step's template-scope `let` is resolved at job creation and arrives
+        # through `Step.resolved_symtab` instead; see apply_let_bindings.
         if self._script.embeddedFiles is not None:
             symtab = SymbolTable(source=self._symtab)
             self._materialize_files(

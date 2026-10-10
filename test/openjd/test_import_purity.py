@@ -407,3 +407,90 @@ class TestSessionLifecycleStaysExtensionFree:
             "extension; if this is now False the limitation has been fixed and "
             "this control should become a purity assertion"
         )
+
+
+# ---------------------------------------------------------------------------
+# `apply_let_bindings` delegates to openjd-model's `evaluate_let_bindings`.
+# The two probes below pin that boundary from both sides: an empty list must
+# not load the native extension, and a real binding must, because the
+# expression engine *is* the extension.
+# ---------------------------------------------------------------------------
+
+
+_NO_BINDINGS_PROBE = """
+from openjd.model import SymbolTable
+from openjd.sessions._runner_base import apply_let_bindings
+
+
+apply_let_bindings(symtab=SymbolTable(), let_bindings=[])
+print(RS in sys.modules)
+"""
+
+
+_LET_PROBE = """
+from openjd.model import SymbolTable
+from openjd.sessions._runner_base import apply_let_bindings
+
+
+symtab = SymbolTable()
+apply_let_bindings(symtab=symtab, let_bindings=["mine = 1 + 1"])
+assert symtab["mine"].item() == 2, symtab["mine"]
+print(RS in sys.modules)
+"""
+
+
+def test_applying_an_empty_let_list_stays_pure(tmp_path: Path) -> None:
+    """Dependency-boundary control: openjd-model's ``evaluate_let_bindings``
+    must stay pure when handed an empty list.
+
+    ``let_bindings=[]`` is a test-only shape rather than a production path --
+    every call site guards on truthiness first (``_session.py``,
+    ``_runner_base._materialize_files``, and both callers of
+    ``_apply_let_bindings_or_fail``) -- so what this pins is the boundary, not
+    session behaviour. Production purity for a non-EXPR script is covered by
+    ``test_running_a_non_expr_task_stays_pure_end_to_end`` and
+    ``test_importing_sessions_does_not_load_native_extension``.
+
+    Nothing on this call path should import openjd.expr: not the module-level
+    imports in ``_runner_base``, and not openjd-model's evaluator entry point
+    ahead of any actual evaluation.
+    """
+    # WHEN
+    loaded = _run_probe(tmp_path, _NO_BINDINGS_PROBE)
+
+    # THEN
+    assert loaded == "False", (
+        "applying an empty let list loaded the native extension, so something "
+        "on the call path imports openjd.expr unguarded"
+    )
+
+
+def test_evaluating_a_scripts_let_does_load_the_extension(tmp_path: Path) -> None:
+    """Negative control, and a documented limitation rather than a goal.
+
+    A script's own ``let`` is evaluated by the EXPR engine, and the engine *is*
+    the native extension, so any real binding loads it. The probe binds
+    ``mine = 1 + 1`` -- valid, and deliberately not path-valued, so the load
+    cannot be blamed on path handling -- and asserts the bound value, which is
+    what proves the evaluation actually ran rather than being skipped.
+
+    openjd-sessions cannot close this alone, and should not: a session that
+    evaluates an expression needs the evaluator. It is bounded instead, by
+    ``test_applying_an_empty_let_list_stays_pure`` above and by
+    ``TestSessionLifecycleStaysExtensionFree``, which together pin that only a
+    template that actually uses EXPR pays for it.
+
+    Asserted so that the boundary is visible and so a future change that moves
+    it -- in either direction -- is noticed here rather than passing silently.
+    """
+    # WHEN
+    loaded = _run_probe(tmp_path, _LET_PROBE)
+
+    # THEN
+    assert loaded == "True", (
+        "evaluating a script's let binding no longer loads the native "
+        "extension. If openjd-model has gained a pure-Python evaluator this "
+        "control should become a purity assertion; if the binding is being "
+        "silently skipped instead, the value assertion in the probe is what "
+        "will have failed first."
+    )
