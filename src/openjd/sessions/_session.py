@@ -311,6 +311,21 @@ class Session(object):
     The only remover is an explicit ``openjd_unset_env``. openjd-rs holds the
     same split -- its session-lifetime ``env_vars`` beside its per-environment
     ``created_env_vars`` -- and this mirrors it.
+
+    Written by every ``openjd_env`` macro, including one emitted by a task's
+    ``onRun`` when no environment is running. Such a macro is recorded here and
+    nowhere else, so it reaches ``WrappedAction.Environment`` without altering
+    any child process environment.
+
+    openjd-cli 0.1.14 / openjd-sessions 0.5.5, the released openjd-rs lineage,
+    behaves the same way: ``apply_message`` writes the cumulative ``env_vars``
+    for every SetEnv regardless of which action is running, that map is what
+    ``seed_wrapped_action_symbols`` receives, and ``evaluate_env_vars`` builds
+    process environments from ``created_env_vars`` alone. Read the released tag,
+    not ``main``: openjd-rs #362 repointed the wrap-hook seeding at
+    ``live_session_env_vars()``, which drops task-emitted macros, so ``main``
+    currently fails the conformance fixture named below. That is tracked as an
+    openjd-rs regression, not a divergence to copy here.
     """
 
     _wrap_env_file_records: dict[EnvironmentIdentifier, list["_FileRecord"]]
@@ -2106,8 +2121,16 @@ class Session(object):
         ``_session_env_vars`` is insertion-ordered and already holds the
         effective value per name -- a later set overwrites in place, and an
         explicit ``openjd_unset_env`` removes the name -- so this is a
-        formatting step only."""
-        return [f"{name}={value}" for name, value in self._session_env_vars.items()]
+        formatting step only.
+
+        Iterates a snapshot: the writer is ``_action_callback`` on the
+        LoggingSubprocess stdout thread, and iterating the live dict while that
+        thread inserts raises ``RuntimeError: dictionary keys changed during
+        iteration``. Reproduced before this snapshot was added. ``dict.copy()``
+        rather than a lock, because the writer runs on the thread that forwards
+        a running child's output and must not be able to block on this reader.
+        """
+        return [f"{name}={value}" for name, value in self._session_env_vars.copy().items()]
 
     def _resolve_action_timeout(self, action: Any, symtab: SymbolTable) -> Optional[int]:
         """Return the wrapped action's timeout as an int (seconds), or
@@ -2404,25 +2427,43 @@ class Session(object):
 
         elif kind == ActionMessageKind.ENV:
             if self._running_environment_identifier is None:
-                # Ignore the message if we're not running an environment.
+                # No environment is running, so a task's onRun emitted this --
+                # directly, or through an RFC 0008 onWrapTaskRun hook standing in
+                # for one. RFC 0008 (§"Stdout forwarding and macro propagation")
+                # requires it in WrappedAction.Environment regardless: runtimes
+                # "MUST include ... every openjd_env-defined variable emitted by
+                # any earlier action in the same session -- regardless of whether
+                # that action ran normally or via a wrap hook".
                 #
-                # Per How-Jobs-Are-Run, `openjd_env` "can only be emitted by the
-                # Action for entering an Environment" — so a task's onRun cannot
-                # define a session variable, and neither can an RFC 0008
-                # onWrapTaskRun hook, which stands in for one. That keeps
-                # wrapping transparent: a task that prints an `openjd_env:` line
-                # behaves the same wrapped and unwrapped.
+                # Record it in the session-lifetime map only. _created_env_vars
+                # stays untouched, so no process environment changes: an
+                # unwrapped task's environment is exactly what it was before this
+                # branch existed. openjd-rs holds the same split, its cumulative
+                # env_vars feeding the wrap symbols while evaluate_env_vars builds
+                # process environments from created_env_vars alone.
                 #
-                # This is deliberate, not an oversight, and it is a known
-                # divergence from openjd-rs, which records such a variable in the
-                # map that feeds WrappedAction.Environment while still not
-                # applying it to any subprocess environment — advertising a
-                # variable the wrapped context does not have. The spec does not
-                # settle the case (it also says a wrap script MAY emit these
-                # macros directly) and no conformance fixture covers it; filed
-                # upstream. Logged at debug so an author chasing a silent no-op
-                # has something to find, without adding noise to every task log.
-                self._log_discarded_env_macro(kind, value)
+                # This is NOT full wrapped/unwrapped equivalence, and the earlier
+                # comment here overclaimed it. The two views can disagree, in this
+                # direction: a task exporting a name an entered environment also
+                # declares wins here, so a wrap hook is handed the task's value
+                # while an unwrapped task's real environment keeps the
+                # environment's. test_task_export_does_not_displace_an_environments
+                # _value_in_a_child pins both halves. That also means a task's
+                # stdout chooses names and values a later wrapped task's hook is
+                # handed -- reachable only through a hook that forwards the symbol,
+                # but new for tasks, and matching what the released openjd-rs
+                # cumulative map already did. Filed upstream for a spec ruling
+                # alongside the redacted-value and unbounded-growth cases; it is
+                # one question, whether a task may write this symbol at all.
+                if cancel_action_mark_failed:
+                    # Malformed macro: value is the parse error, not a variable.
+                    # Keep discarding it, and keep not failing the action -- only
+                    # the in-environment path below does that.
+                    self._log_discarded_env_macro(kind, value)
+                    return
+                # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+                assert isinstance(value, dict)
+                self._session_env_vars[value["name"]] = value["value"]
                 return
             if cancel_action_mark_failed:
                 # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
@@ -2441,15 +2482,21 @@ class Session(object):
                 changes=[EnvironmentVariableSetChange(name=value["name"], value=value["value"])]
             )
             # Session-lifetime copy for WrappedAction.Environment; see
-            # _session_env_vars. Runs on the LoggingSubprocess IO thread, like
-            # the line above -- a plain dict assignment, so no new hazard.
+            # _session_env_vars. Runs on the LoggingSubprocess IO thread, so the
+            # reader iterates a snapshot; see _collect_session_env_list.
             self._session_env_vars[value["name"]] = value["value"]
             return
         elif kind == ActionMessageKind.UNSET_ENV:
             if self._running_environment_identifier is None:
-                # Ignore the message if we're not running an environment.
-                # See the ENV branch above for why this is deliberate.
-                self._log_discarded_env_macro(kind, value)
+                # See the ENV branch above. An unset is the one remover from the
+                # session-lifetime map, matching openjd-rs, where UnsetEnv erases
+                # the cumulative map whether or not an environment owns the name.
+                if cancel_action_mark_failed:
+                    self._log_discarded_env_macro(kind, value)
+                    return
+                # Assert for the type checker; the type is guaranteed by the ActionMonitoringFilter
+                assert isinstance(value, str)
+                self._session_env_vars.pop(value, None)
                 return
 
             if cancel_action_mark_failed:
@@ -2501,21 +2548,28 @@ class Session(object):
         self.cancel_action(mark_action_failed=True)
 
     def _log_discarded_env_macro(self, kind: ActionMessageKind, value: Any) -> None:
-        """Record, at debug level, that an environment-variable stdout macro was
-        ignored because the running Action is not an Environment's entry Action.
+        """Record, at debug level, that a malformed environment-variable stdout
+        macro was ignored because no Environment's entry Action is running.
 
-        Debug rather than a warning on purpose: ``_reset_action_state`` clears
-        the running-environment identifier for every task, and this callback
-        cannot tell an RFC 0008 wrap hook from an ordinary task action — so a
-        warning here would fire for every existing job whose task happens to
-        print an ``openjd_env:`` line.
+        A well-formed macro from a task is kept (see :attr:`_session_env_vars`);
+        only one that failed to parse lands here, from ``openjd_env``,
+        ``openjd_redacted_env`` (which the filter re-dispatches as ``ENV``) or
+        ``openjd_unset_env``. In an environment, the same parse failure cancels
+        the action and marks it failed. Outside one there is no environment
+        action to fail, and this callback cannot tell an RFC 0008 wrap hook from
+        an ordinary task action, so failing every task that prints a malformed
+        macro would be a behaviour change for existing jobs. Debug keeps it
+        findable without that.
+
+        ``value`` is the filter's parse-error message: both call sites are
+        reached only when ``cancel_action_mark_failed`` is set, and the filter
+        pairs that flag with a ``str`` payload, never the name/value dict.
         """
-        name = value.get("name") if isinstance(value, dict) else value
         self._logger.debug(
-            "Ignoring %s for '%s': environment variables can only be defined by "
-            "the Action that enters an Environment.",
+            "Ignoring malformed %s macro (%s): no Environment entry Action is running, "
+            "so there is no action to fail.",
             kind.name.lower(),
-            name,
+            value,
         )
 
     def _fail_action_before_start(self, message: str) -> None:
