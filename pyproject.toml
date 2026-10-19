@@ -31,9 +31,9 @@ classifiers = [
   "Topic :: Software Development :: Libraries"
 ]
 dependencies = [
-  # 0.13 is the floor so that this package and the packages that depend on it,
+  # 0.14 is the floor so that this package and the packages that depend on it,
   # such as openjd-cli, use the latest openjd-model release.
-  "openjd-model >= 0.13,< 0.14",
+  "openjd-model >= 0.14,< 0.15",
   "pywin32 >= 307; platform_system == 'Windows'",
   "psutil >= 5.9,< 7.3; platform_system == 'Windows'",
 ]
