@@ -1,3 +1,11 @@
+## 0.14.0 (2026-10-20)
+
+
+### Features
+* Require openjd-model 0.14 (#372) ([`7877e65`](https://github.com/OpenJobDescription/openjd-sessions-for-python/commit/7877e65b08709f1d129d2ca9b5408da2f1eaf2ca))
+
+
+
 ## 0.13.0 (2026-10-07)
 
 
