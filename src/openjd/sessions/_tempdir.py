@@ -3,6 +3,7 @@
 import os
 import stat
 import sys
+import time
 from ._logging import LoggerAdapter, LogContent, LogExtraInfo
 from pathlib import Path
 from shutil import rmtree
@@ -30,6 +31,15 @@ traversal, not read access to any session's contents.
 
 Applied explicitly rather than left to the process umask so that the resulting
 mode does not depend on how the embedding application happens to be configured.
+"""
+
+_CLEANUP_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 2.0)
+"""Seconds to wait before each retry of a failed Windows cleanup.
+
+Windows refuses to delete a file or directory while any process holds a handle to
+it, and a child process that has exited or been terminated can still hold handles
+for a short time. POSIX does not retry: a failure there is a permission problem
+that waiting will not fix.
 """
 
 
@@ -333,10 +343,36 @@ class TempDir:
 
     def cleanup(self) -> None:
         """Deletes the temporary directory and all of its contents.
+
+        On Windows a failed deletion is retried after each delay in
+        ``_CLEANUP_RETRY_DELAYS_SECONDS``, because a process that has just exited,
+        or been terminated, can hold its file handles for a short time afterwards.
+
         Raises:
             RuntimeError - If not all files could be deleted. The message names
                 each path that could not be deleted along with the reason.
         """
+        existed = os.path.lexists(self.path)
+        failures = self._delete_tree()
+        retry_delays = _CLEANUP_RETRY_DELAYS_SECONDS if is_windows() and existed else ()
+        for delay in retry_delays:
+            if not failures:
+                break
+            time.sleep(delay)
+            if not os.path.lexists(self.path):
+                # The pass that reported a failure still removed the directory.
+                failures = []
+                break
+            failures = self._delete_tree()
+
+        if failures:
+            raise RuntimeError(
+                f"Files within temporary directory {str(self.path)} could not be deleted.\n"
+                + "\n".join(failures)
+            )
+
+    def _delete_tree(self) -> list[str]:
+        """One recursive deletion pass. Returns the paths that could not be deleted, with reasons."""
         failures: list[str] = []
 
         def _record(path: Any, error: BaseException) -> None:
@@ -367,8 +403,4 @@ class TempDir:
 
             rmtree(self.path, onerror=onerror)
 
-        if failures:
-            raise RuntimeError(
-                f"Files within temporary directory {str(self.path)} could not be deleted.\n"
-                + "\n".join(failures)
-            )
+        return failures

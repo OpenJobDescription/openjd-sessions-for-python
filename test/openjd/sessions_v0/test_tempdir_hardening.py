@@ -7,7 +7,9 @@ on typical POSIX hosts, and it is shared with the job user.
 """
 
 import os
+import shutil
 import stat
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -17,6 +19,7 @@ import pytest
 
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._tempdir import (
+    _CLEANUP_RETRY_DELAYS_SECONDS,
     OPENJD_TEMPDIR_MODE,
     TempDir,
     _prepare_temp_dir_root,
@@ -291,6 +294,158 @@ class TestCleanupErrorReporting:
 
         # THEN
         assert not d.path.exists()
+
+
+def _rmtree_failing_first(fail_count: int) -> Any:
+    """A stand-in for `shutil.rmtree` whose first `fail_count` calls report an error
+    for the root without deleting anything, then behave like the real one."""
+    real_rmtree = shutil.rmtree
+    calls = {"n": 0}
+
+    def fake(path: Any, *args: Any, **kwargs: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] <= fail_count:
+            error = PermissionError(32, "The process cannot access the file", str(path))
+            if "onexc" in kwargs:
+                kwargs["onexc"](os.unlink, path, error)
+            else:
+                kwargs["onerror"](os.unlink, path, (type(error), error, None))
+            return
+        real_rmtree(path, *args, **kwargs)
+
+    fake.calls = calls  # type: ignore[attr-defined]
+    return fake
+
+
+class TestCleanupRetry:
+    """A process that has just exited can still hold handles in the session directory,
+    and Windows refuses to delete a file while a handle to it is open."""
+
+    def test_windows_retries_until_the_directory_is_deleted(self, tmp_path: Path) -> None:
+        # GIVEN: a deletion that fails twice, then succeeds
+        d = TempDir(dir=tmp_path)
+        (d.path / "a.txt").write_text("x")
+        fake = _rmtree_failing_first(2)
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=fake),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0, 0.0)),
+        ):
+            d.cleanup()
+
+        # THEN
+        assert fake.calls["n"] == 3
+        assert not d.path.exists()
+
+    def test_windows_raises_once_the_retries_are_exhausted(self, tmp_path: Path) -> None:
+        # GIVEN: a deletion that never succeeds
+        d = TempDir(dir=tmp_path)
+        fake = _rmtree_failing_first(99)
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=fake),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0, 0.0)),
+        ):
+            with pytest.raises(RuntimeError) as excinfo:
+                d.cleanup()
+
+        # THEN: one attempt plus one per delay, and the last failure is reported
+        assert fake.calls["n"] == 3
+        assert "could not be deleted" in str(excinfo.value)
+        assert "PermissionError" in str(excinfo.value)
+
+    def test_windows_waits_the_configured_delays(self, tmp_path: Path) -> None:
+        # GIVEN
+        d = TempDir(dir=tmp_path)
+        fake = _rmtree_failing_first(99)
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=fake),
+            patch("openjd.sessions._tempdir.time.sleep") as sleep,
+        ):
+            with pytest.raises(RuntimeError):
+                d.cleanup()
+
+        # THEN
+        assert [c.args[0] for c in sleep.call_args_list] == list(_CLEANUP_RETRY_DELAYS_SECONDS)
+
+    def test_posix_does_not_retry(self, tmp_path: Path) -> None:
+        # GIVEN
+        d = TempDir(dir=tmp_path)
+        fake = _rmtree_failing_first(99)
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=False),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=fake),
+            patch("openjd.sessions._tempdir.time.sleep") as sleep,
+        ):
+            with pytest.raises(RuntimeError):
+                d.cleanup()
+
+        # THEN
+        assert fake.calls["n"] == 1
+        sleep.assert_not_called()
+
+    def test_missing_directory_is_still_an_error(self, tmp_path: Path) -> None:
+        # GIVEN: a directory removed by someone else before cleanup
+        d = TempDir(dir=tmp_path)
+        os.rmdir(d.path)
+
+        # WHEN / THEN: unchanged by the retry, on either platform
+        for windows in (True, False):
+            d2 = TempDir.__new__(TempDir)
+            d2.path = d.path
+            with (
+                patch("openjd.sessions._tempdir.is_windows", return_value=windows),
+                patch("openjd.sessions._tempdir.time.sleep") as sleep,
+            ):
+                with pytest.raises(RuntimeError):
+                    d2.cleanup()
+            sleep.assert_not_called()
+
+    @pytest.mark.skipif(not is_windows(), reason="Windows mandatory file locking")
+    def test_windows_file_held_open_briefly_is_deleted(self, tmp_path: Path) -> None:
+        # GIVEN: a file in the session directory held open by another thread for
+        # less time than the retries cover. Python's open() does not grant
+        # FILE_SHARE_DELETE, so deleting it fails with a sharing violation.
+        d = TempDir(dir=tmp_path)
+        held = open(d.path / "locked.bin", "wb")
+        release = threading.Timer(0.5, held.close)
+        release.start()
+
+        # WHEN
+        try:
+            d.cleanup()
+        finally:
+            release.cancel()
+            held.close()
+
+        # THEN
+        assert not d.path.exists()
+
+    @pytest.mark.skipif(not is_windows(), reason="Windows mandatory file locking")
+    def test_windows_file_held_open_throughout_is_reported(self, tmp_path: Path) -> None:
+        # GIVEN
+        d = TempDir(dir=tmp_path)
+        held = open(d.path / "locked.bin", "wb")
+
+        # WHEN
+        try:
+            with patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.1, 0.1)):
+                with pytest.raises(RuntimeError) as excinfo:
+                    d.cleanup()
+        finally:
+            held.close()
+
+        # THEN
+        assert "locked.bin" in str(excinfo.value)
 
 
 @pytest.mark.skipif(not is_posix(), reason="symlink swap and fchmod semantics are POSIX here")
