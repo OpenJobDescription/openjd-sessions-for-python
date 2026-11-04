@@ -51,13 +51,17 @@ _MAX_FILES_TO_NAME = 3
 
 def _find_lock_holders(files: list[str]) -> tuple[list[tuple[int, str]], Optional[str]]:
     """The (pid, name) of each process holding any of ``files`` open, and the
-    reason the lookup failed if it did. Windows only."""
-    from ._win32._file_locks import processes_holding  # type: ignore
+    reason the lookup failed if it did. Windows only.
 
+    Never raises: the result only feeds a log line, and an exception here would
+    abort the cleanup it is explaining.
+    """
     try:
+        from ._win32._file_locks import processes_holding  # type: ignore
+
         return [(h.pid, h.name) for h in processes_holding(files)], None
-    except OSError as err:
-        return [], str(err)
+    except Exception as err:
+        return [], f"{type(err).__name__}: {err}"
 
 
 def _describe_failed_attempt(

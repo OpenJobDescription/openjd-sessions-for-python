@@ -9,6 +9,7 @@ on typical POSIX hosts, and it is shared with the job user.
 import os
 import shutil
 import stat
+import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -585,6 +586,28 @@ class TestCleanupLockLogging:
         (message,) = [c.args[0] for c in logger.warning.call_args_list]
         assert "locked" not in message
         assert message.endswith("Retrying in 0 s.")
+
+    def test_a_lookup_that_cannot_even_import_does_not_abort_cleanup(self, tmp_path: Path) -> None:
+        # GIVEN: the Restart Manager module fails to import, as when rstrtmgr.dll
+        # cannot be loaded, and a file that is undeletable for one pass
+        d = TempDir(dir=tmp_path)
+        locked = d.path / "locked.bin"
+        locked.write_text("x")
+        logger = MagicMock()
+
+        # WHEN
+        with (
+            patch.dict(sys.modules, {"openjd.sessions._win32._file_locks": None}),
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=_rmtree_failing_on(locked, 1)),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0,)),
+        ):
+            d.cleanup(logger=logger)
+
+        # THEN: the retry still ran, and the warning says why holders are unknown
+        assert not d.path.exists()
+        (message,) = [c.args[0] for c in logger.warning.call_args_list]
+        assert "could not be determined: ModuleNotFoundError" in message
 
     def test_posix_logs_nothing_extra(self, tmp_path: Path) -> None:
         d = TempDir(dir=tmp_path)
