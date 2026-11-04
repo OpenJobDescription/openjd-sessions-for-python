@@ -13,10 +13,11 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from openjd.sessions._logging import LogContent
 from openjd.sessions._os_checker import is_posix, is_windows
 from openjd.sessions._tempdir import (
     _CLEANUP_RETRY_DELAYS_SECONDS,
@@ -273,6 +274,7 @@ class TestCleanupErrorReporting:
         with (
             patch("openjd.sessions._tempdir.os.unlink", side_effect=boom),
             patch("openjd.sessions._tempdir.os.remove", side_effect=boom, create=True),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", ()),
         ):
             with pytest.raises(RuntimeError) as excinfo:
                 d.cleanup()
@@ -446,6 +448,165 @@ class TestCleanupRetry:
 
         # THEN
         assert "locked.bin" in str(excinfo.value)
+
+    @pytest.mark.skipif(not is_windows(), reason="Windows mandatory file locking")
+    def test_windows_failed_attempt_names_this_process_as_the_holder(self, tmp_path: Path) -> None:
+        # GIVEN: a file this process holds open for the whole cleanup
+        d = TempDir(dir=tmp_path)
+        held = open(d.path / "locked.bin", "wb")
+        logger = MagicMock()
+
+        # WHEN
+        try:
+            with patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.1,)):
+                with pytest.raises(RuntimeError):
+                    d.cleanup(logger=logger)
+        finally:
+            held.close()
+
+        # THEN: one warning per failed attempt, each naming the file and this process
+        messages = [c.args[0] for c in logger.warning.call_args_list]
+        assert len(messages) == 2
+        for message in messages:
+            assert "locked.bin" in message
+            assert "locked open by: " in message
+            assert f"(pid {os.getpid()})" in message
+        assert messages[0].endswith("Retrying in 0.1 s.")
+        assert messages[1].endswith("Giving up.")
+
+
+def _rmtree_failing_on(path: Path, fail_count: int) -> Any:
+    """Like `_rmtree_failing_first`, but reports `path` (a real file) as undeletable."""
+    real_rmtree = shutil.rmtree
+    calls = {"n": 0}
+
+    def fake(root: Any, *args: Any, **kwargs: Any) -> None:
+        calls["n"] += 1
+        if calls["n"] <= fail_count:
+            error = PermissionError(32, "The process cannot access the file", str(path))
+            if "onexc" in kwargs:
+                kwargs["onexc"](os.unlink, str(path), error)
+            else:
+                kwargs["onerror"](os.unlink, str(path), (type(error), error, None))
+            return
+        real_rmtree(root, *args, **kwargs)
+
+    return fake
+
+
+class TestCleanupLockLogging:
+    """Each failed Windows attempt is logged so an operator can see which files are
+    still locked and which process holds them."""
+
+    def test_retry_delays_double_from_one_second(self) -> None:
+        assert _CLEANUP_RETRY_DELAYS_SECONDS == (1.0, 2.0, 4.0, 8.0, 16.0)
+
+    def test_each_failed_attempt_is_logged_with_files_holders_and_next_delay(
+        self, tmp_path: Path
+    ) -> None:
+        # GIVEN: a file that cannot be deleted for two passes, held by two processes
+        d = TempDir(dir=tmp_path)
+        locked = d.path / "sub" / "locked.bin"
+        locked.parent.mkdir()
+        locked.write_text("x")
+        holders = [(42, "UnrealShaderCompileWorker.exe"), (42, "dup"), (7, "p4.exe")]
+        logger = MagicMock()
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=_rmtree_failing_on(locked, 2)),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0, 4.0, 8.0)),
+            patch("openjd.sessions._tempdir.time.sleep"),
+            patch(
+                "openjd.sessions._tempdir._find_lock_holders", return_value=(holders, None)
+            ) as find,
+        ):
+            d.cleanup(logger=logger)
+
+        # THEN: two warnings, then success; the lookup was given the locked file
+        assert not d.path.exists()
+        find.assert_called_with([str(locked)])
+        messages = [c.args[0] for c in logger.warning.call_args_list]
+        sub_locked = str(Path("sub") / "locked.bin")
+        assert messages == [
+            f"Could not delete temporary directory {d.path}: The process cannot access the file."
+            f" 1 file(s) could not be deleted, including {sub_locked}. Files are still locked"
+            f" open by: UnrealShaderCompileWorker.exe (pid 42), p4.exe (pid 7). Retrying in {r} s."
+            for r in ("0", "4")
+        ]
+        extra = logger.warning.call_args.kwargs["extra"]
+        assert LogContent.PROCESS_CONTROL in extra["openjd_log_content"]
+
+    def test_last_failed_attempt_says_giving_up_and_reports_lookup_errors(
+        self, tmp_path: Path
+    ) -> None:
+        # GIVEN: a file that can never be deleted, and a lookup that fails
+        d = TempDir(dir=tmp_path)
+        locked = d.path / "locked.bin"
+        locked.write_text("x")
+        logger = MagicMock()
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=_rmtree_failing_on(locked, 99)),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0,)),
+            patch(
+                "openjd.sessions._tempdir._find_lock_holders",
+                return_value=([], "RmGetList failed (5)"),
+            ),
+        ):
+            with pytest.raises(RuntimeError):
+                d.cleanup(logger=logger)
+
+        # THEN
+        messages = [c.args[0] for c in logger.warning.call_args_list]
+        assert len(messages) == 2
+        assert "could not be determined: RmGetList failed (5)." in messages[1]
+        assert messages[1].endswith("Giving up.")
+
+    def test_no_holder_lookup_when_only_directories_failed(self, tmp_path: Path) -> None:
+        # GIVEN: a deletion failing on the directory itself, not a file
+        d = TempDir(dir=tmp_path)
+        logger = MagicMock()
+
+        # WHEN
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=_rmtree_failing_first(1)),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0,)),
+            patch("openjd.sessions._tempdir._find_lock_holders") as find,
+        ):
+            d.cleanup(logger=logger)
+
+        # THEN
+        find.assert_not_called()
+        (message,) = [c.args[0] for c in logger.warning.call_args_list]
+        assert "locked" not in message
+        assert message.endswith("Retrying in 0 s.")
+
+    def test_posix_logs_nothing_extra(self, tmp_path: Path) -> None:
+        d = TempDir(dir=tmp_path)
+        logger = MagicMock()
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=False),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=_rmtree_failing_first(99)),
+        ):
+            with pytest.raises(RuntimeError):
+                d.cleanup(logger=logger)
+        logger.warning.assert_not_called()
+
+    def test_defaults_to_the_module_logger(self, tmp_path: Path) -> None:
+        d = TempDir(dir=tmp_path)
+        with (
+            patch("openjd.sessions._tempdir.is_windows", return_value=True),
+            patch("openjd.sessions._tempdir.rmtree", side_effect=_rmtree_failing_first(1)),
+            patch("openjd.sessions._tempdir._CLEANUP_RETRY_DELAYS_SECONDS", (0.0,)),
+            patch("openjd.sessions._tempdir.LOG") as log,
+        ):
+            d.cleanup()
+        log.warning.assert_called_once()
 
 
 @pytest.mark.skipif(not is_posix(), reason="symlink swap and fchmod semantics are POSIX here")
