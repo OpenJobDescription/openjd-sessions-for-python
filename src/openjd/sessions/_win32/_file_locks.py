@@ -6,9 +6,8 @@ Used only to explain a failed cleanup in the log, so every failure here is
 raised as OSError for the caller to report, and never stops the cleanup.
 """
 
-import ctypes
 import sys
-from ctypes import POINTER, Structure, byref
+from ctypes import POINTER, Structure, WinDLL, byref, c_int, create_unicode_buffer
 from ctypes.wintypes import BOOL, DWORD, FILETIME, LPCWSTR, LPDWORD, LPWSTR, UINT, ULONG, WCHAR
 from typing import NamedTuple, Sequence
 
@@ -34,14 +33,14 @@ class RM_PROCESS_INFO(Structure):
         ("Process", RM_UNIQUE_PROCESS),
         ("strAppName", WCHAR * (CCH_RM_MAX_APP_NAME + 1)),
         ("strServiceShortName", WCHAR * (CCH_RM_MAX_SVC_NAME + 1)),
-        ("ApplicationType", ctypes.c_int),
+        ("ApplicationType", c_int),
         ("AppStatus", ULONG),
         ("TSSessionId", DWORD),
         ("bRestartable", BOOL),
     ]
 
 
-rstrtmgr = ctypes.WinDLL("rstrtmgr")
+rstrtmgr = WinDLL("rstrtmgr")
 
 # https://learn.microsoft.com/en-us/windows/win32/api/restartmanager/nf-restartmanager-rmstartsession
 rstrtmgr.RmStartSession.restype = DWORD
@@ -85,7 +84,7 @@ def processes_holding(files: Sequence[str]) -> list[FileHolder]:
     if not files:
         return []
     handle = DWORD()
-    key = ctypes.create_unicode_buffer(CCH_RM_SESSION_KEY + 1)
+    key = create_unicode_buffer(CCH_RM_SESSION_KEY + 1)
     rc = rstrtmgr.RmStartSession(byref(handle), 0, key)
     if rc != ERROR_SUCCESS:
         raise OSError(f"RmStartSession failed ({rc})")
