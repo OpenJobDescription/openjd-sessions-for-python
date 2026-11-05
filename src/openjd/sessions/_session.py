@@ -107,9 +107,9 @@ class SessionState(str, Enum):
 
     READY_ENDING = "ready_ending"
     """The state of a Session when it is ready to run only Environment End actions.
-    The Session has previously experienced an error or cancelation running
-    one of its actions, and is now only allowed to run Environment End actions to
-    clean up the Session context."""
+    The Session enters it after an action ends FAILED, CANCELED or TIMEOUT, or after
+    exit_environment is called without keep_session_running. It then only accepts
+    Environment exits and cleanup, and never returns to READY."""
 
     ENDED = "ended"
     """Terminal state of a Session that has ended and can no longer run any actions."""
@@ -1062,7 +1062,9 @@ class Session(object):
                     Value: Value for the environment variable.
             keep_session_running (bool): This overrides the default of requiring only environment exits after
                 the first exit_environment is called. The caller can set this to True in order to exit
-                the environments of a step and then run tasks from a different step.
+                the environments of a step and then run tasks from a different step. It has no effect
+                once an action has ended FAILED, CANCELED or TIMEOUT: the Session then stays in
+                READY_ENDING, and only accepts environment exits and cleanup.
             resolved_symtab (Optional[SerializedSymbolTable]): See
                 :meth:`enter_environment` for semantics. Pass the same table
                 the environment was entered with so its onExit resolves in
@@ -2531,6 +2533,8 @@ class Session(object):
         self._action_fail_message = message
         self._action_exit_code = None
         self._action_state = ActionState.FAILED
+        # Sessions are "brittle": a failed action means we can only exit the Session.
+        self._ending_only = True
         self._state = SessionState.READY_ENDING
         if self._callback:
             action_status = self.action_status
@@ -2590,9 +2594,12 @@ class Session(object):
 
         if state != ActionState.RUNNING:
             # Decide which between-action state to enter.
-            if self._ending_only or self._action_state != ActionState.SUCCESS:
+            if self._action_state != ActionState.SUCCESS:
                 # Sessions are "brittle". If there's a Task cancel or Failure then
-                # we can only exit the Session.
+                # we can only exit the Session, even if a later exit_environment
+                # passes keep_session_running=True.
+                self._ending_only = True
+            if self._ending_only:
                 self._state = SessionState.READY_ENDING
             else:
                 self._state = SessionState.READY
