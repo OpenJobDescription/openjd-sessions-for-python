@@ -7,7 +7,7 @@ raised as OSError for the caller to report, and never stops the cleanup.
 """
 
 import sys
-from ctypes import POINTER, Structure, WinDLL, byref, c_int, create_unicode_buffer
+from ctypes import POINTER, Structure, WinDLL, byref, c_int, create_unicode_buffer  # type: ignore
 from ctypes.wintypes import BOOL, DWORD, FILETIME, LPCWSTR, LPDWORD, LPWSTR, UINT, ULONG, WCHAR
 from typing import NamedTuple, Sequence
 
