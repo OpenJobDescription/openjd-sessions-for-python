@@ -109,7 +109,8 @@ class SessionState(str, Enum):
     """The state of a Session when it is ready to run only Environment End actions.
     The Session enters it after an action ends FAILED, CANCELED or TIMEOUT, or after
     exit_environment is called without keep_session_running. It then only accepts
-    Environment exits and cleanup, and never returns to READY."""
+    Environment exits and cleanup, and returns to READY only when the caller calls
+    Session.clear_ending_only()."""
 
     ENDED = "ended"
     """Terminal state of a Session that has ended and can no longer run any actions."""
@@ -727,6 +728,34 @@ class Session(object):
 
         runner.cancel(time_limit=time_limit, mark_action_failed=mark_action_failed)
 
+    def clear_ending_only(self) -> None:
+        """Take the Session out of ending-only mode, moving it from READY_ENDING back
+        to READY so that it accepts run_task, enter_environment and run_subprocess again.
+
+        Use with care. By default a Session is brittle: once an action ends FAILED,
+        CANCELED or TIMEOUT, or exit_environment is called without keep_session_running,
+        the Session only allows exiting the Environments it entered and cleanup. This
+        method is for callers that deliberately want to keep running work after that.
+        The caller takes responsibility for the Session's state: a failed or canceled
+        action can leave its work half done, and the Session neither checks nor undoes
+        any of it.
+
+        This is the only way from READY_ENDING back to READY;
+        exit_environment(keep_session_running=True) never does it. The method clears
+        ending-only mode whatever set it. It runs no action and changes nothing else:
+        the entered Environments, the last action's status and the environment
+        variables stay as they were.
+
+        Raises:
+            RuntimeError: If the Session is not in the READY_ENDING state.
+        """
+        if self.state != SessionState.READY_ENDING:
+            raise RuntimeError(
+                "Session must be in the READY_ENDING state to clear ending-only mode."
+            )
+        self._ending_only = False
+        self._state = SessionState.READY
+
     def _make_env_script_runner(
         self,
         *,
@@ -1060,11 +1089,14 @@ class Session(object):
                 by values defined in Environments.
                     Key: Environment variable name
                     Value: Value for the environment variable.
-            keep_session_running (bool): This overrides the default of requiring only environment exits after
-                the first exit_environment is called. The caller can set this to True in order to exit
-                the environments of a step and then run tasks from a different step. It has no effect
-                once an action has ended FAILED, CANCELED or TIMEOUT: the Session then stays in
-                READY_ENDING, and only accepts environment exits and cleanup.
+            keep_session_running (bool): By default, the first exit_environment makes the Session
+                ending-only, so it then only accepts environment exits and cleanup. Set this to True
+                to skip that for this exit, for example to exit the environments of a step and then
+                run tasks from a different step. A failing onExit action still makes the Session
+                ending-only, like any failed action. This never brings an ending-only Session back
+                to READY: once an action has ended FAILED, CANCELED or TIMEOUT, or an earlier exit
+                made the Session ending-only, it stays in READY_ENDING until the caller calls
+                clear_ending_only().
             resolved_symtab (Optional[SerializedSymbolTable]): See
                 :meth:`enter_environment` for semantics. Pass the same table
                 the environment was entered with so its onExit resolves in
@@ -2533,7 +2565,8 @@ class Session(object):
         self._action_fail_message = message
         self._action_exit_code = None
         self._action_state = ActionState.FAILED
-        # Sessions are "brittle": a failed action means we can only exit the Session.
+        # Sessions are "brittle": a failed action means we can only exit the Session,
+        # until the caller calls clear_ending_only().
         self._ending_only = True
         self._state = SessionState.READY_ENDING
         if self._callback:
@@ -2597,7 +2630,8 @@ class Session(object):
             if self._action_state != ActionState.SUCCESS:
                 # Sessions are "brittle". If there's a Task cancel or Failure then
                 # we can only exit the Session, even if a later exit_environment
-                # passes keep_session_running=True.
+                # passes keep_session_running=True, until the caller calls
+                # clear_ending_only().
                 self._ending_only = True
             if self._ending_only:
                 self._state = SessionState.READY_ENDING

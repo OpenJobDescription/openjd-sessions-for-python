@@ -1,8 +1,9 @@
 # Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 
 """Brittle sessions: once an action ends FAILED, CANCELED or TIMEOUT, the
-Session only accepts environment exits and cleanup, and it never returns to
-READY, whatever a later exit_environment passes as keep_session_running.
+Session only accepts environment exits, cleanup and clear_ending_only, and only
+clear_ending_only returns it to READY, whatever a later exit_environment passes
+as keep_session_running.
 """
 
 import time
@@ -283,3 +284,251 @@ class TestBrittleSession:
                 assert session.state == SessionState.READY
             else:
                 _assert_refuses_new_actions(session, python_exe)
+
+
+def _assert_accepts_new_actions(session: Session, python_exe: str) -> None:
+    """A task runs, and a new environment can be entered and exited. Leaves the
+    Session READY with the same environments entered as before."""
+    entered = session.environments_entered
+    session.run_task(
+        step_script=_step(_action(python_exe, "print('again')")),
+        task_parameter_values=_no_params(),
+    )
+    _wait(session)
+    assert session.action_status is not None
+    assert session.action_status.state == ActionState.SUCCESS
+    assert session.state == SessionState.READY
+
+    new_id = session.enter_environment(
+        environment=_env("New", on_enter=_action(python_exe, "print('new')"))
+    )
+    _wait(session)
+    assert session.action_status is not None
+    assert session.action_status.state == ActionState.SUCCESS
+    assert session.state == SessionState.READY
+    assert session.environments_entered == entered + (new_id,)
+
+    session.exit_environment(identifier=new_id, keep_session_running=True)
+    _wait(session)
+    assert session.state == SessionState.READY
+    assert session.environments_entered == entered
+
+
+def _var_env(
+    name: str, value: str, on_exit: Optional[Action_2023_09] = None
+) -> Environment_2023_09:
+    """An Environment that defines CLEAR_TEST_VAR=value, with an optional onExit."""
+    return Environment_2023_09(
+        name=name,
+        variables={"CLEAR_TEST_VAR": EnvironmentVariableValueString_2023_09(value)},
+        script=(
+            EnvironmentScript_2023_09(actions=EnvironmentActions_2023_09(onExit=on_exit))
+            if on_exit is not None
+            else None
+        ),
+    )
+
+
+def _assert_task_sees_var(session: Session, python_exe: str, value: str) -> None:
+    """A new task sees CLEAR_TEST_VAR=value, so the variables of the Environments
+    still entered reach new actions."""
+    session.run_task(
+        step_script=_step(
+            _action(
+                python_exe,
+                f"import os, sys; sys.exit(os.environ.get('CLEAR_TEST_VAR') != {value!r})",
+            )
+        ),
+        task_parameter_values=_no_params(),
+    )
+    _wait(session)
+    assert session.action_status is not None
+    assert session.action_status.state == ActionState.SUCCESS, f"CLEAR_TEST_VAR must be {value}"
+    assert session.state == SessionState.READY
+
+
+def _clear_and_check(session: Session) -> None:
+    """clear_ending_only() moves a READY_ENDING Session to READY without touching
+    the entered environments, the last action's status or the environment variables."""
+    assert session.state == SessionState.READY_ENDING
+    entered = session.environments_entered
+    status = session.action_status
+    env_vars = session._evaluate_current_session_env_vars()
+    session.clear_ending_only()
+    assert session.state == SessionState.READY
+    assert session.environments_entered == entered
+    assert session.action_status == status
+    assert session._evaluate_current_session_env_vars() == env_vars
+
+
+def _assert_clear_refused(session: Session) -> None:
+    state = session.state
+    entered = session.environments_entered
+    with pytest.raises(
+        RuntimeError,
+        match=r"^Session must be in the READY_ENDING state to clear ending-only mode\.$",
+    ):
+        session.clear_ending_only()
+    assert session.state == state
+    assert session.environments_entered == entered
+
+
+@serial_process
+class TestClearEndingOnly:
+    @pytest.mark.parametrize(
+        "ending", [ActionState.FAILED, ActionState.CANCELED, ActionState.TIMEOUT]
+    )
+    @pytest.mark.parametrize("exit_inner_first", [True, False])
+    def test_clear_after_task_ending(
+        self, python_exe: str, ending: ActionState, exit_inner_first: bool
+    ) -> None:
+        # GIVEN
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            outer = session.enter_environment(
+                environment=_var_env(
+                    "Outer", "outer", on_exit=_action(python_exe, "print('outer-exited')")
+                )
+            )
+            _wait(session)
+            inner = session.enter_environment(environment=_var_env("Inner", "inner"))
+            _wait(session)
+            _run_ending_task(session, python_exe, ending)
+            if exit_inner_first:
+                # keep_session_running=True alone leaves the Session ending-only.
+                session.exit_environment(identifier=inner, keep_session_running=True)
+                _wait(session)
+                assert session.state == SessionState.READY_ENDING
+                _assert_refuses_new_actions(session, python_exe)
+
+            # WHEN
+            _clear_and_check(session)
+
+            # THEN
+            expected = (outer,) if exit_inner_first else (outer, inner)
+            assert session.environments_entered == expected
+            # The variables of exactly the Environments still entered reach new
+            # actions: the exited inner one's override is gone, a kept one stays.
+            _assert_task_sees_var(session, python_exe, "outer" if exit_inner_first else "inner")
+            _assert_accepts_new_actions(session, python_exe)
+
+            # An exited environment stays exited, and the rest exit in LIFO order.
+            if exit_inner_first:
+                with pytest.raises(RuntimeError, match="Cannot exit unknown Environment"):
+                    session.exit_environment(identifier=inner, keep_session_running=True)
+            else:
+                session.exit_environment(identifier=inner, keep_session_running=True)
+                _wait(session)
+            session.exit_environment(identifier=outer)
+            _wait(session)
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS
+            assert session.state == SessionState.READY_ENDING
+            assert session.environments_entered == ()
+
+    @pytest.mark.parametrize("with_on_exit", [True, False])
+    def test_clear_after_default_exit(self, python_exe: str, with_on_exit: bool) -> None:
+        # GIVEN
+        on_exit = _action(python_exe, "print('bye')") if with_on_exit else None
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            outer = session.enter_environment(environment=_var_env("Outer", "outer"))
+            _wait(session)
+            inner = session.enter_environment(
+                environment=_var_env("Inner", "inner", on_exit=on_exit)
+            )
+            _wait(session)
+            session.exit_environment(identifier=inner)
+            _wait(session)
+            assert session.state == SessionState.READY_ENDING
+            _assert_refuses_new_actions(session, python_exe)
+
+            # WHEN
+            _clear_and_check(session)
+
+            # THEN
+            assert session.environments_entered == (outer,)
+            _assert_task_sees_var(session, python_exe, "outer")
+            _assert_accepts_new_actions(session, python_exe)
+
+    def test_clear_keeps_session_env_vars(self, python_exe: str) -> None:
+        # Variables given to the Session constructor survive the clear.
+        with Session(
+            session_id=uuid.uuid4().hex,
+            job_parameter_values=_no_params(),
+            os_env_vars={"CLEAR_TEST_VAR": "ctor"},
+        ) as session:
+            _run_ending_task(session, python_exe, ActionState.FAILED)
+            _clear_and_check(session)
+            _assert_task_sees_var(session, python_exe, "ctor")
+
+    def test_clear_then_fail_again(self, python_exe: str) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            env_id = session.enter_environment(environment=_env("Env"))
+            _wait(session)
+            _run_ending_task(session, python_exe, ActionState.FAILED)
+            _clear_and_check(session)
+
+            _run_ending_task(session, python_exe, ActionState.FAILED)
+            _assert_refuses_new_actions(session, python_exe)
+            session.exit_environment(identifier=env_id, keep_session_running=True)
+            _wait(session)
+            assert session.state == SessionState.READY_ENDING
+
+            _clear_and_check(session)
+            _assert_accepts_new_actions(session, python_exe)
+
+    def test_refused_in_ready(self, python_exe: str) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            _assert_clear_refused(session)
+
+            session.enter_environment(environment=_env("Env"))
+            _wait(session)
+            session.run_task(
+                step_script=_step(_action(python_exe, "print('ok')")),
+                task_parameter_values=_no_params(),
+            )
+            _wait(session)
+            assert session.state == SessionState.READY
+            _assert_clear_refused(session)
+            _assert_accepts_new_actions(session, python_exe)
+
+    def test_refused_while_running(self, python_exe: str) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session.run_task(
+                step_script=_step(_action(python_exe, "import time; time.sleep(30)")),
+                task_parameter_values=_no_params(),
+            )
+            assert session.state == SessionState.RUNNING
+            _assert_clear_refused(session)
+            session.cancel_action()
+            _wait(session)
+            assert session.state == SessionState.READY_ENDING
+
+    @pytest.mark.parametrize("forced", [SessionState.RUNNING, SessionState.CANCELING])
+    def test_refusal_keeps_ending_only(self, python_exe: str, forced: SessionState) -> None:
+        # A refused call must not clear ending-only mode. The state is forced
+        # because a failed Session can't start a real action.
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            _run_ending_task(session, python_exe, ActionState.FAILED)
+
+            session._state = forced
+            _assert_clear_refused(session)
+
+            # Still ending-only: a successful action settles to READY_ENDING.
+            session._state = SessionState.READY
+            session.run_task(
+                step_script=_step(_action(python_exe, "print('ok')")),
+                task_parameter_values=_no_params(),
+            )
+            _wait(session)
+            assert session.action_status is not None
+            assert session.action_status.state == ActionState.SUCCESS
+            assert session.state == SessionState.READY_ENDING
+
+    @pytest.mark.parametrize("make_ending_only", [True, False])
+    def test_refused_in_ended(self, python_exe: str, make_ending_only: bool) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            if make_ending_only:
+                _run_ending_task(session, python_exe, ActionState.FAILED)
+            session.cleanup()
+            assert session.state == SessionState.ENDED
+            _assert_clear_refused(session)
