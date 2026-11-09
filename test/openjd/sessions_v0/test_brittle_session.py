@@ -313,6 +313,12 @@ def _assert_accepts_new_actions(session: Session, python_exe: str) -> None:
     assert session.state == SessionState.READY
     assert session.environments_entered == entered
 
+    session.run_subprocess(command=python_exe, args=["-c", "pass"])
+    _wait(session)
+    assert session.action_status is not None
+    assert session.action_status.state == ActionState.SUCCESS
+    assert session.state == SessionState.READY
+
 
 def _var_env(
     name: str, value: str, on_exit: Optional[Action_2023_09] = None
@@ -459,6 +465,55 @@ class TestClearEndingOnly:
             _run_ending_task(session, python_exe, ActionState.FAILED)
             _clear_and_check(session)
             _assert_task_sees_var(session, python_exe, "ctor")
+
+    def test_clear_keeps_action_status(self, python_exe: str) -> None:
+        # The failing task reports progress, a status message and a fail
+        # message first, so the before/after comparison in _clear_and_check
+        # isn't between two Nones.
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session.run_task(
+                step_script=_step(
+                    _action(
+                        python_exe,
+                        "import sys; print('openjd_progress: 50'); "
+                        "print('openjd_status: halfway'); "
+                        "print('openjd_fail: clear-test failure'); sys.stdout.flush(); sys.exit(1)",
+                    )
+                ),
+                task_parameter_values=_no_params(),
+            )
+            _wait(session)
+            status = session.action_status
+            assert status is not None
+            assert status.state == ActionState.FAILED
+            assert status.progress == 50.0
+            assert status.status_message == "halfway"
+            assert status.fail_message is not None
+            assert status.exit_code is not None
+            assert session.state == SessionState.READY_ENDING
+
+            _clear_and_check(session)
+            _assert_accepts_new_actions(session, python_exe)
+
+    def test_clear_after_failure_before_start(self, python_exe: str) -> None:
+        # Ending-only set by _fail_action_before_start clears the same way.
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            env_id = session.enter_environment(environment=_var_env("Env", "env"))
+            _wait(session)
+            with patch.object(
+                session, "_materialize_path_mapping", side_effect=RuntimeError("boom")
+            ):
+                session.run_task(
+                    step_script=_step(_action(python_exe, "print('never runs')")),
+                    task_parameter_values=_no_params(),
+                )
+            assert session.action_status is not None
+            assert session.action_status.fail_message == "boom"
+
+            _clear_and_check(session)
+            assert session.environments_entered == (env_id,)
+            _assert_task_sees_var(session, python_exe, "env")
+            _assert_accepts_new_actions(session, python_exe)
 
     def test_clear_then_fail_again(self, python_exe: str) -> None:
         with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:

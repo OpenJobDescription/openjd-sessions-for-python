@@ -1092,11 +1092,11 @@ class Session(object):
             keep_session_running (bool): By default, the first exit_environment makes the Session
                 ending-only, so it then only accepts environment exits and cleanup. Set this to True
                 to skip that for this exit, for example to exit the environments of a step and then
-                run tasks from a different step. A failing onExit action still makes the Session
-                ending-only, like any failed action. This never brings an ending-only Session back
-                to READY: once an action has ended FAILED, CANCELED or TIMEOUT, or an earlier exit
-                made the Session ending-only, it stays in READY_ENDING until the caller calls
-                clear_ending_only().
+                run tasks from a different step. An onExit action that ends FAILED, CANCELED or
+                TIMEOUT still makes the Session ending-only, like any other action. This never
+                brings an ending-only Session back to READY: once an action has ended FAILED,
+                CANCELED or TIMEOUT, or an earlier exit made the Session ending-only, it stays in
+                READY_ENDING until the caller calls clear_ending_only().
             resolved_symtab (Optional[SerializedSymbolTable]): See
                 :meth:`enter_environment` for semantics. Pass the same table
                 the environment was entered with so its onExit resolves in
