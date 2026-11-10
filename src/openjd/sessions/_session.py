@@ -107,9 +107,10 @@ class SessionState(str, Enum):
 
     READY_ENDING = "ready_ending"
     """The state of a Session when it is ready to run only Environment End actions.
-    The Session has previously experienced an error or cancelation running
-    one of its actions, and is now only allowed to run Environment End actions to
-    clean up the Session context."""
+    The Session enters it after an action ends FAILED, CANCELED or TIMEOUT, or after
+    exit_environment is called without keep_session_running. It then only accepts
+    Environment exits and cleanup, and returns to READY only when the caller calls
+    Session.clear_ending_only()."""
 
     ENDED = "ended"
     """Terminal state of a Session that has ended and can no longer run any actions."""
@@ -251,6 +252,10 @@ class Session(object):
     """
 
     _state: SessionState
+    """The stored lifecycle state. It is never READY_ENDING: ending-only mode is
+    stored only in _ending_only, and the state property derives READY_ENDING
+    from READY plus that flag. Read the state through the property.
+    """
 
     _session_id: str
     """The application-provided id for this Session.
@@ -262,7 +267,10 @@ class Session(object):
 
     _ending_only: bool
     """The Session has previously experienced an error or cancelation of a running
-    action, and can only run Environment-end actions.
+    action, or exited an Environment without keep_session_running, and can only run
+    Environment-end actions. This flag is the only record of ending-only mode: it
+    persists through RUNNING, and the state property reports READY with it set as
+    READY_ENDING.
     """
 
     _environments: dict[
@@ -667,8 +675,21 @@ class Session(object):
 
     @property
     def state(self) -> SessionState:
-        """Fetch the current state of this Session."""
-        return self._state
+        """Fetch the current state of this Session.
+
+        READY_ENDING is derived, not stored: it is READY while the Session is
+        ending-only, so the state and the ending-only flag can't disagree.
+        """
+        # Read _state once. Another thread can store READY between two reads,
+        # and _ending_only is always set before READY is stored for a failed
+        # action, so a single read never reports READY for one. The flag is
+        # read second, so a reader that stays paused between the two reads
+        # while a whole failing action runs reports READY_ENDING a moment
+        # early, while _state is still RUNNING; it never reports READY late.
+        state = self._state
+        if state == SessionState.READY and self._ending_only:
+            return SessionState.READY_ENDING
+        return state
 
     @property
     def action_status(self) -> Optional[ActionStatus]:
@@ -726,6 +747,35 @@ class Session(object):
             return
 
         runner.cancel(time_limit=time_limit, mark_action_failed=mark_action_failed)
+
+    def clear_ending_only(self) -> None:
+        """Take the Session out of ending-only mode, moving it from READY_ENDING back
+        to READY so that it accepts run_task, enter_environment and run_subprocess again.
+
+        Use with care. By default a Session is brittle: once an action ends FAILED,
+        CANCELED or TIMEOUT, or exit_environment is called without keep_session_running,
+        the Session only allows exiting the Environments it entered and cleanup. This
+        method is for callers that deliberately want to keep running work after that.
+        The caller takes responsibility for the Session's state: a failed or canceled
+        action can leave its work half done, and the Session neither checks nor undoes
+        any of it.
+
+        This is the only way from READY_ENDING back to READY;
+        exit_environment(keep_session_running=True) never does it. The method clears
+        ending-only mode whatever set it. It runs no action and changes nothing else:
+        the entered Environments, the last action's status and the environment
+        variables stay as they were.
+
+        Raises:
+            RuntimeError: If the Session is not in the READY_ENDING state.
+        """
+        if self.state != SessionState.READY_ENDING:
+            raise RuntimeError(
+                "Session must be in the READY_ENDING state to clear ending-only mode."
+            )
+        # The stored state is already READY: clearing the flag is all that takes
+        # the Session from READY_ENDING to READY.
+        self._ending_only = False
 
     def _make_env_script_runner(
         self,
@@ -1060,9 +1110,14 @@ class Session(object):
                 by values defined in Environments.
                     Key: Environment variable name
                     Value: Value for the environment variable.
-            keep_session_running (bool): This overrides the default of requiring only environment exits after
-                the first exit_environment is called. The caller can set this to True in order to exit
-                the environments of a step and then run tasks from a different step.
+            keep_session_running (bool): By default, the first exit_environment makes the Session
+                ending-only, so it then only accepts environment exits and cleanup. Set this to True
+                to skip that for this exit, for example to exit the environments of a step and then
+                run tasks from a different step. An onExit action that ends FAILED, CANCELED or
+                TIMEOUT still makes the Session ending-only, like any other action. This never
+                brings an ending-only Session back to READY: once an action has ended FAILED,
+                CANCELED or TIMEOUT, or an earlier exit made the Session ending-only, it stays in
+                READY_ENDING until the caller calls clear_ending_only().
             resolved_symtab (Optional[SerializedSymbolTable]): See
                 :meth:`enter_environment` for semantics. Pass the same table
                 the environment was entered with so its onExit resolves in
@@ -2531,7 +2586,11 @@ class Session(object):
         self._action_fail_message = message
         self._action_exit_code = None
         self._action_state = ActionState.FAILED
-        self._state = SessionState.READY_ENDING
+        # Sessions are "brittle": a failed action means we can only exit the Session,
+        # until the caller calls clear_ending_only(). Set the flag before storing
+        # READY, so the state property never reports READY for a failed action.
+        self._ending_only = True
+        self._state = SessionState.READY
         if self._callback:
             action_status = self.action_status
             # R5-6: a plain check, not `assert` -- `_action_state` is assigned
@@ -2590,12 +2649,15 @@ class Session(object):
 
         if state != ActionState.RUNNING:
             # Decide which between-action state to enter.
-            if self._ending_only or self._action_state != ActionState.SUCCESS:
+            if self._action_state != ActionState.SUCCESS:
                 # Sessions are "brittle". If there's a Task cancel or Failure then
-                # we can only exit the Session.
-                self._state = SessionState.READY_ENDING
-            else:
-                self._state = SessionState.READY
+                # we can only exit the Session, even if a later exit_environment
+                # passes keep_session_running=True, until the caller calls
+                # clear_ending_only().
+                self._ending_only = True
+            # The stored state is READY either way. The state property reports
+            # READY_ENDING while _ending_only is set, so the flag is set first.
+            self._state = SessionState.READY
 
         if self._callback and action_status is not None:
             self._callback(self._session_id, action_status)
