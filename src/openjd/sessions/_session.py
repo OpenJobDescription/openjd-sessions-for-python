@@ -680,9 +680,13 @@ class Session(object):
         READY_ENDING is derived, not stored: it is READY while the Session is
         ending-only, so the state and the ending-only flag can't disagree.
         """
-        if self._state == SessionState.READY and self._ending_only:
+        # Read _state once. Another thread can store READY between two reads,
+        # and _ending_only is always set before READY is stored for a failed
+        # action, so a single read never reports READY for one.
+        state = self._state
+        if state == SessionState.READY and self._ending_only:
             return SessionState.READY_ENDING
-        return self._state
+        return state
 
     @property
     def action_status(self) -> Optional[ActionStatus]:
