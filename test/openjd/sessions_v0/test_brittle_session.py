@@ -693,3 +693,25 @@ class TestEndingOnlyStoredInFlag:
             session._fail_action_before_start("setup failed")
             session.__class__ = Session
         assert writes == [("_ending_only", True), ("_state", SessionState.READY)]
+
+    def test_default_exit_that_raises_leaves_ready_ending(self, python_exe: str) -> None:
+        # exit_environment without keep_session_running makes the Session
+        # ending-only before it stores RUNNING. If it raises in between, the
+        # Session reads READY_ENDING and refuses new work, as the exit asked.
+        # (Before ending-only mode was stored only in the flag, it read READY
+        # here and accepted run_task.) Calls with correctly typed arguments
+        # don't raise there, so the failure is injected.
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            identifier = session.enter_environment(environment=_env("Env"))
+            _wait(session)
+            assert session.state == SessionState.READY
+
+            with patch.object(
+                session, "_evaluate_current_session_env_vars", side_effect=RuntimeError("boom")
+            ):
+                with pytest.raises(RuntimeError, match="^boom$"):
+                    session.exit_environment(identifier=identifier)
+
+            assert session._state == SessionState.READY
+            assert session.state == SessionState.READY_ENDING
+            _assert_refuses_new_actions(session, python_exe)
