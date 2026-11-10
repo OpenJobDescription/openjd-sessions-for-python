@@ -9,7 +9,7 @@ as keep_session_running.
 import time
 import uuid
 from typing import Optional
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -637,3 +637,59 @@ class TestEndingOnlyStoredInFlag:
             assert session._state == SessionState.READY
             assert session._ending_only
             assert session.state == SessionState.READY_ENDING
+
+    def test_poller_never_sees_ready_for_a_failed_action(self) -> None:
+        # The action callback runs on another thread. Run it at the worst
+        # moment for a reader of the state property: right after the
+        # property's read of _state. The property must report the state
+        # before or after the callback, never READY for the failed action.
+        class _CallbackDuringRead(Session):
+            armed = False
+
+            def __getattribute__(self, name: str):
+                value = object.__getattribute__(self, name)
+                if name == "_state" and object.__getattribute__(self, "armed"):
+                    object.__setattr__(self, "armed", False)
+                    object.__getattribute__(self, "_action_callback")(ActionState.FAILED)
+                return value
+
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session._runner = MagicMock(exit_code=1)
+            session._action_state = ActionState.RUNNING
+            session._state = SessionState.RUNNING
+            session.__class__ = _CallbackDuringRead
+            session.armed = True  # type: ignore[attr-defined]
+
+            assert session.state == SessionState.RUNNING
+            assert session.state == SessionState.READY_ENDING
+            session._runner = None
+            session.__class__ = Session
+
+    def test_flag_set_before_ready_is_stored(self, python_exe: str) -> None:
+        # A reader on another thread can't see READY for a failed action
+        # only if _ending_only is set before READY is stored.
+        writes: list[tuple[str, object]] = []
+
+        class _RecordWrites(Session):
+            def __setattr__(self, name: str, value: object) -> None:
+                if name in ("_state", "_ending_only"):
+                    writes.append((name, value))
+                super().__setattr__(name, value)
+
+        # A failed action, through _action_callback.
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session.__class__ = _RecordWrites
+            _run_ending_task(session, python_exe, ActionState.FAILED)
+            session.__class__ = Session
+        settle = writes.index(
+            ("_state", SessionState.READY), writes.index(("_state", SessionState.RUNNING))
+        )
+        assert ("_ending_only", True) in writes[:settle]
+
+        # A failure before the action starts, through _fail_action_before_start.
+        writes.clear()
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session.__class__ = _RecordWrites
+            session._fail_action_before_start("setup failed")
+            session.__class__ = Session
+        assert writes == [("_ending_only", True), ("_state", SessionState.READY)]
