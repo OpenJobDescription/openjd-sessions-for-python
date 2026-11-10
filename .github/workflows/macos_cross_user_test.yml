@@ -33,10 +33,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Matches code_quality.yml: requires-python is >=3.9, and the boundary
-        # versions are where an interpreter-specific difference in the setsid shim
-        # or in sys._base_executable resolution would surface.
-        python-version: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14']
+        # Matches code_quality.yml. The boundary versions are where an
+        # interpreter-specific difference in the setsid shim or in
+        # sys._base_executable resolution would surface.
+        python-version: ['3.10', '3.11', '3.12', '3.13', '3.14']
     steps:
       - uses: actions/checkout@v7
 
@@ -45,11 +45,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install hatch
-        # virtualenv 21 removed virtualenv.discovery.builtin.propose_interpreters, which
-        # the hatch version resolvable on 3.9 still calls, so `hatch env create` fails with
-        # "Environment `default` is incompatible". Pin it for 3.9 only and leave 3.10+ on
-        # current virtualenv. Same constraint the other workflows in this repo use.
-        run: pip install --upgrade hatch 'virtualenv<21; python_version < "3.10"'
+        run: pip install --upgrade hatch
 
       - name: Provision, run cross-user tests, and tear down
         # --keep skips the teardown: the runner is throwaway, so leaving the
