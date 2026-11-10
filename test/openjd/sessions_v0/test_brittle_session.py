@@ -568,15 +568,8 @@ class TestClearEndingOnly:
             session._state = forced
             _assert_clear_refused(session)
 
-            # Still ending-only: a successful action settles to READY_ENDING.
+            # Still ending-only: forced back to READY, it reports READY_ENDING.
             session._state = SessionState.READY
-            session.run_task(
-                step_script=_step(_action(python_exe, "print('ok')")),
-                task_parameter_values=_no_params(),
-            )
-            _wait(session)
-            assert session.action_status is not None
-            assert session.action_status.state == ActionState.SUCCESS
             assert session.state == SessionState.READY_ENDING
 
     @pytest.mark.parametrize("make_ending_only", [True, False])
@@ -587,3 +580,60 @@ class TestClearEndingOnly:
             session.cleanup()
             assert session.state == SessionState.ENDED
             _assert_clear_refused(session)
+
+
+@serial_process
+class TestEndingOnlyStoredInFlag:
+    """Ending-only mode is stored only in Session._ending_only. The state
+    property derives READY_ENDING from a stored READY plus the flag, so the
+    stored state is never READY_ENDING."""
+
+    @pytest.mark.parametrize(
+        "stored",
+        [SessionState.READY, SessionState.RUNNING, SessionState.CANCELING, SessionState.ENDED],
+    )
+    @pytest.mark.parametrize("ending_only", [True, False])
+    def test_state_derives_ready_ending(self, stored: SessionState, ending_only: bool) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session._state = stored
+            session._ending_only = ending_only
+            expected = (
+                SessionState.READY_ENDING
+                if stored == SessionState.READY and ending_only
+                else stored
+            )
+            assert session.state == expected
+
+    def test_failed_action_stores_ready(self, python_exe: str) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            _run_ending_task(session, python_exe, ActionState.FAILED)
+            assert session._state == SessionState.READY
+            assert session._ending_only
+
+            # The error names the derived state.
+            with pytest.raises(RuntimeError, match="Current state: ready_ending$"):
+                session.run_subprocess(command=python_exe, args=["-c", "pass"])
+
+            session.clear_ending_only()
+            assert session._state == SessionState.READY
+            assert not session._ending_only
+            assert session.state == SessionState.READY
+
+    def test_failure_before_start_stores_ready(self, python_exe: str) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            session._fail_action_before_start("setup failed")
+            assert session._state == SessionState.READY
+            assert session._ending_only
+            assert session.state == SessionState.READY_ENDING
+
+    def test_default_exit_stores_ready(self, python_exe: str) -> None:
+        with Session(session_id=uuid.uuid4().hex, job_parameter_values=_no_params()) as session:
+            identifier = session.enter_environment(
+                environment=_env("Env", on_exit=_action(python_exe, "pass"))
+            )
+            _wait(session)
+            session.exit_environment(identifier=identifier)
+            _wait(session)
+            assert session._state == SessionState.READY
+            assert session._ending_only
+            assert session.state == SessionState.READY_ENDING

@@ -252,6 +252,10 @@ class Session(object):
     """
 
     _state: SessionState
+    """The stored lifecycle state. It is never READY_ENDING: ending-only mode is
+    stored only in _ending_only, and the state property derives READY_ENDING
+    from READY plus that flag. Read the state through the property.
+    """
 
     _session_id: str
     """The application-provided id for this Session.
@@ -263,7 +267,10 @@ class Session(object):
 
     _ending_only: bool
     """The Session has previously experienced an error or cancelation of a running
-    action, and can only run Environment-end actions.
+    action, or exited an Environment without keep_session_running, and can only run
+    Environment-end actions. This flag is the only record of ending-only mode: it
+    persists through RUNNING, and the state property reports READY with it set as
+    READY_ENDING.
     """
 
     _environments: dict[
@@ -668,7 +675,13 @@ class Session(object):
 
     @property
     def state(self) -> SessionState:
-        """Fetch the current state of this Session."""
+        """Fetch the current state of this Session.
+
+        READY_ENDING is derived, not stored: it is READY while the Session is
+        ending-only, so the state and the ending-only flag can't disagree.
+        """
+        if self._state == SessionState.READY and self._ending_only:
+            return SessionState.READY_ENDING
         return self._state
 
     @property
@@ -753,8 +766,9 @@ class Session(object):
             raise RuntimeError(
                 "Session must be in the READY_ENDING state to clear ending-only mode."
             )
+        # The stored state is already READY: clearing the flag is all that takes
+        # the Session from READY_ENDING to READY.
         self._ending_only = False
-        self._state = SessionState.READY
 
     def _make_env_script_runner(
         self,
@@ -2566,9 +2580,10 @@ class Session(object):
         self._action_exit_code = None
         self._action_state = ActionState.FAILED
         # Sessions are "brittle": a failed action means we can only exit the Session,
-        # until the caller calls clear_ending_only().
+        # until the caller calls clear_ending_only(). Set the flag before storing
+        # READY, so the state property never reports READY for a failed action.
         self._ending_only = True
-        self._state = SessionState.READY_ENDING
+        self._state = SessionState.READY
         if self._callback:
             action_status = self.action_status
             # R5-6: a plain check, not `assert` -- `_action_state` is assigned
@@ -2633,10 +2648,9 @@ class Session(object):
                 # passes keep_session_running=True, until the caller calls
                 # clear_ending_only().
                 self._ending_only = True
-            if self._ending_only:
-                self._state = SessionState.READY_ENDING
-            else:
-                self._state = SessionState.READY
+            # The stored state is READY either way. The state property reports
+            # READY_ENDING while _ending_only is set, so the flag is set first.
+            self._state = SessionState.READY
 
         if self._callback and action_status is not None:
             self._callback(self._session_id, action_status)
