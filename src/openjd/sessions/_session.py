@@ -682,7 +682,10 @@ class Session(object):
         """
         # Read _state once. Another thread can store READY between two reads,
         # and _ending_only is always set before READY is stored for a failed
-        # action, so a single read never reports READY for one.
+        # action, so a single read never reports READY for one. The flag is
+        # read second, so a reader that stays paused between the two reads
+        # while a whole failing action runs reports READY_ENDING a moment
+        # early, while _state is still RUNNING; it never reports READY late.
         state = self._state
         if state == SessionState.READY and self._ending_only:
             return SessionState.READY_ENDING
