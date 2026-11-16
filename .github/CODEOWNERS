@@ -1,4 +1,4 @@
-* @OpenJobDescription/Developers
+* @OpenJobDescription/sync-team-openjd-developers
 
 # Allow automated approvals for release dependency updates.
 /requirements-release.txt
