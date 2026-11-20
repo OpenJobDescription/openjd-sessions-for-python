@@ -2,33 +2,16 @@
 from __future__ import annotations
 
 from typing import Any, MutableMapping, TypedDict
-from enum import Flag, auto
 import logging
+
+from .._logging import LogContent
 
 __all__ = ["LOG", "LoggerAdapter", "LogExtraInfo", "LogContent"]
 
-
-class LogContent(Flag):
-    """
-    A Flag Enum which describes the content of a log record.
-    """
-
-    BANNER = auto()  # Logs which contain a banner, such as to visually seperate log sections
-    FILE_PATH = auto()  # Logs which contain a filepath
-    FILE_CONTENTS = auto()  # Logs which contain the contents of a file
-    COMMAND_OUTPUT = auto()  # Logs which contain the output of a command run
-    EXCEPTION_INFO = (
-        auto()
-    )  # Logs which contain an exception openjd encountered, potentially including sensitive information such as filepaths or host information.
-    PROCESS_CONTROL = (
-        auto()
-    )  # Logs which contain information related to starting, killing, or signalling processes.
-    PARAMETER_INFO = (
-        auto()
-    )  # Logs which contain details about parameters and their values pertaining to the running action
-    HOST_INFO = (
-        auto()
-    )  # Logs which contain details about the system environment, e.g. dependency versions, OS name, CPU architecture.
+# LogContent is the public openjd.sessions.LogContent class, not a second Flag enum
+# with the same members. Consumers route records on the LOG logger by type-checking
+# `record.openjd_log_content` against openjd.sessions.LogContent, and enum.Flag
+# comparisons are class-scoped, so a duplicate class would fail that check.
 
 
 class LogExtraInfo(TypedDict):
@@ -82,8 +65,58 @@ if there is no applicable LogContent field (for example, a message like "Ending 
 If the LogRecord does not have the "openjd_log_content" no guarantees are made as to what content
 is in the LogRecord. LogRecords that contain LogContent.EXECPTION_INFO may also transitively include
 potentially sensitive information like filepaths or host info due to the nature of exception messages.
+
+LogRecords emitted by the Rust-backed session runtime additionally carry a "session_id" (str) and
+an "openjd_timestamp_usec" (int). pyo3-log delivers all structured fields to Python as strings, so
+importing openjd.sessions._v1 installs a filter on this logger that converts "openjd_log_content"
+back to a LogContent and "openjd_timestamp_usec" back to an int before any handler sees the record.
 """
 LOG.setLevel(logging.INFO)
+
+
+class _RustLogRecordNormalizingFilter(logging.Filter):
+    """Restores the Python types of the structured fields on Rust-emitted records.
+
+    The Rust session runtime tags each record it emits with ``session_id`` (str),
+    ``openjd_log_content`` (a LogContent bitmask as an unsigned integer) and
+    ``openjd_timestamp_usec`` (unsigned integer). pyo3-log renders every value
+    with its Rust ``Display`` and passes the strings as ``extra`` to
+    ``Logger.makeRecord``, so ``openjd_log_content`` arrives as e.g. "8" and the
+    timestamp as a decimal string; pyo3-log has no hook to keep the types.
+
+    Installed on the logger, not on a handler: pyo3-log delivers records with
+    ``Logger.handle()``, which runs the logger's filters before any handler (and
+    any handler-level filter) sees the record. Values this LogContent cannot
+    represent (e.g. a bit added by a newer runtime) are left as they arrived.
+    The filter never drops a record.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # Rust formats these unsigned integers as plain decimal digits. Only
+        # convert that form: int() would also accept signs and whitespace, and
+        # a negative value would become a LogContent complement rather than an
+        # error.
+        content = getattr(record, "openjd_log_content", None)
+        if isinstance(content, str) and content.isdigit():
+            try:
+                setattr(record, "openjd_log_content", LogContent(int(content)))
+            except ValueError:
+                pass
+        timestamp = getattr(record, "openjd_timestamp_usec", None)
+        if isinstance(timestamp, str) and timestamp.isdigit():
+            setattr(record, "openjd_timestamp_usec", int(timestamp))
+        return True
+
+
+def _install_rust_log_record_normalizing_filter(logger: logging.Logger) -> None:
+    """Install one _RustLogRecordNormalizingFilter on ``logger``; idempotent."""
+    if not any(isinstance(f, _RustLogRecordNormalizingFilter) for f in logger.filters):
+        logger.addFilter(_RustLogRecordNormalizingFilter())
+
+
+# openjd.sessions._v1 imports this module before the modules that load the Rust
+# extension, so the filter is in place before the runtime emits its first record.
+_install_rust_log_record_normalizing_filter(LOG)
 
 _banner_log_extra = LogExtraInfo(openjd_log_content=LogContent.BANNER)
 
