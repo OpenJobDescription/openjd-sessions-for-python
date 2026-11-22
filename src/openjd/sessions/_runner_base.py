@@ -510,6 +510,25 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
     ``Env.File.*``/``Task.File.*`` and a file's ``data`` may reference
     let-bound values (mirroring openjd-rs's runner ordering).
 
+    Every binding in ``let_bindings`` is session scope, so there is one scope
+    here and one format: PATH-typed results render in the engine's default
+    format, which is the host's. A step's *template*-scope ``let`` does not
+    appear in this list — openjd-model resolves it once at job creation and its
+    values travel to the session in the step symbol table, reaching ``symtab``
+    through ``Step.resolved_symtab``
+    (:meth:`Session._resolved_base_entries`) already resolved and deserialized
+    into the host's format.
+
+    That division matters because the two are not interchangeable. A
+    template-scope value is frozen at creation with ``PathFormat::Posix`` so it
+    cannot depend on the host that created the job, and re-deriving one here
+    would re-render its PATH values — on Windows
+    ``startswith(path("/foo/bar"), "/foo")`` flips from ``true`` to ``false``.
+    Both a seeded value and a re-evaluated one would land in this same table, so
+    a re-evaluation would also *win*, overwriting the correctly-formatted seeded
+    value. Nothing in a session re-evaluates a step's bindings; it reads the
+    resolved ones.
+
     Raises:
         ValueError (FormatStringError/ExpressionError): if a binding's
             expression cannot be evaluated, or if a binding is too long to
@@ -527,7 +546,10 @@ def apply_let_bindings(*, symtab: SymbolTable, let_bindings: list[str]) -> None:
                 f"which exceeds the maximum of {MAX_LET_BINDING_LENGTH}"
             )
     # Single-sourced in openjd.model (parse-memoized; skips malformed
-    # bindings; raises ValueError naming the failing binding).
+    # bindings; raises ValueError naming the failing binding). No `path_format`
+    # kwarg: the engine default is the host's format, which is the only format a
+    # session evaluates in, and the parameter does not exist on openjd-model at
+    # this package's declared floor (>= 0.11.6).
     evaluate_let_bindings(symtab=symtab, let_bindings=let_bindings)
 
 
