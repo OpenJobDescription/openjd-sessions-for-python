@@ -603,7 +603,7 @@ class Session(object):
                     # Note: Blocking call until the process has exited
                     _subprocess.run()
 
-                self._working_dir.cleanup()
+                self._working_dir.cleanup(logger=self._logger)
             except RuntimeError as exc:
                 # Warn if we couldn't cleanup the temporary files for some reason.
                 self._logger.exception(

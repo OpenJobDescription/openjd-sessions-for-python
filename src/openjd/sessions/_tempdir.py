@@ -3,7 +3,8 @@
 import os
 import stat
 import sys
-from ._logging import LoggerAdapter, LogContent, LogExtraInfo
+import time
+from ._logging import LOG, LoggerAdapter, LogContent, LogExtraInfo
 from pathlib import Path
 from shutil import rmtree
 from ._embedded_files import chown_group
@@ -31,6 +32,69 @@ traversal, not read access to any session's contents.
 Applied explicitly rather than left to the process umask so that the resulting
 mode does not depend on how the embedding application happens to be configured.
 """
+
+_CLEANUP_RETRY_DELAYS_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0, 8.0, 16.0)
+"""Seconds to wait before each retry of a failed Windows cleanup: about 31 s in total.
+
+Windows refuses to delete a file or directory while any process holds a handle to
+it, and a child process that has exited or been terminated can still hold handles
+for a while. POSIX does not retry: a failure there is a permission problem that
+waiting will not fix.
+"""
+
+_MAX_FILES_TO_INSPECT = 256
+"""Most files a failed cleanup inspects to find what is still holding them."""
+
+_MAX_FILES_TO_NAME = 3
+"""Most undeletable file names a failed-attempt log line lists."""
+
+
+def _find_lock_holders(files: list[str]) -> tuple[list[tuple[int, str]], Optional[str]]:
+    """The (pid, name) of each process holding any of ``files`` open, and the
+    reason the lookup failed if it did. Windows only.
+
+    Never raises: the result only feeds a log line, and an exception here would
+    abort the cleanup it is explaining.
+    """
+    try:
+        from ._win32._file_locks import processes_holding  # type: ignore
+
+        return [(h.pid, h.name) for h in processes_holding(files)], None
+    except Exception as err:
+        return [], f"{type(err).__name__}: {err}"
+
+
+def _describe_failed_attempt(
+    dir: Path,
+    error: BaseException,
+    files: list[str],
+    holders: list[tuple[int, str]],
+    holders_error: Optional[str],
+    retry_in: Optional[float],
+) -> str:
+    """The text of a failed-attempt log line. ``files`` are those that could not be deleted."""
+    reason = getattr(error, "strerror", None) or str(error)
+    msg = f"Could not delete temporary directory {dir}: {reason}."
+    if files:
+        names = []
+        for p in files[:_MAX_FILES_TO_NAME]:
+            try:
+                names.append(str(Path(p).relative_to(dir)))
+            except ValueError:
+                names.append(str(p))
+        msg += f" {len(files)} file(s) could not be deleted, including {', '.join(names)}."
+        if holders:
+            seen: dict[int, str] = {}
+            for pid, name in holders:
+                seen.setdefault(pid, name)
+            listed = ", ".join(f"{name} (pid {pid})" for pid, name in seen.items())
+            msg += f" Files are still locked open by: {listed}."
+        elif holders_error is not None:
+            msg += f" The processes holding them open could not be determined: {holders_error}."
+        else:
+            msg += " No running process was found holding them open."
+    msg += f" Retrying in {retry_in:g} s." if retry_in is not None else " Giving up."
+    return msg
 
 
 def _prepare_temp_dir_root_posix(temp_dir: str) -> None:
@@ -331,13 +395,68 @@ class TempDir:
             rmtree(self.path, ignore_errors=True)
             raise
 
-    def cleanup(self) -> None:
+    def cleanup(self, logger: Optional[LoggerAdapter] = None) -> None:
         """Deletes the temporary directory and all of its contents.
+
+        On Windows a failed deletion is retried after each delay in
+        ``_CLEANUP_RETRY_DELAYS_SECONDS``, because a process that has just exited,
+        or been terminated, can hold its file handles for a while afterwards. Each
+        failed attempt is logged as a warning naming the files that could not be
+        deleted and the processes holding them open.
+
+        Args:
+            logger: Where to log failed attempts. Defaults to the module logger.
+
         Raises:
             RuntimeError - If not all files could be deleted. The message names
                 each path that could not be deleted along with the reason.
         """
-        failures: list[str] = []
+        existed = os.path.lexists(self.path)
+        failures = self._delete_tree()
+        retry_windows = is_windows() and existed
+        retry_delays = _CLEANUP_RETRY_DELAYS_SECONDS if retry_windows else ()
+        for delay in retry_delays:
+            if not failures:
+                break
+            self._log_failed_attempt(failures, delay, logger)
+            time.sleep(delay)
+            if not os.path.lexists(self.path):
+                # The pass that reported a failure still removed the directory.
+                failures = []
+                break
+            failures = self._delete_tree()
+
+        if failures:
+            if retry_windows:
+                self._log_failed_attempt(failures, None, logger)
+            raise RuntimeError(
+                f"Files within temporary directory {str(self.path)} could not be deleted.\n"
+                + "\n".join(f"{path}: {error!r}" for path, error in failures)
+            )
+
+    def _log_failed_attempt(
+        self,
+        failures: list[tuple[str, BaseException]],
+        retry_in: Optional[float],
+        logger: Optional[LoggerAdapter],
+    ) -> None:
+        files = [p for p, _ in failures if os.path.isfile(p)][:_MAX_FILES_TO_INSPECT]
+        holders, holders_error = _find_lock_holders(files) if files else ([], None)
+        message = _describe_failed_attempt(
+            self.path, failures[0][1], files, holders, holders_error, retry_in
+        )
+        (logger if logger is not None else LOG).warning(
+            message,
+            extra=LogExtraInfo(
+                openjd_log_content=LogContent.FILE_PATH
+                | LogContent.PROCESS_CONTROL
+                | LogContent.EXCEPTION_INFO
+            ),
+        )
+
+    def _delete_tree(self) -> list[tuple[str, BaseException]]:
+        """One recursive deletion pass. Returns each path that could not be deleted, with the error."""
+        failures: list[tuple[str, BaseException]] = []
 
         def _record(path: Any, error: BaseException) -> None:
             # R5-7 fix: keep the reason. Cleanup is exactly where the difference
@@ -345,7 +464,7 @@ class TempDir:
             # decides what the operator should do next, and the old handler
             # accepted the exception and discarded it -- leaving a list of bare
             # paths with no cause.
-            failures.append(f"{path}: {error!r}")
+            failures.append((str(path), error))
 
         if sys.version_info >= (3, 12):
             # `onerror` is deprecated from 3.12 and slated for removal; `onexc`
@@ -367,8 +486,4 @@ class TempDir:
 
             rmtree(self.path, onerror=onerror)
 
-        if failures:
-            raise RuntimeError(
-                f"Files within temporary directory {str(self.path)} could not be deleted.\n"
-                + "\n".join(failures)
-            )
+        return failures
