@@ -47,10 +47,14 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
 
     Args:
         data: The string data to convert
-        end_of_line: One of None, "AUTO", "LF", or "CRLF"
+        end_of_line: One of None, "AUTO", "LF", or "CRLF". Any other value is
+            rejected rather than silently leaving the data unconverted.
 
     Returns:
         The data with converted line endings
+
+    Raises:
+        ValueError: if ``end_of_line`` is not a recognized value.
     """
     if end_of_line is None or end_of_line == "AUTO":
         # AUTO: use OS native line endings
@@ -63,7 +67,10 @@ def _convert_line_endings(data: str, end_of_line: Optional[str]) -> str:
         return data.replace("\r\n", "\n")
     elif end_of_line == "CRLF":
         return _LF_NOT_CRLF.sub("\r\n", data)
-    return data
+    raise ValueError(
+        f"Unrecognized end_of_line value {end_of_line!r}. Expected one of "
+        "None, 'AUTO', 'LF', or 'CRLF'."
+    )
 
 
 def chown_group(path: Path, group: str) -> None:
@@ -142,7 +149,47 @@ def write_file_for_user(
     user: Optional[SessionUser],
     additional_permissions: int = 0,
     end_of_line: Optional[str] = None,
+    *,
+    verbatim: bool = False,
 ) -> None:
+    """Write ``data`` to ``filename`` with owner-only read/write permissions,
+    optionally extended to a session user's group.
+
+    Arguments:
+        filename: Absolute path of the file to create or overwrite.
+        data: The text to write. Encoded as UTF-8 by this function.
+        user: If given, the session user whose group gains read/write access.
+        additional_permissions: Extra mode bits to set, masked to the owner
+            triad, and extended to the group triad only when ``user`` is given
+            on POSIX.
+        end_of_line: One of ``None``, ``"AUTO"``, ``"LF"``, or ``"CRLF"``.
+            ``None`` and ``"AUTO"`` select the host's native line ending. Any
+            other value is rejected.
+        verbatim: Write ``data`` exactly as given. The content is not escaped,
+            not re-interpreted, and its line endings are not converted:
+            ``_convert_line_endings`` is not called at all, and the bytes on
+            disk are ``data.encode("utf-8")`` unmodified. This is for a caller
+            writing opaque content it does not own and must not alter, such as
+            a script fetched from a third party. This is a writer-level option
+            only and deliberately not an ``openjd-model`` ``EndOfLine`` enum
+            value -- that enum is a specification surface describing what a job
+            template may request, and verbatim is not a line-ending mode a
+            template can ask for. It is a statement by the calling code that
+            the bytes it holds are already final.
+
+    Raises:
+        ValueError: if ``verbatim`` is True and ``end_of_line`` is not None
+            (the two requests contradict each other), or if ``end_of_line``
+            is not a recognized value.
+        OSError: if the file could not be created or written, or if the final
+            path component is a symbolic link.
+    """
+    if verbatim and end_of_line is not None:
+        raise ValueError(
+            f"verbatim=True writes data unmodified, so end_of_line={end_of_line!r} "
+            "cannot also be applied. Pass one or the other."
+        )
+
     # File should only be r/w by the owner, by default
 
     # flags:
@@ -166,7 +213,8 @@ def write_file_for_user(
     #      while still allowing the file to be rewritten across Tasks.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     # On Windows, use O_BINARY to prevent automatic line ending conversion
-    # since we handle line endings explicitly via _convert_line_endings
+    # since line endings are handled explicitly here via _convert_line_endings,
+    # when they are converted at all (see 'verbatim').
     flags |= getattr(os, "O_BINARY", 0)
     # O_NOFOLLOW is not defined on Windows; getattr(..., 0) makes this a no-op there.
     flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -174,9 +222,9 @@ def write_file_for_user(
     #  S_IRUSR - Read by owner
     #  S_IWUSR - Write by owner
     mode = stat.S_IRUSR | stat.S_IWUSR | (additional_permissions & stat.S_IRWXU)
-    converted_data = _convert_line_endings(data, end_of_line)
+    data_to_write = data if verbatim else _convert_line_endings(data, end_of_line)
     with _open_context(filename, flags, mode=mode) as fd:
-        os.write(fd, converted_data.encode("utf-8"))
+        os.write(fd, data_to_write.encode("utf-8"))
 
     if os.name == "posix":
         if user is not None:
