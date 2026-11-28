@@ -1,7 +1,7 @@
 coverage[toml] == 7.*
 coverage-conditional-plugin == 0.9.*
 pytest == 8.4.*; python_version == "3.9"
-pytest == 9.1.*; python_version >= "3.10"
+pytest == 9.2.*; python_version >= "3.10"
 pytest-cov == 7.1.*
 pytest-timeout == 2.4.*
 pytest-xdist == 3.8.*
